@@ -64,7 +64,7 @@ impl Backend {
         let file_namespace: Option<String> = self.first_file_namespace(uri);
 
         let local_classes: Vec<ClassInfo> = self
-            .ast_map
+            .uri_classes_index
             .read()
             .get(uri)
             .map(|v| v.iter().map(|c| ClassInfo::clone(c)).collect())
@@ -307,10 +307,10 @@ class Panel {
 
         // Create a backend with workspace root and classmap entry.
         let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), vec![]);
-        backend
-            .classmap
-            .write()
-            .insert("Filament\\Panel".to_string(), vendor_class_path);
+        backend.fqn_uri_index.write().insert(
+            "Filament\\Panel".to_string(),
+            crate::util::path_to_uri(&vendor_class_path),
+        );
 
         // Open a file that uses the vendor class via a use-import.
         let uri = "file:///test.php";
@@ -377,10 +377,10 @@ class Panel {}
 
         // Simulate init completing: load the classmap, then clear the
         // negative cache (mirrors the server.rs `initialized` handler).
-        backend
-            .classmap
-            .write()
-            .insert("Filament\\Panel".to_string(), vendor_class_path.clone());
+        backend.fqn_uri_index.write().insert(
+            "Filament\\Panel".to_string(),
+            crate::util::path_to_uri(&vendor_class_path),
+        );
         backend.class_not_found_cache.write().clear();
 
         // After the clear, the lookup must succeed.
@@ -463,7 +463,7 @@ class Panel {}
         let dep_content = "<?php\nnamespace Illuminate\\Http;\n\nclass Request {}\n";
         backend.update_ast(dep_uri, dep_content);
         {
-            let mut idx = backend.class_index.write();
+            let mut idx = backend.fqn_uri_index.write();
             idx.insert("Illuminate\\Http\\Request".to_string(), dep_uri.to_string());
         }
 
@@ -535,7 +535,7 @@ class Panel {}
 
         // Register in class_index so same-namespace lookup works.
         {
-            let mut idx = backend.class_index.write();
+            let mut idx = backend.fqn_uri_index.write();
             idx.insert("App\\Helper".to_string(), uri_dep.to_string());
         }
 
@@ -616,7 +616,7 @@ class Panel {}
         backend.update_ast(uri_dep, content_dep);
 
         {
-            let mut idx = backend.class_index.write();
+            let mut idx = backend.fqn_uri_index.write();
             idx.insert("GlobalHelper".to_string(), uri_dep.to_string());
         }
 
@@ -767,7 +767,7 @@ class Panel {}
         );
         backend.update_ast(dep_uri, dep_content);
         {
-            let mut idx = backend.class_index.write();
+            let mut idx = backend.fqn_uri_index.write();
             idx.insert("Lib\\Scoring".to_string(), dep_uri.to_string());
         }
 
@@ -1139,7 +1139,7 @@ class Panel {}
         let content_dep = "<?php\nnamespace Carbon;\n\nclass Carbon {}\n";
         backend.update_ast(uri_dep, content_dep);
         {
-            let mut idx = backend.class_index.write();
+            let mut idx = backend.fqn_uri_index.write();
             idx.insert("Carbon\\Carbon".to_string(), uri_dep.to_string());
         }
 
@@ -1197,7 +1197,7 @@ class Panel {}
         let content_dep = "<?php\nnamespace Carbon;\n\nclass Carbon {}\n";
         backend.update_ast(uri_dep, content_dep);
         {
-            let mut idx = backend.class_index.write();
+            let mut idx = backend.fqn_uri_index.write();
             idx.insert("Carbon\\Carbon".to_string(), uri_dep.to_string());
         }
 
@@ -1230,7 +1230,7 @@ class Panel {}
         // Do NOT call update_ast for the dependency — it must be lazily
         // parsed by find_or_load_class Phase 0.
         {
-            let mut idx = backend.class_index.write();
+            let mut idx = backend.fqn_uri_index.write();
             idx.insert("Mockery".to_string(), dep_uri);
         }
 

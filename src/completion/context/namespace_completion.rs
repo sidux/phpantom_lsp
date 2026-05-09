@@ -110,7 +110,7 @@ impl Backend {
     /// suggested.  The sources are:
     ///   1. PSR-4 mapping prefixes themselves (exploded to every level)
     ///   2. Namespace portions of FQNs from `namespace_map`,
-    ///      `class_index`, `classmap`, and `ast_map` — but only when
+    ///      `class_index`, and `ast_map` — but only when
     ///      they start with a PSR-4 prefix.
     ///   3. Namespace(s) inferred from the file's path relative to PSR-4
     ///      source directories (boosted to the top of the list).
@@ -204,7 +204,7 @@ impl Backend {
 
         // ── 2. namespace_map (already-opened files) ─────────────────
         {
-            let nmap = self.namespace_map.read();
+            let nmap = self.file_namespaces.read();
             for spans in nmap.values() {
                 for span in spans {
                     if let Some(ns) = &span.namespace {
@@ -216,7 +216,7 @@ impl Backend {
 
         // ── 3. ast_map namespace portions ───────────────────────────
         {
-            let amap = self.ast_map.read();
+            let amap = self.uri_classes_index.read();
             for (_uri, classes) in amap.iter() {
                 for cls in classes {
                     if let Some(ns) = &cls.file_namespace {
@@ -229,18 +229,10 @@ impl Backend {
             }
         }
 
-        // ── 4. class_index + classmap namespace portions ────────────
+        // ── 4. class_index namespace portions ───────────────────────
         {
-            let idx = self.class_index.read();
+            let idx = self.fqn_uri_index.read();
             for fqn in idx.keys() {
-                if let Some(ns_end) = fqn.rfind('\\') {
-                    insert_if_under_psr4(&fqn[..ns_end], &mut namespaces, &psr4_prefixes);
-                }
-            }
-        }
-        {
-            let cmap = self.classmap.read();
-            for fqn in cmap.keys() {
                 if let Some(ns_end) = fqn.rfind('\\') {
                     insert_if_under_psr4(&fqn[..ns_end], &mut namespaces, &psr4_prefixes);
                 }

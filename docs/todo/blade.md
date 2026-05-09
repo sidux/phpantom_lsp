@@ -322,7 +322,7 @@ On `<x-alert>`:
 
 1. Extract the component name.
 2. Look up in `blade_components` to get the FQN.
-3. Use `find_or_load_class` + `class_index` / `classmap` to find the
+3. Use `find_or_load_class` + `fqn_uri_index` to find the
    source file.
 4. Return a `Location` pointing to the class definition.
 

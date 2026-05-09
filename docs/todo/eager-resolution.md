@@ -85,7 +85,7 @@ dominates analysis time.
 - **Phase 1: MethodStore infrastructure.** Added
   `Backend.method_store: MethodStore` (an
   `Arc<RwLock<HashMap<(String, String), Arc<MethodInfo>>>>`)
-  populated alongside `fqn_index` in `update_ast_inner` and
+  populated alongside `fqn_class_index` in `update_ast_inner` and
   `parse_and_cache_content_versioned`. Eviction on re-parse
   via `evict_methods_for_fqns`.
 - **Phase 2: Centralised lookup helpers.** Added
@@ -349,7 +349,7 @@ The problem is needing them for every runtime analysis thread.
   speed (sub-second).
 - No test regressions in the existing test suite.
 - Memory usage for the populated metadata is within 2x of the
-  current `ast_map` + `class_index` combined size.
+  current `uri_classes_index` + `fqn_uri_index` combined size.
 - The diagnostic/analysis pass never calls
   `resolve_class_with_inheritance`. All class metadata is
   pre-populated and immutable during analysis.

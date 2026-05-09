@@ -627,16 +627,16 @@ async fn attribute_context_demotes_non_attribute_names() {
     let backend = create_test_backend();
     load_scaffolding(&backend).await;
 
-    // Insert unloaded classes into the classmap.
+    // Insert unloaded classes into the class index.
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "Vendor\\CustomAttribute".to_string(),
-            std::path::PathBuf::from("/vendor/custom.php"),
+            "file:///vendor/custom.php".to_string(),
         );
-        cmap.insert(
+        idx.insert(
             "Vendor\\CustomService".to_string(),
-            std::path::PathBuf::from("/vendor/service.php"),
+            "file:///vendor/service.php".to_string(),
         );
     }
 

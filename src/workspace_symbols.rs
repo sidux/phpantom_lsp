@@ -21,8 +21,8 @@
 //!    for classes discovered during parsing but not necessarily open.
 //!    Paired with `fqn_index` for rich metadata when available.
 //!
-//! 5. **`classmap`** — maps fully-qualified class names to file paths
-//!    from Composer's `autoload_classmap.php`, covering vendor classes.
+//! 5. **`class_index`** — maps fully-qualified class names to file URIs,
+//!    covering vendor classes from Composer's classmap and other sources.
 
 use std::collections::HashSet;
 
@@ -103,10 +103,10 @@ impl Backend {
     /// Searches classes, interfaces, traits, enums, their members
     /// (methods, properties, class constants), standalone functions,
     /// and global constants across all indexed files plus vendor classes
-    /// from the Composer classmap and class index.  The `query` string
+    /// from the class index.  The `query` string
     /// is matched as a case-insensitive substring against symbol names.
     /// An empty query returns symbols from parsed files only (not the
-    /// full classmap/class_index) to avoid flooding the picker.
+    /// full class_index) to avoid flooding the picker.
     ///
     /// Results are sorted by relevance: exact matches first, then prefix
     /// matches, then substring matches. Within each tier, symbols are
@@ -116,14 +116,14 @@ impl Backend {
         let query_lower = query.to_lowercase();
         let mut ranked: Vec<RankedSymbol> = Vec::new();
 
-        // Track FQNs already emitted so that class_index and classmap
-        // don't produce duplicates for classes already in the ast_map.
+        // Track FQNs already emitted so that class_index doesn't
+        // produce duplicates for classes already in the ast_map.
         let mut seen_fqns: HashSet<String> = HashSet::new();
 
         // ── Classes, interfaces, traits, enums (from ast_map) ───────
         // Also emits methods, properties, and class constants.
         {
-            let ast_map = self.ast_map.read();
+            let ast_map = self.uri_classes_index.read();
             for (file_uri, classes) in ast_map.iter() {
                 for class in classes {
                     // Skip anonymous classes (empty name or name starting with
@@ -390,8 +390,8 @@ impl Backend {
         // would dump thousands of vendor classes into the picker.
         if !query_lower.is_empty() {
             // Grab the fqn_index for rich metadata (kind, deprecation).
-            let fqn_idx = self.fqn_index.read();
-            let idx = self.class_index.read();
+            let fqn_idx = self.fqn_class_index.read();
+            let idx = self.fqn_uri_index.read();
             for (fqn, file_uri) in idx.iter() {
                 if seen_fqns.contains(fqn) {
                     continue;
@@ -457,12 +457,12 @@ impl Backend {
             }
         }
 
-        // ── classmap (Composer vendor classes) ──────────────────────
+        // ── class index (Composer vendor classes) ───────────────────
         // Only searched when the user has typed a query, same rationale
         // as above.
         if !query_lower.is_empty() {
-            let cmap = self.classmap.read();
-            for (fqn, file_path) in cmap.iter() {
+            let cmap = self.fqn_uri_index.read();
+            for (fqn, file_uri) in cmap.iter() {
                 if seen_fqns.contains(fqn) {
                     continue;
                 }
@@ -475,9 +475,9 @@ impl Backend {
                     None => continue,
                 };
 
-                let uri = match Url::from_file_path(file_path) {
+                let uri = match Url::parse(file_uri) {
                     Ok(u) => u,
-                    Err(()) => continue,
+                    Err(_) => continue,
                 };
 
                 seen_fqns.insert(fqn.clone());

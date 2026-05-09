@@ -298,7 +298,7 @@ impl LanguageServer for Backend {
             }
 
             if let Some(ref tok) = progress_token {
-                let classmap_count = self.classmap.read().len();
+                let classmap_count = self.fqn_uri_index.read().len();
                 self.progress_end(tok, Some(format!("Indexed {} classes", classmap_count)))
                     .await;
             }
@@ -1539,7 +1539,13 @@ impl Backend {
         };
 
         let symbol_count = classmap.len();
-        *self.classmap.write() = classmap;
+        {
+            let mut idx = self.fqn_uri_index.write();
+            for (fqn, path) in classmap {
+                idx.entry(fqn)
+                    .or_insert_with(|| crate::util::path_to_uri(&path));
+            }
+        }
 
         // ── Drupal: scan web-root directories (gitignore bypassed) ──
         // Drupal's .gitignore excludes web/core, web/modules/contrib,
@@ -1555,9 +1561,10 @@ impl Backend {
                 + drupal_result.function_index.len()
                 + drupal_result.constant_index.len();
             {
-                let mut cm = self.classmap.write();
+                let mut idx = self.fqn_uri_index.write();
                 for (fqn, path) in drupal_result.classmap {
-                    cm.entry(fqn).or_insert(path);
+                    idx.entry(fqn)
+                        .or_insert_with(|| crate::util::path_to_uri(&path));
                 }
             }
             {
@@ -1587,9 +1594,10 @@ impl Backend {
         let psr0_cm = composer::parse_autoload_namespaces(root, &vendor_dir);
         if !psr0_cm.is_empty() {
             let count = psr0_cm.len();
-            let mut cm = self.classmap.write();
+            let mut idx = self.fqn_uri_index.write();
             for (fqn, path) in psr0_cm {
-                cm.entry(fqn).or_insert(path);
+                idx.entry(fqn)
+                    .or_insert_with(|| crate::util::path_to_uri(&path));
             }
             tracing::info!("PSR-0: {} classes from autoload_namespaces.php", count);
         }
@@ -1722,12 +1730,14 @@ impl Backend {
             let scan = self.build_self_scan_composer(sub_root, vendor_dir, None, &sub_skip);
             self.populate_autoload_indices(&scan);
             {
-                let mut classmap = self.classmap.write();
+                let mut idx = self.fqn_uri_index.write();
                 for (fqcn, path) in sub_cm {
-                    classmap.entry(fqcn).or_insert(path);
+                    idx.entry(fqcn)
+                        .or_insert_with(|| crate::util::path_to_uri(&path));
                 }
                 for (fqcn, path) in scan.classmap {
-                    classmap.entry(fqcn).or_insert(path);
+                    idx.entry(fqcn)
+                        .or_insert_with(|| crate::util::path_to_uri(&path));
                 }
             }
         }
@@ -1750,13 +1760,14 @@ impl Backend {
         let scan = classmap_scanner::scan_workspace_fallback_full(root, &skip_dirs);
         self.populate_autoload_indices(&scan);
         {
-            let mut classmap = self.classmap.write();
+            let mut idx = self.fqn_uri_index.write();
             for (fqcn, path) in scan.classmap {
-                classmap.entry(fqcn).or_insert(path);
+                idx.entry(fqcn)
+                    .or_insert_with(|| crate::util::path_to_uri(&path));
             }
         }
 
-        let symbol_count = self.classmap.read().len()
+        let symbol_count = self.fqn_uri_index.read().len()
             + self.autoload_function_index.read().len()
             + self.autoload_constant_index.read().len();
 
@@ -1802,7 +1813,13 @@ impl Backend {
         self.populate_autoload_indices(&scan);
 
         let symbol_count = scan.classmap.len();
-        *self.classmap.write() = scan.classmap;
+        {
+            let mut idx = self.fqn_uri_index.write();
+            for (fqn, path) in scan.classmap {
+                idx.entry(fqn)
+                    .or_insert_with(|| crate::util::path_to_uri(&path));
+            }
+        }
 
         let symbol_count = symbol_count
             + self.autoload_function_index.read().len()
@@ -1891,7 +1908,7 @@ impl Backend {
                 // Populate class_index so find_or_load_class can
                 // lazily parse these classes later.
                 {
-                    let mut idx = self.class_index.write();
+                    let mut idx = self.fqn_uri_index.write();
                     for fqn in &scan.classes {
                         idx.entry(fqn.clone()).or_insert_with(|| uri.clone());
                     }
@@ -1996,13 +2013,11 @@ impl Backend {
 
         // Register classes in the classmap and class_index.
         {
-            let mut cm = self.classmap.write();
+            let mut idx = self.fqn_uri_index.write();
             for (fqn, path) in classmap_entries {
-                cm.entry(fqn).or_insert(path);
+                idx.entry(fqn)
+                    .or_insert_with(|| crate::util::path_to_uri(&path));
             }
-        }
-        {
-            let mut idx = self.class_index.write();
             for (fqn, uri) in class_index_entries {
                 idx.entry(fqn).or_insert(uri);
             }

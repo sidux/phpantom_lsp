@@ -3,7 +3,7 @@
 //! When the cursor is on an unresolved class name (a `ClassReference` in
 //! the symbol map that cannot be resolved via use-map, namespace, or
 //! local classes), offer code actions to add a `use` statement for each
-//! matching class found in the class index, classmap, and stubs.
+//! matching class found in the class index and stubs.
 //!
 //! Also provides a bulk "Import all missing classes" action that imports
 //! every unresolved class name in the file at once.  When a name has
@@ -29,7 +29,7 @@ impl Backend {
     /// Collect "Import class" code actions for the cursor position.
     ///
     /// For each unresolved `ClassReference` that overlaps with the
-    /// request range, search the class index, classmap, and stubs for
+    /// request range, search the class index and stubs for
     /// classes whose short name matches, and offer a code action per
     /// candidate.
     pub(crate) fn collect_import_class_actions(
@@ -50,7 +50,7 @@ impl Backend {
         };
 
         let local_classes: Vec<crate::types::ClassInfo> = self
-            .ast_map
+            .uri_classes_index
             .read()
             .get(uri)
             .map(|v| {
@@ -342,7 +342,7 @@ impl Backend {
 
         // ── 1. class_index ──────────────────────────────────────────────
         {
-            let idx = self.class_index.read();
+            let idx = self.fqn_uri_index.read();
             for fqn in idx.keys() {
                 if short_name(fqn).to_lowercase() == name_lower {
                     candidates.push(fqn.clone());
@@ -350,9 +350,9 @@ impl Backend {
             }
         }
 
-        // ── 2. Composer classmap ────────────────────────────────────────
+        // ── 2. Class index ──────────────────────────────────────────────
         {
-            let cmap = self.classmap.read();
+            let cmap = self.fqn_uri_index.read();
             for fqn in cmap.keys() {
                 if short_name(fqn).to_lowercase() == name_lower
                     && !candidates
@@ -366,7 +366,7 @@ impl Backend {
 
         // ── 3. ast_map (already-parsed files) ───────────────────────────
         {
-            let amap = self.ast_map.read();
+            let amap = self.uri_classes_index.read();
             for (_file_uri, classes) in amap.iter() {
                 for cls in classes {
                     if cls.name.to_lowercase() == name_lower {
@@ -560,7 +560,7 @@ impl Backend {
         };
 
         let local_classes: Vec<crate::types::ClassInfo> = self
-            .ast_map
+            .uri_classes_index
             .read()
             .get(uri)
             .map(|v| {
@@ -770,7 +770,7 @@ impl Backend {
         };
 
         let local_classes: Vec<crate::types::ClassInfo> = self
-            .ast_map
+            .uri_classes_index
             .read()
             .get(uri)
             .map(|v| {
@@ -959,14 +959,14 @@ mod tests {
 
         // Add candidates.
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/Request.php".into(),
+                "file:///vendor/Request.php".to_string(),
             );
             cmap.insert(
                 "Illuminate\\Support\\Collection".to_string(),
-                "/vendor/Collection.php".into(),
+                "file:///vendor/Collection.php".to_string(),
             );
         }
 
@@ -1017,10 +1017,10 @@ mod tests {
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/Request.php".into(),
+                "file:///vendor/Request.php".to_string(),
             );
         }
 
@@ -1059,14 +1059,14 @@ mod tests {
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/Request.php".into(),
+                "file:///vendor/Request.php".to_string(),
             );
             cmap.insert(
                 "Illuminate\\Support\\Collection".to_string(),
-                "/vendor/Collection.php".into(),
+                "file:///vendor/Collection.php".to_string(),
             );
         }
 
@@ -1103,14 +1103,14 @@ mod tests {
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/Request.php".into(),
+                "file:///vendor/Request.php".to_string(),
             );
             cmap.insert(
                 "Illuminate\\Support\\Collection".to_string(),
-                "/vendor/Collection.php".into(),
+                "file:///vendor/Collection.php".to_string(),
             );
         }
 
@@ -1159,14 +1159,14 @@ mod tests {
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Spatie\\LaravelData\\Attributes\\MapInputName".to_string(),
-                "/vendor/MapInputName.php".into(),
+                "file:///vendor/MapInputName.php".to_string(),
             );
             cmap.insert(
                 "Spatie\\LaravelData\\Attributes\\WithCast".to_string(),
-                "/vendor/WithCast.php".into(),
+                "file:///vendor/WithCast.php".to_string(),
             );
         }
 
@@ -1245,14 +1245,14 @@ final class Foo extends Data
 
         // Add candidates for the two unresolved attribute names.
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Spatie\\LaravelData\\Attributes\\MapInputName".to_string(),
-                "/vendor/MapInputName.php".into(),
+                "file:///vendor/MapInputName.php".to_string(),
             );
             cmap.insert(
                 "Spatie\\LaravelData\\Attributes\\WithCast".to_string(),
-                "/vendor/WithCast.php".into(),
+                "file:///vendor/WithCast.php".to_string(),
             );
         }
 
@@ -1311,12 +1311,15 @@ final class Foo extends Data
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             // Two different classes named "Exception"
-            cmap.insert("Exception".to_string(), "/vendor/Exception.php".into());
+            cmap.insert(
+                "Exception".to_string(),
+                "file:///vendor/Exception.php".to_string(),
+            );
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/Request.php".into(),
+                "file:///vendor/Request.php".to_string(),
             );
         }
 
@@ -1358,22 +1361,22 @@ final class Foo extends Data
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/Request.php".into(),
+                "file:///vendor/Request.php".to_string(),
             );
             cmap.insert(
                 "Symfony\\Component\\HttpFoundation\\Request".to_string(),
-                "/vendor/SymfonyRequest.php".into(),
+                "file:///vendor/SymfonyRequest.php".to_string(),
             );
             cmap.insert(
                 "Illuminate\\Support\\Collection".to_string(),
-                "/vendor/Collection.php".into(),
+                "file:///vendor/Collection.php".to_string(),
             );
             cmap.insert(
                 "Doctrine\\Common\\Collections\\Collection".to_string(),
-                "/vendor/DoctrineCollection.php".into(),
+                "file:///vendor/DoctrineCollection.php".to_string(),
             );
         }
 
@@ -1407,18 +1410,18 @@ final class Foo extends Data
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/Request.php".into(),
+                "file:///vendor/Request.php".to_string(),
             );
             cmap.insert(
                 "Symfony\\Component\\HttpFoundation\\Request".to_string(),
-                "/vendor/SymfonyRequest.php".into(),
+                "file:///vendor/SymfonyRequest.php".to_string(),
             );
             cmap.insert(
                 "Illuminate\\Support\\Collection".to_string(),
-                "/vendor/Collection.php".into(),
+                "file:///vendor/Collection.php".to_string(),
             );
         }
 
@@ -1457,18 +1460,18 @@ final class Foo extends Data
     // ── find_import_candidates smoke test ───────────────────────────────
 
     #[test]
-    fn find_candidates_from_classmap() {
+    fn find_candidates_from_class_index() {
         let backend = crate::Backend::new_test();
-        // Populate classmap with a known class.
+        // Populate class index with a known class.
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "App\\Models\\User".to_string(),
-                "/fake/path/User.php".into(),
+                "file:///fake/path/User.php".to_string(),
             );
             cmap.insert(
                 "App\\Http\\Request".to_string(),
-                "/fake/path/Request.php".into(),
+                "file:///fake/path/Request.php".to_string(),
             );
         }
 
@@ -1482,10 +1485,10 @@ final class Foo extends Data
     fn find_candidates_case_insensitive() {
         let backend = crate::Backend::new_test();
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Vendor\\Obscure\\ZYGOMORPHIC".to_string(),
-                "/fake/path.php".into(),
+                "file:///fake/path.php".to_string(),
             );
         }
 
@@ -1498,14 +1501,10 @@ final class Foo extends Data
     #[test]
     fn find_candidates_deduplicates() {
         let backend = crate::Backend::new_test();
-        // Add the same FQN to both class_index and classmap.
+        // Add the same FQN to class_index — should only appear once.
         {
-            let mut idx = backend.class_index.write();
+            let mut idx = backend.fqn_uri_index.write();
             idx.insert("App\\Foo".to_string(), "file:///foo.php".to_string());
-        }
-        {
-            let mut cmap = backend.classmap.write();
-            cmap.insert("App\\Foo".to_string(), "/foo.php".into());
         }
 
         let table = std::collections::HashMap::new();
@@ -1525,12 +1524,12 @@ final class Foo extends Data
         // Parse the file so the symbol map is populated.
         backend.update_ast(uri, content);
 
-        // Add a candidate to the classmap.
+        // Add a candidate to the class index.
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/laravel/framework/src/Illuminate/Http/Request.php".into(),
+                "file:///vendor/laravel/framework/src/Illuminate/Http/Request.php".to_string(),
             );
         }
 
@@ -1581,10 +1580,10 @@ final class Foo extends Data
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/laravel/framework/src/Illuminate/Http/Request.php".into(),
+                "file:///vendor/laravel/framework/src/Illuminate/Http/Request.php".to_string(),
             );
         }
 
@@ -1630,10 +1629,10 @@ final class Foo extends Data
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/laravel/framework/src/Illuminate/Http/Request.php".into(),
+                "file:///vendor/laravel/framework/src/Illuminate/Http/Request.php".to_string(),
             );
         }
 
@@ -1677,10 +1676,10 @@ final class Foo extends Data
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/laravel/framework/src/Illuminate/Http/Request.php".into(),
+                "file:///vendor/laravel/framework/src/Illuminate/Http/Request.php".to_string(),
             );
         }
 
@@ -1734,10 +1733,10 @@ final class Foo extends Data
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/laravel/framework/src/Illuminate/Http/Request.php".into(),
+                "file:///vendor/laravel/framework/src/Illuminate/Http/Request.php".to_string(),
             );
         }
 
@@ -1788,10 +1787,10 @@ final class Foo extends Data
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/laravel/framework/src/Illuminate/Http/Request.php".into(),
+                "file:///vendor/laravel/framework/src/Illuminate/Http/Request.php".to_string(),
             );
         }
 
@@ -1843,10 +1842,10 @@ final class Foo extends Data
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Carbon\\Carbon".to_string(),
-                "/vendor/nesbot/carbon/src/Carbon/Carbon.php".into(),
+                "file:///vendor/nesbot/carbon/src/Carbon/Carbon.php".to_string(),
             );
         }
 
@@ -1897,10 +1896,10 @@ final class Foo extends Data
         backend.update_ast(uri, content);
 
         {
-            let mut cmap = backend.classmap.write();
+            let mut cmap = backend.fqn_uri_index.write();
             cmap.insert(
                 "Illuminate\\Http\\Request".to_string(),
-                "/vendor/laravel/framework/src/Illuminate/Http/Request.php".into(),
+                "file:///vendor/laravel/framework/src/Illuminate/Http/Request.php".to_string(),
             );
         }
 
@@ -1953,7 +1952,7 @@ final class Foo extends Data
         backend.update_ast(uri_dep, content_dep);
 
         {
-            let mut idx = backend.class_index.write();
+            let mut idx = backend.fqn_uri_index.write();
             idx.insert("Helper".to_string(), uri_dep.to_string());
         }
 
@@ -2017,7 +2016,7 @@ final class Foo extends Data
         let content_dep = "<?php\nnamespace Carbon;\n\nclass Carbon {}\n";
         backend.update_ast(uri_dep, content_dep);
         {
-            let mut idx = backend.class_index.write();
+            let mut idx = backend.fqn_uri_index.write();
             idx.insert("Carbon\\Carbon".to_string(), uri_dep.to_string());
         }
 

@@ -1090,7 +1090,7 @@ impl Backend {
         // No specific throws discovered — fall back to
         // Throwable-filtered class completion.  Already-parsed
         // classes are only offered when their parent chain
-        // reaches \Throwable / \Exception / \Error.  Classmap
+        // reaches \Throwable / \Exception / \Error.  Class index
         // and stub classes are included unfiltered because
         // checking their ancestry would require on-demand parsing.
         //
@@ -1254,7 +1254,7 @@ impl Backend {
     /// When there is no `->` or `::` operator, check whether the user is
     /// typing a class name, constant, or function name and offer
     /// completions from all known sources (use-imports, same namespace,
-    /// stubs, classmap, class_index, global_defines, stub_constant_index,
+    /// stubs, class_index, global_defines, stub_constant_index,
     /// global_functions, stub_function_index).
     ///
     /// Returns `None` when the cursor is not at an identifier position or

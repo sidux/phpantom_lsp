@@ -60,8 +60,12 @@ impl Backend {
         let file_use_map = self.file_use_map(uri);
         let file_namespace: Option<String> = self.first_file_namespace(uri);
 
-        let local_classes: Vec<Arc<ClassInfo>> =
-            self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let local_classes: Vec<Arc<ClassInfo>> = self
+            .uri_classes_index
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
 
         let use_line_ranges = compute_use_line_ranges(content);
 

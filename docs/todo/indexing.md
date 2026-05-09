@@ -409,7 +409,7 @@ the last report, avoiding notification spam.
 ### Go to Implementation
 
 `find_implementors` has five phases with different totals:
-Phase 1 (ast_map), Phase 2 (class_index), Phase 3 (classmap
+Phase 0 (fqn_class_index), Phase 1 (fqn_uri_index), Phase 2 (PSR-4
 files), Phase 4 (stubs), Phase 5 (PSR-4 walk). The total for
 each phase is known before iteration begins. Report progress
 within each phase and allocate percentage ranges across phases

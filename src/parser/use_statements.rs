@@ -146,7 +146,7 @@ class RegistrationController {
         backend.update_ast(uri, content);
 
         // ── Legacy use_map ──────────────────────────────────────────
-        let use_map = backend.use_map.read();
+        let use_map = backend.file_imports.read();
         let file_map = use_map
             .get(uri)
             .expect("use_map should have an entry for the file");
@@ -211,7 +211,7 @@ class RegistrationController {
 
         backend.update_ast(uri, content);
 
-        let use_map = backend.use_map.read();
+        let use_map = backend.file_imports.read();
         let file_map = use_map.get(uri).expect("use_map entry");
 
         assert_eq!(
@@ -245,7 +245,7 @@ class MyTest {}
 "#;
         backend.update_ast(uri, content);
 
-        let use_map = backend.use_map.read();
+        let use_map = backend.file_imports.read();
         let file_map = use_map
             .get(uri)
             .expect("use_map should have an entry for the file");
@@ -276,7 +276,7 @@ class MyTest {}
 "#;
         backend.update_ast(uri, content);
 
-        let use_map = backend.use_map.read();
+        let use_map = backend.file_imports.read();
         let file_map = use_map
             .get(uri)
             .expect("use_map should have an entry for the file");
@@ -307,7 +307,7 @@ class MyClass {}
 "#;
         backend.update_ast(uri, content);
 
-        let use_map = backend.use_map.read();
+        let use_map = backend.file_imports.read();
         let file_map = use_map
             .get(uri)
             .expect("use_map should have an entry for the file");
@@ -327,7 +327,7 @@ class MyClass {}
         let content = "<?php\nuse App\\{MyClass, function myFunc, const MY_CONST};\n";
         backend.update_ast(uri, content);
 
-        let use_map = backend.use_map.read();
+        let use_map = backend.file_imports.read();
         let file_map = use_map
             .get(uri)
             .expect("use_map should have an entry for the file");

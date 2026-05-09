@@ -4,7 +4,7 @@
 //!
 //! - **Import class** — when the cursor is on an unresolved class name,
 //!   offer to add a `use` statement for matching classes found in the
-//!   class index, classmap, and stubs.  Also offers a bulk "Import all
+//!   class index and stubs.  Also offers a bulk "Import all
 //!   missing classes" action when two or more unresolved names exist in
 //!   the file, importing the best candidate for each in one step.
 //! - **Remove unused import** — when the cursor is on (or a diagnostic

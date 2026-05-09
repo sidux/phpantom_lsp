@@ -259,8 +259,12 @@ impl Backend {
         member_kind: &MemberKind,
     ) -> Option<u8> {
         // Find the enclosing ClassInfo from the ast_map.
-        let local_classes: Vec<Arc<ClassInfo>> =
-            self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let local_classes: Vec<Arc<ClassInfo>> = self
+            .uri_classes_index
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
 
         let enclosing = crate::util::find_class_at_offset(&local_classes, cursor_offset)?;
 

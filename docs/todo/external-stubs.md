@@ -22,7 +22,7 @@ PHPantom embeds JetBrains phpstorm-stubs at compile time via
 `build.rs`. The stubs are baked into the binary as static string
 arrays and indexed by class, function, and constant name. At runtime,
 `find_or_load_class` checks the `stub_index` as a final fallback
-(Phase 3) after `ast_map`, classmap, and PSR-4. Stub files are parsed
+(Phase 3) after `uri_classes_index`, `fqn_uri_index`, and PSR-4. Stub files are parsed
 lazily on first access and cached under `phpantom-stub://` URIs.
 
 This works well for the PHP standard library but has limitations:
@@ -321,13 +321,13 @@ embedded stubs:
 
 **`find_or_load_class`:**
 
-1. Phase 1: `ast_map` (user code, already-parsed files)
-2. Phase 1.5: Composer classmap
+1. Phase 0: `fqn_class_index` (user code, already-parsed files)
+2. Phase 1: fqn_uri_index
 3. Phase 2: PSR-4
 4. **Phase 2.5 (new): External stub class index.** Checks the
    unified external stub index (populated from `.phpantom.toml`,
    Composer stubs, and IDE-provided stubs in priority order). Read
-   the file, parse and cache in `ast_map` under a
+   the file, parse and cache in `uri_classes_index` under a
    `phpantom-ext-stub://` URI.
 5. Phase 3: Embedded stubs
 

@@ -1002,8 +1002,10 @@ async fn test_implementation_classmap_file_scan() {
     let (mappings, _vendor_dir) = phpantom_lsp::composer::parse_composer_json(dir.path());
     let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), mappings);
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     // Only open the interface file — implementors stay on disk only.
@@ -1152,8 +1154,10 @@ async fn test_implementation_psr4_scan_skips_classmap_files() {
     let (mappings, _vendor_dir) = phpantom_lsp::composer::parse_composer_json(dir.path());
     let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), mappings);
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     // Only open the interface.

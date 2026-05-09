@@ -22,7 +22,7 @@ use std::path::PathBuf;
 /// 2. **Identify the target type** — resolve the symbol to a `ClassInfo` and
 ///    check whether it is a non-final class or interface.
 /// 3. **Scan for implementors** — walk all classes known to the server
-///    (`ast_map`, `class_index`, `classmap`, PSR-4 directories) and collect
+///    (`ast_map`, `class_index`, PSR-4 directories) and collect
 ///    those whose `interfaces` list or `parent_class` matches the target type.
 /// 4. **Return locations** — for class-level requests, return the class
 ///    declaration position; for method-level requests, return the method
@@ -594,12 +594,12 @@ impl Backend {
     /// Scans:
     /// 1. All classes already in `ast_map` (open files + autoload-discovered)
     /// 2. All classes loadable via `class_index`
-    /// 3. Classmap files not yet loaded — string pre-filter then parse
+    /// 3. Class index files not yet loaded — string pre-filter then parse
     /// 4. Embedded PHP stubs — string pre-filter then lazy parse
     /// 5. User PSR-4 directories — walk for `.php` files not covered by
-    ///    the classmap, string pre-filter then parse.  Vendor PSR-4 roots
-    ///    are skipped because vendor classes are assumed complete in the
-    ///    classmap (Phase 3).
+    ///    the class index, string pre-filter then parse.  Vendor PSR-4
+    ///    roots are skipped because vendor classes are assumed complete
+    ///    in the class index (Phase 3).
     ///
     /// When `include_abstract` is `false` (the default for interface and
     /// abstract-class targets), abstract subclasses are excluded from the
@@ -673,7 +673,7 @@ impl Backend {
 
         // ── Phase 2: scan class_index for classes not yet in ast_map ────
         let index_entries: Vec<(String, String)> = {
-            let idx = self.class_index.read();
+            let idx = self.fqn_uri_index.read();
             idx.iter()
                 .map(|(fqn, uri)| (fqn.clone(), uri.clone()))
                 .collect()
@@ -700,16 +700,21 @@ impl Backend {
             }
         }
 
-        // ── Phase 3: scan classmap files with string pre-filter ─────────
-        // Collect unique file paths from the classmap (one file may define
+        // ── Phase 3: scan class index files with string pre-filter ────────
+        // Collect unique file paths from the class index (one file may define
         // multiple classes, so we de-duplicate by path and scan each file
         // at most once).  Files already present in ast_map were covered by
         // Phase 1 and can be skipped.
-        let classmap_paths: HashSet<PathBuf> = self.classmap.read().values().cloned().collect();
+        let index_paths: HashSet<PathBuf> = self
+            .fqn_uri_index
+            .read()
+            .values()
+            .filter_map(|uri| Url::parse(uri).ok().and_then(|u| u.to_file_path().ok()))
+            .collect();
 
         let loaded_uris: HashSet<String> = self.parsed_uris.read().iter().cloned().collect();
 
-        for path in &classmap_paths {
+        for path in &index_paths {
             let uri = crate::util::path_to_uri(path);
             if loaded_uris.contains(&uri) {
                 continue;
@@ -779,10 +784,10 @@ impl Backend {
             }
         }
 
-        // ── Phase 5: scan user PSR-4 directories for files not in classmap ──
+        // ── Phase 5: scan user PSR-4 directories for files not in class index ──
         // The user may have created classes that are not yet in the
-        // classmap.  Walk user PSR-4 roots only — vendor classes are
-        // assumed complete in the classmap (Phase 3) and should not
+        // class index.  Walk user PSR-4 roots only — vendor classes are
+        // assumed complete in the class index (Phase 3) and should not
         // require a filesystem walk.
         let workspace_root = self.workspace_root.read().clone();
         if let Some(workspace_root) = workspace_root {
@@ -806,8 +811,8 @@ impl Backend {
 
             for dir in &psr4_dirs {
                 for php_file in collect_php_files(dir, &vendor_dir_paths) {
-                    // Skip files already covered by the classmap (Phase 3).
-                    if classmap_paths.contains(&php_file) {
+                    // Skip files already covered by the class index (Phase 3).
+                    if index_paths.contains(&php_file) {
                         continue;
                     }
 
@@ -1091,7 +1096,7 @@ impl Backend {
     /// Get the FQN for a class given its short name, by looking it up in
     /// the `class_index`.
     fn class_fqn_for_short(&self, target_short: &str) -> Option<String> {
-        let idx = self.class_index.read();
+        let idx = self.fqn_uri_index.read();
         // Look for an entry whose short name matches.
         for fqn in idx.keys() {
             let short = short_name(fqn);

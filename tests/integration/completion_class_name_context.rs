@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use crate::common::{create_test_backend, create_test_backend_with_stubs};
 use phpantom_lsp::Backend;
 use phpantom_lsp::atom::atom;
@@ -808,7 +806,7 @@ async fn test_unloaded_classes_pass_through_filter() {
 
     // Put a class in the class_index but do NOT load it into ast_map.
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "UnknownKind\\MysteryClass".to_string(),
             "file:///vendor/mystery.php".to_string(),
@@ -1565,12 +1563,12 @@ async fn test_classmap_loaded_interface_excluded_from_extends_class() {
         })
         .await;
 
-    // Put it in the classmap.
+    // Put it in the class index.
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "App\\Contracts\\Searchable".to_string(),
-            PathBuf::from(iface_uri.path()),
+            iface_uri.to_string(),
         );
     }
 
@@ -1606,11 +1604,8 @@ async fn test_classmap_loaded_trait_excluded_from_implements() {
         .await;
 
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
-            "App\\Traits\\Sortable".to_string(),
-            PathBuf::from(trait_uri.path()),
-        );
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert("App\\Traits\\Sortable".to_string(), trait_uri.to_string());
     }
 
     let uri = Url::parse("file:///test_cmap_trait.php").unwrap();
@@ -1639,16 +1634,19 @@ async fn test_extends_class_demotes_interface_looking_names() {
     // "IZxLogger" starts with I[A-Z] → demoted.
     // "ZxUserRepository" has no interface/abstract pattern → normal sort.
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "App\\ZxUserInterface".to_string(),
-            PathBuf::from("/vendor/a.php"),
+            "file:///vendor/a.php".to_string(),
         );
-        cmap.insert(
+        idx.insert(
             "App\\ZxUserRepository".to_string(),
-            PathBuf::from("/vendor/b.php"),
+            "file:///vendor/b.php".to_string(),
         );
-        cmap.insert("App\\IZxLogger".to_string(), PathBuf::from("/vendor/c.php"));
+        idx.insert(
+            "App\\IZxLogger".to_string(),
+            "file:///vendor/c.php".to_string(),
+        );
     }
 
     let uri = Url::parse("file:///test_ext_demote.php").unwrap();
@@ -1703,18 +1701,18 @@ async fn test_implements_demotes_abstract_looking_names() {
     // "AbstractYxHandler" starts with "Abstract" → demoted.
     // "BaseYxController" starts with "Base[A-Z]" → demoted.
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "App\\YxLoggable".to_string(),
-            PathBuf::from("/vendor/a.php"),
+            "file:///vendor/a.php".to_string(),
         );
-        cmap.insert(
+        idx.insert(
             "App\\AbstractYxHandler".to_string(),
-            PathBuf::from("/vendor/b.php"),
+            "file:///vendor/b.php".to_string(),
         );
-        cmap.insert(
+        idx.insert(
             "App\\BaseYxController".to_string(),
-            PathBuf::from("/vendor/c.php"),
+            "file:///vendor/c.php".to_string(),
         );
     }
 
@@ -1774,18 +1772,18 @@ async fn test_trait_use_demotes_non_trait_looking_names() {
     // "WxUserInterface" ends with "Interface" → demoted (likely_non_instantiable).
     // "AbstractWxModel" starts with "Abstract" → demoted (likely_non_instantiable).
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "App\\WxHasTimestamps".to_string(),
-            PathBuf::from("/vendor/a.php"),
+            "file:///vendor/a.php".to_string(),
         );
-        cmap.insert(
+        idx.insert(
             "App\\WxUserInterface".to_string(),
-            PathBuf::from("/vendor/b.php"),
+            "file:///vendor/b.php".to_string(),
         );
-        cmap.insert(
+        idx.insert(
             "App\\AbstractWxModel".to_string(),
-            PathBuf::from("/vendor/c.php"),
+            "file:///vendor/c.php".to_string(),
         );
     }
 
@@ -1838,14 +1836,14 @@ async fn test_instanceof_no_heuristic_demotion() {
     let backend = create_test_backend();
 
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "App\\UserInterface".to_string(),
-            PathBuf::from("/vendor/a.php"),
+            "file:///vendor/a.php".to_string(),
         );
-        cmap.insert(
+        idx.insert(
             "App\\UserRepository".to_string(),
-            PathBuf::from("/vendor/b.php"),
+            "file:///vendor/b.php".to_string(),
         );
     }
 
@@ -1890,12 +1888,15 @@ async fn test_extends_interface_does_not_demote_interface_names() {
     let backend = create_test_backend();
 
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "App\\LoggerInterface".to_string(),
-            PathBuf::from("/vendor/a.php"),
+            "file:///vendor/a.php".to_string(),
         );
-        cmap.insert("App\\Loggable".to_string(), PathBuf::from("/vendor/b.php"));
+        idx.insert(
+            "App\\Loggable".to_string(),
+            "file:///vendor/b.php".to_string(),
+        );
     }
 
     let uri = Url::parse("file:///test_ext_iface_sort.php").unwrap();

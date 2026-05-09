@@ -429,7 +429,7 @@ impl Backend {
         // using `signature_eq` to decide whether each FQN's cache entry
         // actually needs eviction (signature-level cache invalidation).
         let old_classes_snapshot: Vec<crate::types::ClassInfo> = self
-            .ast_map
+            .uri_classes_index
             .read()
             .get(&uri_string)
             .map(|v| {
@@ -455,8 +455,8 @@ impl Backend {
         // Uses the per-class namespace (not the file-level namespace) so
         // that files with multiple namespace blocks produce correct FQNs.
         {
-            let mut idx = self.class_index.write();
-            let mut fqn_idx = self.fqn_index.write();
+            let mut idx = self.fqn_uri_index.write();
+            let mut fqn_idx = self.fqn_class_index.write();
             // Remove stale entries from previous parses of this file.
             // When a file's namespace changes (e.g. while the user is
             // typing a namespace declaration), old FQNs linger under
@@ -512,7 +512,7 @@ impl Backend {
         // This must happen before the `Program` (and its arena) are dropped.
         let symbol_map = std::sync::Arc::new(extract_symbol_map(program, content));
 
-        self.ast_map.write().insert(
+        self.uri_classes_index.write().insert(
             uri_string.clone(),
             classes.into_iter().map(Arc::new).collect(),
         );
@@ -521,7 +521,7 @@ impl Backend {
         // Populate the global method store for O(1) method lookup.
         self.evict_methods_for_fqns(&old_fqns);
         self.evict_gti_for_fqns(&old_fqns);
-        if let Some(arc_classes) = self.ast_map.read().get(&uri_string) {
+        if let Some(arc_classes) = self.uri_classes_index.read().get(&uri_string) {
             self.populate_method_store(arc_classes);
             self.populate_gti_index(arc_classes);
         }
@@ -529,7 +529,9 @@ impl Backend {
         self.symbol_maps
             .write()
             .insert(uri_string.clone(), symbol_map);
-        self.use_map.write().insert(uri_string.clone(), use_map);
+        self.file_imports
+            .write()
+            .insert(uri_string.clone(), use_map);
         self.resolved_names
             .write()
             .insert(uri_string.clone(), Arc::new(owned_resolved));
@@ -543,7 +545,7 @@ impl Backend {
                 end: content.len() as u32,
             });
         }
-        self.namespace_map
+        self.file_namespaces
             .write()
             .insert(uri_string, namespace_spans);
 
@@ -650,7 +652,7 @@ impl Backend {
             // Toposort just the evicted subset using their current
             // (just-parsed) ClassInfo from ast_map.
             let sorted = {
-                let ast_map = self.ast_map.read();
+                let ast_map = self.uri_classes_index.read();
                 let iter = ast_map
                     .values()
                     .flat_map(|classes| classes.iter())

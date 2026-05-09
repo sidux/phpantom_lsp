@@ -332,8 +332,12 @@ impl Backend {
         func_line: usize,
     ) -> Option<InferredReturnType> {
         // Set up the resolution infrastructure from Backend state.
-        let local_classes: Vec<Arc<ClassInfo>> =
-            self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let local_classes: Vec<Arc<ClassInfo>> = self
+            .uri_classes_index
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
         let file_use_map: HashMap<String, String> = self.file_use_map(uri);
         let file_namespace: Option<String> = self.first_file_namespace(uri);
         let class_loader = self.class_loader_with(&local_classes, &file_use_map, &file_namespace);

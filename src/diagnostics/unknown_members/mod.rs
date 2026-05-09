@@ -248,8 +248,12 @@ impl Backend {
 
         let file_namespace: Option<String> = self.first_file_namespace(uri);
 
-        let local_classes: Vec<Arc<ClassInfo>> =
-            self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let local_classes: Vec<Arc<ClassInfo>> = self
+            .uri_classes_index
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
 
         let class_loader = self.class_loader_with(&local_classes, &file_use_map, &file_namespace);
         let function_loader = self.function_loader_with(&file_use_map, &file_namespace);

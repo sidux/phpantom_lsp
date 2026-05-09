@@ -9,11 +9,10 @@
 ///
 /// ## Class resolution ([`Backend::find_or_load_class`])
 ///
-///   0. **Class index** — direct FQN → URI lookup (covers non-PSR-4 classes)
+///   0. **Class index** — direct FQN → URI lookup (covers non-PSR-4 classes
+///      and Composer classmap entries)
 ///   1. **ast_map scan** — search all already-parsed files by short name,
 ///      with namespace verification when a qualified name is requested
-///      1.5. **Composer classmap** — `vendor/composer/autoload_classmap.php`
-///      direct FQN → file lookup (covers optimised autoloaders)
 ///   2. **PSR-4 resolution** — convert namespace to file path and parse
 ///   3. **Embedded stubs** — built-in PHP classes/interfaces bundled in
 ///      the binary (e.g. `UnitEnum`, `BackedEnum`, `Iterator`)
@@ -118,7 +117,7 @@ impl Backend {
         // classes that don't follow PSR-4 conventions and aren't in the
         // Composer classmap — e.g. global-namespace classes like `Mockery`
         // that are loaded via Composer's `files` autoloading.
-        let class_index_uri = self.class_index.read().get(class_name).cloned();
+        let class_index_uri = self.fqn_uri_index.read().get(class_name).cloned();
         if let Some(file_uri) = class_index_uri
             && let Some(file_path) = Url::parse(&file_uri)
                 .ok()
@@ -129,23 +128,10 @@ impl Backend {
             return Some(Arc::clone(cls));
         }
 
-        // ── Phase 1.5: Try Composer classmap ──
-        // The classmap (from `vendor/composer/autoload_classmap.php`) maps
-        // FQNs directly to file paths.  This is more targeted than PSR-4
-        // (a single hash lookup) and covers classes that don't follow PSR-4
-        // conventions.  When the user runs `composer install -o`, *all*
-        // classes end up in the classmap, giving complete coverage.
-        if let Some(file_path) = self.classmap.read().get(class_name).cloned()
-            && let Some(classes) = self.parse_and_cache_file(&file_path)
-            && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
-        {
-            return Some(Arc::clone(cls));
-        }
-
         // ── Phase 2: Try PSR-4 resolution ──
         // PSR-4 mappings come exclusively from composer.json (user code).
-        // Vendor code is covered by the classmap (Phase 1.5).  If a
-        // vendor class is missing from the classmap, it fails visibly
+        // Vendor code is covered by the class index (Phase 1).  If a
+        // vendor class is missing from the class index, it fails visibly
         // rather than being silently resolved, making stale classmaps
         // obvious (fix: run `composer dump-autoload`).
         if let Some(workspace_root) = self.workspace_root.read().clone() {
@@ -221,7 +207,7 @@ impl Backend {
     /// `stub_index`.  When found there, it parses and caches the stub
     /// under a `phpantom-stub://` URI so subsequent lookups are free.
     ///
-    /// **No disk I/O is performed.**  Classes that live on disk (classmap,
+    /// **No disk I/O is performed.**  Classes that live on disk (class index,
     /// PSR-4, vendor) are not resolved — callers that need those should
     /// use [`find_or_load_class`] instead.
     pub(crate) fn load_stub_class(&self, class_name: &str) -> Option<Arc<ClassInfo>> {
@@ -314,13 +300,13 @@ impl Backend {
         for _ in 0..200 {
             // Check if parsing is complete (URI removed from inflight set).
             if !self.parse_inflight.lock().contains(uri) {
-                return self.ast_map.read().get(uri).cloned();
+                return self.uri_classes_index.read().get(uri).cloned();
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         // Timeout: the other thread is still parsing.  Return whatever is
         // in ast_map (may be stale or None).
-        self.ast_map.read().get(uri).cloned()
+        self.uri_classes_index.read().get(uri).cloned()
     }
 
     /// Parse PHP source text, cache the results in
@@ -410,7 +396,7 @@ impl Backend {
         }
 
         // Set the per-class file_namespace so that classes loaded via
-        // PSR-4 / classmap carry their namespace.  This mirrors the
+        // PSR-4 / class index carry their namespace.  This mirrors the
         // same assignment done in `update_ast_inner` for files opened
         // through `did_open` / `did_change`.
         for (i, cls) in classes.iter_mut().enumerate() {
@@ -447,7 +433,7 @@ impl Backend {
         // Store in ast_map for wait_for_cached_result (concurrent
         // parse deduplication) and for consumers that iterate classes
         // by URI.  The memory cost is negligible (just Arc pointers).
-        self.ast_map
+        self.uri_classes_index
             .write()
             .insert(uri.to_owned(), arc_classes.clone());
         // NOTE: use_map and namespace_map are intentionally NOT stored
@@ -463,8 +449,8 @@ impl Backend {
         // by didClose.  The class_index cost is negligible (one string
         // pair per class).
         {
-            let mut fqn_idx = self.fqn_index.write();
-            let mut class_idx = self.class_index.write();
+            let mut fqn_idx = self.fqn_class_index.write();
+            let mut class_idx = self.fqn_uri_index.write();
             for cls in &arc_classes {
                 if cls.name.starts_with("__anonymous@") {
                     continue;
@@ -514,7 +500,7 @@ impl Backend {
         // Dependents (e.g. a child class resolved before this parent
         // was available) *could* hold stale entries, but the transitive
         // evict_fqn scan is O(cache_size) per class and is called for
-        // every vendor class loaded from classmap / PSR-4 / stubs.
+        // every vendor class loaded from class index / PSR-4 / stubs.
         // With thousands of classes this becomes O(N²) and dominates
         // total analysis time.
         //
@@ -683,7 +669,9 @@ impl Backend {
                     let class_uri = format!("phpantom-stub-fn://{}", name);
                     let arc_classes: Vec<Arc<ClassInfo>> =
                         classes.into_iter().map(Arc::new).collect();
-                    self.ast_map.write().insert(class_uri, arc_classes);
+                    self.uri_classes_index
+                        .write()
+                        .insert(class_uri, arc_classes);
                 }
 
                 if result.is_some() {

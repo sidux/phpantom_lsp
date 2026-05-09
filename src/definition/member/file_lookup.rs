@@ -65,8 +65,8 @@ impl Backend {
 
         // Search the ast_map for the file containing this class.
         let uri = {
-            let map = self.ast_map.read();
-            let nmap = self.namespace_map.read();
+            let map = self.uri_classes_index.read();
+            let nmap = self.file_namespaces.read();
 
             // Check whether a class with the right short name and
             // namespace lives in this file.  Uses the per-class
@@ -116,7 +116,7 @@ impl Backend {
             // Fallback: the target file may have been closed (didClose
             // clears ast_map) or was never opened.  Check class_index
             // which survives close.
-            self.class_index.read().get(class_name).cloned()
+            self.fqn_uri_index.read().get(class_name).cloned()
         })
         .or_else(|| {
             // Last resort: resolve the class via PSR-4 mappings to get
@@ -127,7 +127,8 @@ impl Backend {
             // populate class_index).
             let workspace_root = self.workspace_root.read().clone()?;
             let mappings = self.psr4_mappings.read();
-            let file_path = crate::composer::resolve_class_path(&mappings, &workspace_root, class_name)?;
+            let file_path =
+                crate::composer::resolve_class_path(&mappings, &workspace_root, class_name)?;
             Some(crate::util::path_to_uri(&file_path))
         })?;
 

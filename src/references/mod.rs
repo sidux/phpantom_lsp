@@ -502,8 +502,12 @@ impl Backend {
         };
 
         // Determine the class body the cursor is in.
-        let ctx_classes: Vec<Arc<ClassInfo>> =
-            self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let ctx_classes: Vec<Arc<ClassInfo>> = self
+            .uri_classes_index
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
         let current_class = crate::util::find_class_at_offset(&ctx_classes, cursor_offset);
         let (class_start, class_end) = match current_class {
             Some(cc) => (cc.start_offset, cc.end_offset),
@@ -615,7 +619,7 @@ impl Backend {
                             // Fallback for offsets not tracked by mago-names
                             // (e.g. docblock-sourced ClassReference spans).
                             let use_map = file_use_map.get_or_init(|| {
-                                self.use_map
+                                self.file_imports
                                     .read()
                                     .get(file_uri)
                                     .cloned()
@@ -879,7 +883,7 @@ impl Backend {
                         fqn.to_string()
                     } else {
                         let use_map = file_use_map.get_or_init(|| {
-                            self.use_map
+                            self.file_imports
                                 .read()
                                 .get(file_uri)
                                 .cloned()
@@ -986,8 +990,12 @@ impl Backend {
         namespace: &Option<String>,
         offset: u32,
     ) -> Option<String> {
-        let classes: Vec<Arc<ClassInfo>> =
-            self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let classes: Vec<Arc<ClassInfo>> = self
+            .uri_classes_index
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
 
         let current_class = crate::util::find_class_at_offset(&classes, offset)?;
 
@@ -1031,8 +1039,12 @@ impl Backend {
         uri: &str,
         offset: u32,
     ) -> Option<HashSet<String>> {
-        let classes: Vec<Arc<ClassInfo>> =
-            self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let classes: Vec<Arc<ClassInfo>> = self
+            .uri_classes_index
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
         let current_class = find_class_at_offset(&classes, offset)?;
         let fqn = current_class.fqn().to_string();
         Some(self.collect_hierarchy_for_fqns(&[fqn]))
@@ -1114,7 +1126,7 @@ impl Backend {
             // Scan all known classes for ones that extend/implement/use
             // anything in the current hierarchy.
             let all_classes: Vec<ClassInfo> = {
-                let map = self.ast_map.read();
+                let map = self.uri_classes_index.read();
                 map.values()
                     .flat_map(|classes| classes.iter().map(|c| ClassInfo::clone(c)))
                     .collect()
@@ -1134,7 +1146,7 @@ impl Backend {
 
             // Also check class_index entries not yet in ast_map.
             let index_entries: Vec<String> = {
-                let idx = self.class_index.read();
+                let idx = self.fqn_uri_index.read();
                 idx.keys().cloned().collect()
             };
 
@@ -1317,7 +1329,7 @@ impl Backend {
         // and calls `update_ast` which acquires write locks briefly to
         // store the results.  The expensive parsing step runs without
         // any locks held.
-        let index_uris: Vec<String> = self.class_index.read().values().cloned().collect();
+        let index_uris: Vec<String> = self.fqn_uri_index.read().values().cloned().collect();
 
         let phase1_uris: Vec<&String> = index_uris
             .iter()

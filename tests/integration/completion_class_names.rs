@@ -564,12 +564,14 @@ async fn test_class_name_completion_from_classmap() {
 
     let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), vec![]);
 
-    // Populate classmap
+    // Populate class index from classmap
     let classmap = parse_autoload_classmap(dir.path(), "vendor");
     assert_eq!(classmap.len(), 3);
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     let uri = Url::parse("file:///app.php").unwrap();
@@ -626,7 +628,7 @@ async fn test_class_name_completion_from_class_index() {
 
     // Manually populate the class_index with a discovered class
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "App\\Models\\User".to_string(),
             "file:///app/Models/User.php".to_string(),
@@ -693,16 +695,18 @@ async fn test_class_name_completion_deduplicates_by_fqn() {
 
     let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), vec![]);
 
-    // Add to classmap
+    // Add to class index
     let classmap = parse_autoload_classmap(dir.path(), "vendor");
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     // Also add to class_index (same FQN)
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Acme\\Duplicated".to_string(),
             "file:///acme/src/Duplicated.php".to_string(),
@@ -892,16 +896,18 @@ async fn test_class_name_completion_combines_all_sources() {
     let backend = Backend::new_test_with_stubs(stubs);
     *backend.workspace_root().write() = Some(dir.path().to_path_buf());
 
-    // Populate classmap
+    // Populate class index from classmap
     let classmap = parse_autoload_classmap(dir.path(), "vendor");
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     // Add a class_index entry
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "App\\IndexedClass".to_string(),
             "file:///app/IndexedClass.php".to_string(),
@@ -977,8 +983,10 @@ async fn test_class_name_completion_insert_text_is_short_name() {
     let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), vec![]);
     let classmap = parse_autoload_classmap(dir.path(), "vendor");
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     let uri = Url::parse("file:///test.php").unwrap();
@@ -1035,8 +1043,10 @@ async fn test_auto_import_classmap_class_adds_use_statement() {
     let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), vec![]);
     let classmap = parse_autoload_classmap(dir.path(), "vendor");
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     let uri = Url::parse("file:///app.php").unwrap();
@@ -1081,7 +1091,7 @@ async fn test_auto_import_class_index_adds_use_statement() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "App\\Services\\PaymentService".to_string(),
             "file:///app/Services/PaymentService.php".to_string(),
@@ -1172,8 +1182,10 @@ async fn test_no_auto_import_for_already_imported_class() {
     let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), vec![]);
     let classmap = parse_autoload_classmap(dir.path(), "vendor");
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     let uri = Url::parse("file:///app.php").unwrap();
@@ -1203,7 +1215,7 @@ async fn test_auto_import_inserts_after_php_open_tag() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Vendor\\Lib\\Widget".to_string(),
             "file:///vendor/lib/Widget.php".to_string(),
@@ -1243,7 +1255,7 @@ async fn test_auto_import_not_confused_by_trait_use_in_class_body() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Cassandra\\DefaultCluster".to_string(),
             "file:///vendor/cassandra/DefaultCluster.php".to_string(),
@@ -1640,8 +1652,10 @@ async fn test_new_context_demotes_likely_non_instantiable_classmap() {
 
     let classmap = parse_autoload_classmap(dir.path(), "vendor");
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     let uri = Url::parse("file:///test_new_demote.php").unwrap();
@@ -1861,7 +1875,7 @@ async fn test_new_context_excludes_class_index_abstract() {
 
     // Also put it in the class_index.
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert("App\\AbstractRepo".to_string(), abs_uri.to_string());
     }
 
@@ -2775,7 +2789,7 @@ async fn test_namespace_declaration_excludes_non_psr4_namespaces() {
 
     // Also inject a class_index entry for a non-PSR-4 namespace.
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "MySql\\Enums\\IntTypes".to_string(),
             "file:///somewhere.php".to_string(),
@@ -2842,7 +2856,7 @@ async fn test_namespace_declaration_psr4_and_cached_only() {
 
     // Also inject a class_index entry for a class outside PSR-4.
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "MySql\\Enums\\IntTypes".to_string(),
             "file:///ext.php".to_string(),
@@ -2989,7 +3003,7 @@ async fn test_fqn_shortened_via_use_map_prefix() {
 
     // Put the class in class_index so it appears in completions.
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Cassandra\\Exception\\AlreadyExistsException".to_string(),
             "file:///vendor/cassandra.php".to_string(),
@@ -3049,7 +3063,7 @@ async fn test_fqn_shortened_via_use_map_exact_match_leading_backslash() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Cassandra\\Exception\\AlreadyExistsException".to_string(),
             "file:///vendor/cassandra.php".to_string(),
@@ -3101,7 +3115,7 @@ async fn test_use_import_context_does_not_shorten() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Cassandra\\Exception\\AlreadyExistsException".to_string(),
             "file:///vendor/cassandra.php".to_string(),
@@ -3140,7 +3154,7 @@ async fn test_namespace_alias_import_not_shown_as_class() {
 
     // Register classes UNDER the namespace so the LSP knows it's a namespace.
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Luxplus\\Core\\Enums\\Status".to_string(),
             "file:///vendor/luxplus/enums/Status.php".to_string(),
@@ -3177,7 +3191,7 @@ async fn test_classes_under_namespace_alias_still_available() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Luxplus\\Core\\Enums\\Status".to_string(),
             "file:///vendor/luxplus/enums/Status.php".to_string(),
@@ -3238,7 +3252,7 @@ async fn test_conflicting_use_import_class_index_falls_back_to_fqn() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "App\\Exception".to_string(),
             "file:///app/Exception.php".to_string(),
@@ -3303,8 +3317,10 @@ async fn test_conflicting_use_import_classmap_falls_back_to_fqn() {
     let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), vec![]);
     let classmap = parse_autoload_classmap(dir.path(), "vendor");
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     let uri = Url::parse("file:///controller.php").unwrap();
@@ -3390,7 +3406,7 @@ async fn test_no_conflict_auto_import_still_works() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "App\\Services\\PaymentService".to_string(),
             "file:///app/Services/PaymentService.php".to_string(),
@@ -3428,7 +3444,7 @@ async fn test_conflicting_use_import_with_new_keyword_inserts_fqn_snippet() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "App\\Exception".to_string(),
             "file:///app/Exception.php".to_string(),
@@ -3473,7 +3489,7 @@ async fn test_same_fqn_already_imported_is_not_a_conflict() {
 
     // Put the class in class_index with a FQN that matches the import.
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Cassandra\\Exception".to_string(),
             "file:///vendor/cassandra/Exception.php".to_string(),
@@ -3512,7 +3528,7 @@ async fn test_multiple_conflicting_classes_all_use_fqn() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "App\\Exception".to_string(),
             "file:///app/Exception.php".to_string(),
@@ -4691,8 +4707,10 @@ async fn test_class_name_completion_classmap_label_is_short_name() {
     let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), vec![]);
     let classmap = parse_autoload_classmap(dir.path(), "vendor");
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     let uri = Url::parse("file:///test_cm_ld.php").unwrap();
@@ -4721,7 +4739,7 @@ async fn test_class_name_completion_class_index_label_is_short_name() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Acme\\Billing\\Receipt".to_string(),
             "file:///acme/Billing/Receipt.php".to_string(),
@@ -4757,7 +4775,7 @@ async fn test_namespace_alias_prefix_matches_classes_underneath() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "OpenApi\\Attributes\\Response".to_string(),
             "file:///vendor/openapi/Response.php".to_string(),
@@ -4809,7 +4827,7 @@ async fn test_namespace_alias_prefix_insert_text_uses_alias() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "OpenApi\\Attributes\\Response".to_string(),
             "file:///vendor/openapi/Response.php".to_string(),
@@ -4844,7 +4862,7 @@ async fn test_namespace_alias_prefix_shows_segments() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "OpenApi\\Attributes\\Callbacks\\Callback".to_string(),
             "file:///vendor/openapi/Callbacks/Callback.php".to_string(),
@@ -4876,7 +4894,7 @@ async fn test_namespace_alias_prefix_bare_backslash_lists_all() {
     let backend = create_test_backend_with_stubs();
 
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "OpenApi\\Attributes\\Response".to_string(),
             "file:///vendor/openapi/Response.php".to_string(),

@@ -738,10 +738,13 @@ async fn test_goto_definition_vendor_cross_file() {
     let (mappings, _vendor_dir) = phpantom_lsp::composer::parse_composer_json(dir.path());
     let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), mappings);
 
-    // Populate classmap with the vendor class.
+    // Populate class index with the vendor class.
     {
-        let mut cm = backend.classmap().write();
-        cm.insert("Monolog\\Logger".to_string(), vendor_file.clone());
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
+            "Monolog\\Logger".to_string(),
+            Url::from_file_path(&vendor_file).unwrap().to_string(),
+        );
     }
 
     let uri = Url::parse("file:///app.php").unwrap();

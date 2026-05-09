@@ -251,7 +251,7 @@ pub async fn run(options: AnalyseOptions) -> i32 {
     // read lock, then drop the lock before resolving.  Resolution may
     // call find_or_load_class which takes write locks on ast_map.
     let sorted_fqns = {
-        let ast_map = backend.ast_map.read();
+        let ast_map = backend.uri_classes_index.read();
         crate::toposort::toposort_from_ast_map(&ast_map)
     };
     // Run eager population on a large-stack thread.  `resolve_class_fully_inner`

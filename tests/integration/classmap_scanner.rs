@@ -412,8 +412,10 @@ async fn self_scan_classmap_populates_backend_classmap() {
 
     // Inject the self-scanned classmap into the backend
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     let test_file = r#"<?php

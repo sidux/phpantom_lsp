@@ -301,7 +301,7 @@ function getHelperResult(): HelperResult {
 
     // The class defined in the same file should now be discoverable
     // via the class index (populated by update_ast).
-    let ci = backend.class_index().read();
+    let ci = backend.fqn_uri_index().read();
     let has_class = ci.keys().any(|k| k.contains("HelperResult"));
     assert!(
         has_class,

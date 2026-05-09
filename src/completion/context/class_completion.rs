@@ -6,7 +6,7 @@
 ///
 /// Also provides a Throwable-filtered variant for catch clause fallback
 /// and `throw new` completion, which only suggests exception classes
-/// from already-parsed sources and includes everything else (classmap,
+/// from already-parsed sources and includes everything else (class index,
 /// stubs) unfiltered.
 ///
 /// Constant, function, and namespace completions live in their own
@@ -530,7 +530,7 @@ fn likely_non_interface_name(name: &str) -> bool {
 /// Heuristic: names that look like they cannot be instantiated.
 ///
 /// Combines interface-like names, abstract-like names, and trait-like
-/// names. Used to demote (but not exclude) classmap/stub items in
+/// names. Used to demote (but not exclude) class index/stub items in
 /// `new` context.
 fn likely_non_instantiable(name: &str) -> bool {
     if likely_interface_name(name) {
@@ -1437,7 +1437,7 @@ impl Backend {
     ///   1. File's `use` imports (already imported)
     ///   2. Same-namespace classes (from `ast_map`)
     ///   3. `class_index` (discovered / interacted-with classes)
-    ///   4. Composer classmap (all autoloaded classes)
+    ///   4. Class index (all autoloaded classes)
     ///   5. Built-in PHP stubs
     ///
     /// Returns `(items, is_incomplete)`.
@@ -1611,7 +1611,7 @@ impl Backend {
         // a `use` statement (PHP auto-resolves them), so offering them
         // in `use |` completion is not useful.
         if !is_use_import && let Some(ns) = file_namespace {
-            let nmap = self.namespace_map.read();
+            let nmap = self.file_namespaces.read();
             // Find all URIs that share the same namespace
             let same_ns_uris: Vec<String> = nmap
                 .iter()
@@ -1625,7 +1625,7 @@ impl Backend {
             drop(nmap);
 
             {
-                let amap = self.ast_map.read();
+                let amap = self.uri_classes_index.read();
                 for uri in &same_ns_uris {
                     if let Some(classes) = amap.get(uri) {
                         for cls in classes {
@@ -1693,7 +1693,7 @@ impl Backend {
 
         // ── 3. class_index (discovered / interacted-with classes) ───
         {
-            let idx = self.class_index.read();
+            let idx = self.fqn_uri_index.read();
             for fqn in idx.keys() {
                 let sn = short_name(fqn);
                 if !matches_class_prefix(
@@ -1752,9 +1752,9 @@ impl Backend {
             }
         }
 
-        // ── 4. Composer classmap (all autoloaded classes) ───────────
+        // ── 4. Class index (all autoloaded classes) ─────────────────
         {
-            let cmap = self.classmap.read();
+            let cmap = self.fqn_uri_index.read();
             for fqn in cmap.keys() {
                 let sn = short_name(fqn);
                 if !matches_class_prefix(
@@ -2005,12 +2005,10 @@ impl Backend {
         if self.find_class_in_ast_map(fqn).is_some() {
             return false;
         }
-        if self.class_index.read().contains_key(fqn) {
+        if self.fqn_uri_index.read().contains_key(fqn) {
             return false;
         }
-        if self.classmap.read().contains_key(fqn) {
-            return false;
-        }
+
         if self.stub_index.read().contains_key(fqn) {
             return false;
         }
@@ -2019,7 +2017,7 @@ impl Backend {
 
         // 1. Some open file declares this FQN as its namespace.
         {
-            let nmap = self.namespace_map.read();
+            let nmap = self.file_namespaces.read();
             for spans in nmap.values() {
                 for span in spans {
                     if span.namespace.as_deref() == Some(fqn) {
@@ -2032,16 +2030,14 @@ impl Backend {
         // 2. Known classes exist under this FQN as a namespace prefix.
         let prefix = format!("{}\\", fqn);
         if self
-            .class_index
+            .fqn_uri_index
             .read()
             .keys()
             .any(|k| k.starts_with(&prefix))
         {
             return true;
         }
-        if self.classmap.read().keys().any(|k| k.starts_with(&prefix)) {
-            return true;
-        }
+
         if self
             .stub_index
             .read()
@@ -2077,7 +2073,7 @@ impl Backend {
     }
 
     /// Check whether `class_name` exists in any class source (ast_map,
-    /// class_index, classmap, or stub_index).
+    /// class_index, or stub_index).
     ///
     /// Used to reject use-map entries in narrow contexts (e.g.
     /// `TraitUse`, `Implements`) where showing an unverifiable FQN is
@@ -2089,12 +2085,10 @@ impl Backend {
         if self.stub_index.read().contains_key(class_name) {
             return true;
         }
-        if self.class_index.read().contains_key(class_name) {
+        if self.fqn_uri_index.read().contains_key(class_name) {
             return true;
         }
-        if self.classmap.read().contains_key(class_name) {
-            return true;
-        }
+
         false
     }
 }

@@ -896,12 +896,14 @@ async fn test_cross_file_classmap_resolution() {
     // Build a Backend with NO PSR-4 mappings — only the classmap
     let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), vec![]);
 
-    // Populate the classmap from the autoload_classmap.php file
+    // Populate the class index from the autoload_classmap.php file
     let classmap = parse_autoload_classmap(dir.path(), "vendor");
     assert_eq!(classmap.len(), 1, "Should parse 1 classmap entry");
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     // Open a file that uses Legacy\Widget via ->
@@ -1012,8 +1014,10 @@ async fn test_cross_file_classmap_double_colon() {
     let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), vec![]);
     let classmap = parse_autoload_classmap(dir.path(), "vendor");
     {
-        let mut cm = backend.classmap().write();
-        *cm = classmap;
+        let mut idx = backend.fqn_uri_index().write();
+        for (fqn, path) in &classmap {
+            idx.insert(fqn.clone(), Url::from_file_path(path).unwrap().to_string());
+        }
     }
 
     let uri = Url::parse("file:///app.php").unwrap();

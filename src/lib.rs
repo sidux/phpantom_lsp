@@ -26,7 +26,7 @@
 //!   merge logic for members synthesized from `@method`/`@property` tags,
 //!   `@mixin` classes, and framework-specific patterns (e.g. Laravel)
 //! - `resolution` — Class and function lookup / name resolution (multi-phase:
-//!   class_index → ast_map → classmap → PSR-4 → stubs)
+//!   class_index → PSR-4 → stubs)
 //! - `subject_extraction` — Shared helpers for extracting the left-hand side of
 //!   `->`, `?->`, and `::` access operators (used by both completion and definition)
 //! - `highlight` — Document highlighting (`textDocument/documentHighlight`).
@@ -195,7 +195,7 @@ pub struct Backend {
     pub(crate) client_name: Mutex<String>,
     pub(crate) open_files: Arc<RwLock<HashMap<String, Arc<String>>>>,
     /// Maps a file URI to a list of ClassInfo extracted from that file.
-    pub(crate) ast_map: Arc<RwLock<HashMap<String, Vec<Arc<ClassInfo>>>>>,
+    pub(crate) uri_classes_index: Arc<RwLock<HashMap<String, Vec<Arc<ClassInfo>>>>>,
     /// Per-file precomputed symbol location maps for O(log n) lookup.
     ///
     /// Built during `update_ast` by walking the AST and recording every
@@ -218,7 +218,7 @@ pub struct Backend {
     pub(crate) psr4_mappings: Arc<RwLock<Vec<composer::Psr4Mapping>>>,
     /// Maps a file URI to its `use` statement mappings (short name → fully qualified name).
     /// For example, `use Klarna\Rest\Resource;` produces `"Resource" → "Klarna\Rest\Resource"`.
-    pub(crate) use_map: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
+    pub(crate) file_imports: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
     /// Per-file name resolution data produced by `mago-names`.
     ///
     /// Maps a file URI to an [`OwnedResolvedNames`](names::OwnedResolvedNames)
@@ -234,7 +234,7 @@ pub struct Backend {
     /// the namespace blocks in the file.  Single-namespace files have exactly
     /// one entry; multi-namespace files (using `namespace Foo { }` blocks)
     /// have one entry per block.
-    pub(crate) namespace_map: Arc<RwLock<HashMap<String, Vec<NamespaceSpan>>>>,
+    pub(crate) file_namespaces: Arc<RwLock<HashMap<String, Vec<NamespaceSpan>>>>,
     /// Global function definitions indexed by function name (short name).
     ///
     /// The value is `(file_uri, FunctionInfo)` so we can jump to the definition.
@@ -294,14 +294,16 @@ pub struct Backend {
     /// `"Laravel\\Foundation\\Application"`) and the value is the file URI
     /// where the class is defined.
     ///
-    /// Populated from three sources:
+    /// Populated from four sources:
     /// - `update_ast` (using the file's namespace + class short name)
     ///   whenever a file is opened or changed.
     /// - The `find_symbols` byte-level scan of Composer autoload files
     ///   during server initialization (so classes in autoload files are
     ///   discoverable by `find_or_load_class` without an eager AST parse).
     /// - The workspace full-scan for non-Composer projects.
-    pub(crate) class_index: Arc<RwLock<HashMap<String, String>>>,
+    /// - Entries from Composer's `autoload_classmap.php` (merged during
+    ///   server initialization).
+    pub(crate) fqn_uri_index: Arc<RwLock<HashMap<String, String>>>,
     /// Secondary index mapping fully-qualified class names directly to
     /// their parsed `ClassInfo`.
     ///
@@ -309,7 +311,7 @@ pub struct Backend {
     /// O(1) hash lookup instead of scanning all files in `ast_map`.
     /// Maintained alongside `class_index` in `update_ast_inner` and
     /// `parse_and_cache_content_versioned`.
-    pub(crate) fqn_index: Arc<RwLock<HashMap<String, Arc<ClassInfo>>>>,
+    pub(crate) fqn_class_index: Arc<RwLock<HashMap<String, Arc<ClassInfo>>>>,
     /// Negative-result cache for [`find_or_load_class`].
     ///
     /// Stores fully-qualified class names that have been looked up and
@@ -323,17 +325,6 @@ pub struct Backend {
     /// that a class which becomes available after lazy loading is not
     /// permanently suppressed.
     pub(crate) class_not_found_cache: Arc<RwLock<HashSet<String>>>,
-    /// Composer classmap: fully-qualified class name → file path on disk.
-    ///
-    /// Parsed from `<vendor>/composer/autoload_classmap.php` during server
-    /// initialization.  This provides a direct FQN-to-file lookup that
-    /// covers classes not discoverable via PSR-4 — and when the user runs
-    /// `composer install -o`, Composer converts *all* PSR-0/PSR-4
-    /// mappings into a classmap, giving complete class coverage.
-    ///
-    /// Consulted by `find_or_load_class` as a resolution step between
-    /// the ast_map scan (Phase 1) and PSR-4 resolution (Phase 2).
-    pub(crate) classmap: Arc<RwLock<HashMap<String, PathBuf>>>,
     /// Parsed phar archives keyed by the phar file's absolute path.
     ///
     /// Populated during Composer autoload scanning when a bootstrap file
@@ -642,7 +633,7 @@ impl Backend {
             version: env!("PHPANTOM_GIT_VERSION").to_string(),
             client_name: Mutex::new(String::new()),
             open_files: Arc::new(RwLock::new(HashMap::new())),
-            ast_map: Arc::new(RwLock::new(HashMap::new())),
+            uri_classes_index: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             client: None,
@@ -650,18 +641,17 @@ impl Backend {
             vendor_uri_prefixes: Mutex::new(Vec::new()),
             vendor_dir_paths: Mutex::new(Vec::new()),
             psr4_mappings: Arc::new(RwLock::new(Vec::new())),
-            use_map: Arc::new(RwLock::new(HashMap::new())),
+            file_imports: Arc::new(RwLock::new(HashMap::new())),
             resolved_names: Arc::new(RwLock::new(HashMap::new())),
-            namespace_map: Arc::new(RwLock::new(HashMap::new())),
+            file_namespaces: Arc::new(RwLock::new(HashMap::new())),
             global_functions: Arc::new(RwLock::new(HashMap::new())),
             global_defines: Arc::new(RwLock::new(HashMap::new())),
             autoload_function_index: Arc::new(RwLock::new(HashMap::new())),
             autoload_constant_index: Arc::new(RwLock::new(HashMap::new())),
             autoload_file_paths: Arc::new(RwLock::new(Vec::new())),
-            class_index: Arc::new(RwLock::new(HashMap::new())),
-            fqn_index: Arc::new(RwLock::new(HashMap::new())),
+            fqn_uri_index: Arc::new(RwLock::new(HashMap::new())),
+            fqn_class_index: Arc::new(RwLock::new(HashMap::new())),
             class_not_found_cache: Arc::new(RwLock::new(HashSet::new())),
-            classmap: Arc::new(RwLock::new(HashMap::new())),
             phar_archives: Arc::new(RwLock::new(HashMap::new())),
             parsed_uris: Arc::new(RwLock::new(HashSet::new())),
             parse_inflight: Arc::new(Mutex::new(HashSet::new())),
@@ -720,7 +710,7 @@ impl Backend {
             version: env!("PHPANTOM_GIT_VERSION").to_string(),
             client_name: Mutex::new(String::new()),
             open_files: Arc::new(RwLock::new(HashMap::new())),
-            ast_map: Arc::new(RwLock::new(HashMap::new())),
+            uri_classes_index: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             client: None,
@@ -728,18 +718,17 @@ impl Backend {
             vendor_uri_prefixes: Mutex::new(Vec::new()),
             vendor_dir_paths: Mutex::new(Vec::new()),
             psr4_mappings: Arc::new(RwLock::new(Vec::new())),
-            use_map: Arc::new(RwLock::new(HashMap::new())),
+            file_imports: Arc::new(RwLock::new(HashMap::new())),
             resolved_names: Arc::new(RwLock::new(HashMap::new())),
-            namespace_map: Arc::new(RwLock::new(HashMap::new())),
+            file_namespaces: Arc::new(RwLock::new(HashMap::new())),
             global_functions: Arc::new(RwLock::new(HashMap::new())),
             global_defines: Arc::new(RwLock::new(HashMap::new())),
             autoload_function_index: Arc::new(RwLock::new(HashMap::new())),
             autoload_constant_index: Arc::new(RwLock::new(HashMap::new())),
             autoload_file_paths: Arc::new(RwLock::new(Vec::new())),
-            class_index: Arc::new(RwLock::new(HashMap::new())),
-            fqn_index: Arc::new(RwLock::new(HashMap::new())),
+            fqn_uri_index: Arc::new(RwLock::new(HashMap::new())),
+            fqn_class_index: Arc::new(RwLock::new(HashMap::new())),
             class_not_found_cache: Arc::new(RwLock::new(HashSet::new())),
-            classmap: Arc::new(RwLock::new(HashMap::new())),
             phar_archives: Arc::new(RwLock::new(HashMap::new())),
             parsed_uris: Arc::new(RwLock::new(HashSet::new())),
             parse_inflight: Arc::new(Mutex::new(HashSet::new())),
@@ -899,20 +888,14 @@ impl Backend {
 
     /// Borrow the class index mutex (used by integration tests to
     /// populate discovered class entries).
-    pub fn class_index(&self) -> &Arc<RwLock<HashMap<String, String>>> {
-        &self.class_index
+    pub fn fqn_uri_index(&self) -> &Arc<RwLock<HashMap<String, String>>> {
+        &self.fqn_uri_index
     }
 
     /// Borrow the PSR-4 mappings mutex (used by integration tests to
     /// configure autoload mappings).
     pub fn psr4_mappings(&self) -> &Arc<RwLock<Vec<composer::Psr4Mapping>>> {
         &self.psr4_mappings
-    }
-
-    /// Borrow the classmap mutex (used by integration tests to populate
-    /// Composer classmap entries).
-    pub fn classmap(&self) -> &Arc<RwLock<HashMap<String, PathBuf>>> {
-        &self.classmap
     }
 
     /// Read the stub constant index (used by integration tests to
@@ -1071,7 +1054,7 @@ impl Backend {
             version: self.version.clone(),
             client_name: Mutex::new(self.client_name.lock().clone()),
             open_files: Arc::clone(&self.open_files),
-            ast_map: Arc::clone(&self.ast_map),
+            uri_classes_index: Arc::clone(&self.uri_classes_index),
             symbol_maps: Arc::clone(&self.symbol_maps),
             parse_errors: Arc::clone(&self.parse_errors),
             // RwLock fields are shared by Arc::clone — the diagnostic
@@ -1079,17 +1062,16 @@ impl Backend {
             client: self.client.clone(),
             workspace_root: Arc::clone(&self.workspace_root),
             psr4_mappings: Arc::clone(&self.psr4_mappings),
-            use_map: Arc::clone(&self.use_map),
+            file_imports: Arc::clone(&self.file_imports),
             resolved_names: Arc::clone(&self.resolved_names),
-            namespace_map: Arc::clone(&self.namespace_map),
+            file_namespaces: Arc::clone(&self.file_namespaces),
             global_functions: Arc::clone(&self.global_functions),
             global_defines: Arc::clone(&self.global_defines),
             autoload_function_index: Arc::clone(&self.autoload_function_index),
             autoload_constant_index: Arc::clone(&self.autoload_constant_index),
             autoload_file_paths: Arc::clone(&self.autoload_file_paths),
-            class_index: Arc::clone(&self.class_index),
-            fqn_index: Arc::clone(&self.fqn_index),
-            classmap: Arc::clone(&self.classmap),
+            fqn_uri_index: Arc::clone(&self.fqn_uri_index),
+            fqn_class_index: Arc::clone(&self.fqn_class_index),
             phar_archives: Arc::clone(&self.phar_archives),
             parsed_uris: Arc::clone(&self.parsed_uris),
             parse_inflight: Arc::clone(&self.parse_inflight),

@@ -1438,7 +1438,7 @@ impl Backend {
         // For namespace-qualified names the FQN is the normalized name
         // itself.  For bare names (no backslash) the FQN equals the
         // short name, which is also stored in the index.
-        if let Some(cls) = self.fqn_index.read().get(class_name) {
+        if let Some(cls) = self.fqn_class_index.read().get(class_name) {
             return Some(Arc::clone(cls));
         }
 
@@ -1453,7 +1453,7 @@ impl Backend {
             None
         };
 
-        let map = self.ast_map.read();
+        let map = self.uri_classes_index.read();
 
         for (_uri, classes) in map.iter() {
             // Iterate ALL classes with the matching short name, not just
@@ -1551,7 +1551,7 @@ impl Backend {
 
     /// Public helper for tests: get the ast_map for a given URI.
     pub fn get_classes_for_uri(&self, uri: &str) -> Option<Vec<ClassInfo>> {
-        self.ast_map
+        self.uri_classes_index
             .read()
             .get(uri)
             .map(|classes| classes.iter().map(|c| ClassInfo::clone(c)).collect())
@@ -1566,7 +1566,12 @@ impl Backend {
     /// blocks acquiring `ast_map`, `use_map`, and `namespace_map` locks
     /// and extracting the entry for a given URI.
     pub(crate) fn file_context(&self, uri: &str) -> FileContext {
-        let classes = self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let classes = self
+            .uri_classes_index
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
 
         // The legacy use_map (short name → FQN from `use` statements)
         // remains the canonical import table.  `resolved_names` is a
@@ -1576,10 +1581,15 @@ impl Backend {
         // *referenced* in the code, not all *declared* imports.
         // The unused-imports diagnostic relies on seeing declared-but-
         // unreferenced imports.
-        let use_map = self.use_map.read().get(uri).cloned().unwrap_or_default();
+        let use_map = self
+            .file_imports
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
 
         let namespace = self
-            .namespace_map
+            .file_namespaces
             .read()
             .get(uri)
             .and_then(|spans| spans.first())
@@ -1602,8 +1612,18 @@ impl Backend {
     /// `file_context`.  In multi-namespace files it picks the correct
     /// namespace block for the cursor position.
     pub(crate) fn file_context_at(&self, uri: &str, byte_offset: u32) -> FileContext {
-        let classes = self.ast_map.read().get(uri).cloned().unwrap_or_default();
-        let use_map = self.use_map.read().get(uri).cloned().unwrap_or_default();
+        let classes = self
+            .uri_classes_index
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
+        let use_map = self
+            .file_imports
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
         let namespace = self.namespace_at_offset(uri, byte_offset);
         let resolved_names = self.resolved_names.read().get(uri).cloned();
 
@@ -1622,7 +1642,7 @@ impl Backend {
     /// block whose byte range contains `byte_offset`.  Returns `None` when
     /// the offset is in the global namespace or the file has no namespace.
     pub(crate) fn namespace_at_offset(&self, uri: &str, byte_offset: u32) -> Option<String> {
-        let nmap = self.namespace_map.read();
+        let nmap = self.file_namespaces.read();
         let spans = nmap.get(uri)?;
         // Try to find the namespace block containing the offset.
         for span in spans {
@@ -1643,7 +1663,7 @@ impl Backend {
     /// [`namespace_at_offset`](Self::namespace_at_offset) when a cursor
     /// position is available.
     pub(crate) fn first_file_namespace(&self, uri: &str) -> Option<String> {
-        self.namespace_map
+        self.file_namespaces
             .read()
             .get(uri)
             .and_then(|spans| spans.first())
@@ -1661,7 +1681,11 @@ impl Backend {
     /// For consumers that can resolve names by byte offset, prefer
     /// querying `resolved_names` directly via [`file_context`] instead.
     pub(crate) fn file_use_map(&self, uri: &str) -> std::collections::HashMap<String, String> {
-        self.use_map.read().get(uri).cloned().unwrap_or_default()
+        self.file_imports
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Remove a file's entries from `ast_map`, `use_map`, and `namespace_map`.
@@ -1674,11 +1698,11 @@ impl Backend {
         // open.  ast_map is redundant with fqn_index once indexing is
         // complete — GTD falls back to fqn_index + parse_and_cache_file
         // when the ast_map entry is missing.
-        self.ast_map.write().remove(uri);
+        self.uri_classes_index.write().remove(uri);
         self.symbol_maps.write().remove(uri);
-        self.use_map.write().remove(uri);
+        self.file_imports.write().remove(uri);
         self.resolved_names.write().remove(uri);
-        self.namespace_map.write().remove(uri);
+        self.file_namespaces.write().remove(uri);
         // NOTE: We intentionally keep class_index and fqn_index intact.
         // class_index maps FQN → URI so GTD can locate the file, and
         // fqn_index keeps the full ClassInfo for cross-file resolution.

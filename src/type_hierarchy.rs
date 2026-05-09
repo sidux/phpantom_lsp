@@ -43,8 +43,12 @@ impl Backend {
                 ctx.resolve_name_at(name, span.start)
             }
             MapSymbolKind::SelfStaticParent(ssp_kind) => {
-                let classes: Vec<std::sync::Arc<ClassInfo>> =
-                    self.ast_map.read().get(uri).cloned().unwrap_or_default();
+                let classes: Vec<std::sync::Arc<ClassInfo>> = self
+                    .uri_classes_index
+                    .read()
+                    .get(uri)
+                    .cloned()
+                    .unwrap_or_default();
                 let current_class = find_class_at_offset(&classes, offset)?;
 
                 if *ssp_kind == SelfStaticParentKind::Parent {
@@ -167,7 +171,7 @@ impl Backend {
                 // Last resort: try to find the URI from the class_index
                 // and read from disk / open_files.
                 let uri = self
-                    .class_index
+                    .fqn_uri_index
                     .read()
                     .get(fqn)
                     .cloned()

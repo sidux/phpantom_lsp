@@ -504,7 +504,7 @@ async fn test_goto_definition_class_from_autoload_files() {
 
     // Verify the class_index has the FQN
     let has_fqn = backend
-        .class_index()
+        .fqn_uri_index()
         .read()
         .contains_key("SomePackage\\Helper");
     assert!(

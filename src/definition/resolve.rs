@@ -363,11 +363,11 @@ impl Backend {
 
         // Cross-file lookup via class_index + ast_map.
         //
-        // Classes discovered during autoload scanning (classmap, opened
-        // files, previously navigated-to vendor files) live in
+        // Classes discovered during autoload scanning (opened files,
+        // previously navigated-to vendor files) live in
         // class_index (FQN → URI) and ast_map (URI → [ClassInfo]).
         for fqn in &candidates {
-            let target_uri = self.class_index.read().get(fqn.as_str()).cloned();
+            let target_uri = self.fqn_uri_index.read().get(fqn.as_str()).cloned();
             if let Some(ref target_uri) = target_uri
                 && let Some(location) = self.find_definition_in_ast_map_cross_file(fqn, target_uri)
             {
@@ -375,20 +375,9 @@ impl Backend {
             }
         }
 
-        // Cross-file via Composer classmap: direct FQN → file path lookup.
-        // This covers vendor classes that haven't been loaded into ast_map
-        // yet (cold Ctrl+Click on a class never used in completion/hover).
-        for fqn in &candidates {
-            if let Some(file_path) = self.classmap.read().get(fqn.as_str()).cloned()
-                && let Some(location) = self.resolve_class_in_file(&file_path, fqn)
-            {
-                return Some(location);
-            }
-        }
-
         // Cross-file via PSR-4: parse on demand and cache.
         // PSR-4 mappings only cover user code (from composer.json).
-        // Vendor classes are resolved by the classmap above.
+        // Vendor classes are resolved by the class index above.
         let workspace_root = self.workspace_root.read().clone();
 
         if let Some(workspace_root) = workspace_root {
@@ -682,18 +671,19 @@ impl Backend {
     ) -> Option<Location> {
         let sn = short_name(fqn);
 
-        let classes = self.ast_map.read().get(target_uri).cloned().or_else(|| {
-            // The target file may have been closed (didClose clears
-            // ast_map).  Try fqn_index which retains ClassInfo across
-            // close, then fall back to re-parsing from disk (issue #99).
-            if let Some(cls) = self.fqn_index.read().get(fqn) {
-                return Some(vec![Arc::clone(cls)]);
-            }
+        // Look up classes from uri_classes_index first, then fall back
+        // to fqn_class_index and disk.  Each lock is dropped before
+        // calling parse_and_cache_file (which takes write locks).
+        let classes = if let Some(cached) = self.uri_classes_index.read().get(target_uri).cloned() {
+            cached
+        } else if let Some(cls) = self.fqn_class_index.read().get(fqn) {
+            vec![Arc::clone(cls)]
+        } else {
             let file_path = Url::parse(target_uri)
                 .ok()
                 .and_then(|u| u.to_file_path().ok())?;
-            self.parse_and_cache_file(&file_path)
-        })?;
+            self.parse_and_cache_file(&file_path)?
+        };
 
         // Match by short name + namespace, same logic as
         // `find_definition_in_ast_map`.
@@ -726,7 +716,7 @@ impl Backend {
     ) -> Option<Location> {
         let short_name = short_name(fqn);
 
-        let classes = self.ast_map.read().get(uri).cloned()?;
+        let classes = self.uri_classes_index.read().get(uri).cloned()?;
 
         let class_info = classes.iter().find(|c| {
             if c.name != short_name {
@@ -780,8 +770,12 @@ impl Backend {
     ) -> Option<Location> {
         let cursor_offset = position_to_offset(content, position);
 
-        let classes: Vec<std::sync::Arc<ClassInfo>> =
-            self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let classes: Vec<std::sync::Arc<ClassInfo>> = self
+            .uri_classes_index
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
 
         let current_class = find_class_at_offset(&classes, cursor_offset)?;
 
@@ -833,11 +827,14 @@ impl Backend {
             }
         }
 
-        // Try Composer classmap: direct FQN → file path lookup.
+        // Try class index: direct FQN → URI lookup.
         {
             let candidates = [fqn.as_str(), parent_name.as_str()];
             for candidate in &candidates {
-                if let Some(file_path) = self.classmap.read().get(*candidate).cloned()
+                if let Some(file_uri) = self.fqn_uri_index.read().get(*candidate).cloned()
+                    && let Some(file_path) = Url::parse(&file_uri)
+                        .ok()
+                        .and_then(|u| u.to_file_path().ok())
                     && let Some(location) = self.resolve_class_in_file(&file_path, candidate)
                 {
                     return Some(location);
@@ -847,7 +844,7 @@ impl Backend {
 
         // Try PSR-4 resolution as a last resort.
         // PSR-4 mappings only cover user code (from composer.json).
-        // Vendor classes are resolved by the classmap above.
+        // Vendor classes are resolved by the class index above.
         let workspace_root = self.workspace_root.read().clone();
 
         if let Some(workspace_root) = workspace_root {

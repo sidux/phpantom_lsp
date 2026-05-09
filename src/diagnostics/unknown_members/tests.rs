@@ -2864,7 +2864,7 @@ class Svc {
             constant_loader: Some(&constant_loader_cl),
         };
         let local_classes: Vec<std::sync::Arc<crate::types::ClassInfo>> = backend
-            .ast_map
+            .uri_classes_index
             .read()
             .get("file:///test.php")
             .cloned()

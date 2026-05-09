@@ -214,6 +214,98 @@ Each item must include:
 
 ## Outstanding items
 
-No outstanding items.
+### R1. Shadow chain resolver in `helpers.rs` 🔴
+
+`src/completion/source/helpers.rs` L625–780 contains `resolve_lhs_to_class` /
+`resolve_raw_type_from_call_chain`, a full parallel chain resolver that manually
+splits on `->` and `::` via `rfind`, handles `$this->prop`, `new Foo()`,
+`ClassName::method()`, and recursive call chains by string manipulation. This
+duplicates what `SubjectExpr::parse` + `resolve_target_classes_expr` in
+`completion/resolver.rs` already does. Also called from
+`extract_first_class_callable_return_type` (L407–470, same file).
+
+**Action:** Replace with calls through the main `SubjectExpr::parse` +
+`resolve_target_classes_expr` pipeline.
+
+**Files:** `src/completion/source/helpers.rs`
+
+### R2. Mini expression resolver in `call_resolution.rs` 🔴
+
+`src/completion/call_resolution.rs` L2528 has `resolve_expression_to_type`, a
+separate expression-to-`PhpType` resolver for conditional return type argument
+matching. Handles `SubjectExpr::PropertyChain` and `SubjectExpr::Variable`
+through different code paths than the forward walker's `resolve_rhs_expression`.
+Fewer cases, different path, will diverge as features are added.
+
+**Action:** Route through the shared `resolve_rhs_expression` /
+`resolve_expression_type` pipeline.
+
+**Files:** `src/completion/call_resolution.rs`
+
+### R3. Backward `@var` scanner in `docblock/tags.rs` 🟠
+
+`src/docblock/tags.rs` L520–620 (`find_var_raw_type_in_source`) and L1000–1100
+(`find_iterable_raw_type_in_source`) scan source lines backward with
+`lines().rev()`, manually tracking brace depth and sibling scopes via character
+counting. This reimplements scope analysis that the forward walker and
+`scope_collector/` already provide. Called from `call_resolution.rs` (L1251,
+L2793) and `array_shape.rs` (L519), making them load-bearing.
+
+**Action:** Replace with forward walker variable resolution or ensure the
+forward walker captures `@var` annotations so these backward scanners become
+unnecessary.
+
+**Files:** `src/docblock/tags.rs`, `src/completion/call_resolution.rs`,
+`src/completion/array_shape.rs`
+
+### R4. Backward callable scan in `signature_help.rs` 🟠
+
+`src/signature_help.rs` L438–470 (`extract_callable_target_from_variable`) uses
+raw `rfind` backward text scan to find `$fn = someTarget(...)` assignments,
+bypassing the forward walker which already tracks variable assignments.
+
+**Action:** Use the forward walker's assignment tracking instead of raw text
+scanning.
+
+**Files:** `src/signature_help.rs`
+
+### R5. Hover double-resolution 🟠
+
+`src/hover/mod.rs` L984–1030: `hover_variable` calls `resolve_variable_php_type`
+(which internally runs `resolve_variable_types` via the forward walker). If that
+returns `None`, it calls `resolve_variable_types` again directly. Since the first
+function already called the second internally, the second call is dead code.
+
+**Action:** Remove the redundant second call to `resolve_variable_types`.
+
+**Files:** `src/hover/mod.rs`
+
+---
+
+## Intentional overlap (reference, not actionable)
+
+These are parallel systems that exist for valid reasons. Documented here so
+they are factored into future design decisions.
+
+### `uri_classes_index` vs `fqn_class_index` vs `fqn_uri_index`
+
+Three maps storing overlapping class data:
+- `uri_classes_index`: URI → `Vec<Arc<ClassInfo>>` (needed for "all classes in this file")
+- `fqn_class_index`: FQN → `Arc<ClassInfo>` (O(1) FQN lookup)
+- `fqn_uri_index`: FQN → URI string (survives `didClose`, enables re-loading)
+
+Data is shared via `Arc`. Each serves a distinct query pattern.
+
+### PathBuf ↔ URI round-tripping
+
+The classmap scanner produces `PathBuf`, converts to URI strings for
+`fqn_uri_index`, then at lookup time parses back to `PathBuf` for file reading.
+A minor inefficiency, not a parallel system.
+
+### `find_class_in_ast_map` linear scan fallback
+
+`src/util.rs` L1436–1447: After the O(1) `fqn_class_index` lookup fails, falls
+back to linear scan of `uri_classes_index`. Covers race conditions during initial
+indexing. Legitimate safety net.
 
 

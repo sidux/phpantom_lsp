@@ -7,7 +7,7 @@ This document explains how PHPantom resolves PHP symbols — classes, interfaces
 PHPantom is a language server for PHP projects. It provides completion, go-to-definition, go-to-implementation, find references, hover, signature help, and diagnostics. It works by:
 
 1. **Parsing** PHP files into lightweight `ClassInfo` / `FunctionInfo` structures (not a full AST — just the information needed for IDE features).
-2. **Caching** parsed results in an in-memory `ast_map` keyed by file URI.
+2. **Caching** parsed results in an in-memory `uri_classes_index` keyed by file URI.
 3. **Building** a precomputed symbol map (`symbol_maps`) during parsing for O(log n) go-to-definition lookups and call-site detection for signature help.
 4. **Resolving** symbols on demand through a multi-phase lookup chain.
 5. **Merging** inherited members (from parent classes, traits, interfaces, and mixins) at resolution time.
@@ -19,7 +19,7 @@ Most features (completion, go-to-definition, hover, signature help, diagnostics)
 - **Go-to-implementation** scans for concrete classes that implement an interface or extend an abstract class (see `find_implementors`). Walks PSR-4 source directories only.
 - **Find References** scans for all occurrences of a symbol across the project (see `ensure_workspace_indexed`). Walks the entire workspace root.
 
-Both features follow the same principle for vendor code: the Composer classmap is the source of truth. Vendor directories are never walked. User PSR-4 roots from `composer.json` are walked because user files change between `dump-autoload` runs.
+Both features follow the same principle for vendor code: the `fqn_uri_index` (populated from Composer's classmap and the self-scanner) is the source of truth. Vendor directories are never walked. User PSR-4 roots from `composer.json` are walked because user files change between `dump-autoload` runs.
 
 The two walkers differ in scope because GTI only needs class declarations (which live in PSR-4 roots), while Find References needs any usage of a symbol, which could be in a standalone script, config file, or `index.php` at the project root.
 
@@ -29,11 +29,11 @@ PHPantom is built in layers. Each layer is independently useful and independentl
 
 - **Layer 0: Stubs.** Embedded PHP standard library types. Available immediately, no project context needed.
 - **Layer 1: Single file.** Parse the open file, extract classes/functions/symbols. Completion, hover, and go-to-definition work within the file with no cross-file resolution at all.
-- **Layer 2: On-demand resolution.** When a symbol references a class in another file, resolve it through the classmap or PSR-4 and parse that file. Only the files actually needed are touched.
-- **Layer 3: Classmap.** A name-to-path index covering the whole project. Enables class name completion and O(1) cross-file lookup. Built from Composer's output or self-generated via a fast byte-level scan.
-- **Layer 4: Full index (opt-in).** Background-parse every file in the classmap. Enables workspace symbols, fast find-references, and rich completion item detail.
+- **Layer 2: On-demand resolution.** When a symbol references a class in another file, resolve it through the `fqn_uri_index` or PSR-4 and parse that file. Only the files actually needed are touched.
+- **Layer 3: FQN-to-URI index.** A name-to-URI index covering the whole project. Enables class name completion and O(1) cross-file lookup. Built from Composer's classmap or self-generated via a fast byte-level scan.
+- **Layer 4: Full index (opt-in).** Background-parse every file in the fqn_uri_index. Enables workspace symbols, fast find-references, and rich completion item detail.
 
-Each layer builds on the one below it. A bug in classmap generation doesn't break single-file completion. A slow full index doesn't block on-demand resolution. New features can be developed and tested against the lower layers without waiting for a full project scan. This is also why PHPantom starts fast: Layer 0-2 are ready in milliseconds, Layer 3 takes seconds, and Layer 4 (when enabled) fills in over the following minute.
+Each layer builds on the one below it. A bug in the FQN index doesn't break single-file completion. A slow full index doesn't block on-demand resolution. New features can be developed and tested against the lower layers without waiting for a full project scan. This is also why PHPantom starts fast: Layer 0-2 are ready in milliseconds, Layer 3 takes seconds, and Layer 4 (when enabled) fills in over the following minute.
 
 ## Module Layout
 
@@ -259,7 +259,7 @@ The handler (`definition/type_definition.rs`) reuses the same symbol-map lookup 
 
 3. **Type string to class names.** `extract_class_names_from_type_string` splits union types at depth-0 `|` separators, strips `?` (nullable), generic parameters (`<…>`), array shapes (`{…}`), and trailing `[]`. Scalar types (`int`, `string`, `array`, `void`, `mixed`, `bool`, `float`, `null`, `false`, `true`, `never`, `callable`, `iterable`, `resource`, `object`) are excluded since they have no user-navigable declaration.
 
-4. **Class name to location.** Each surviving class name is resolved via `resolve_class_reference` (the same function go-to-definition uses for class references), which tries same-file AST lookup, cross-file `class_index` + `ast_map`, Composer classmap, PSR-4, and template parameter fallback. Duplicate locations are deduplicated.
+4. **Class name to location.** Each surviving class name is resolved via `resolve_class_reference` (the same function go-to-definition uses for class references), which tries same-file AST lookup, cross-file `fqn_uri_index` + `uri_classes_index`, PSR-4, and template parameter fallback. Duplicate locations are deduplicated.
 
 For union types, the handler returns multiple locations (one per non-scalar class in the union), which editors display as a peek list.
 
@@ -342,33 +342,29 @@ When the LSP needs to resolve a class name (e.g. during completion on `Iterator:
 ```
 find_or_load_class("Iterator")
 │
-├── Phase 1: ast_map scan
-│   Searches all already-parsed files by short class name + namespace.
-│   This is where cached results from previous phases are found on
-│   subsequent lookups — a classmap file parsed in Phase 1.5 or a
-│   stub parsed in Phase 3 is cached here and found in Phase 1
-│   next time.
+├── Phase 0: fqn_class_index (O(1) hash hit)
+│   Direct lookup by FQN. This is where cached results from
+│   previous phases are found on subsequent lookups.
 │   ↓ miss
 │
-├── Phase 1.5: Composer classmap (FQN → file path)
-│   Direct hash lookup in the classmap parsed from
-│   vendor/composer/autoload_classmap.php.  More targeted than PSR-4
-│   and covers classes that don't follow PSR-4 conventions.  When the
-│   classmap is complete, all classes (including vendor) are resolved
-│   here without further searching.
+├── Phase 1: fqn_uri_index (FQN → file URI)
+│   Direct hash lookup in the unified FQN-to-URI index, populated
+│   at init time from Composer's classmap, the self-scanner, and
+│   phar archives. Covers all classes (including vendor) that don't
+│   need PSR-4 path computation.
 │   ↓ miss
 │
 ├── Phase 2: PSR-4 resolution
 │   Uses PSR-4 mappings from composer.json to locate the file on disk.
 │   These mappings only cover user code (vendor PSR-4 is not loaded).
 │   Example: "App\Models\User" → workspace/src/Models/User.php
-│   Reads, parses, resolves names, caches in ast_map.
+│   Reads, parses, resolves names, caches in uri_classes_index.
 │   ↓ miss
 │
 ├── Phase 3: Embedded PHP stubs
 │   Looks up the class name in the compiled-in stub index
 │   (from phpstorm-stubs). Parses the stub PHP source, caches
-│   in ast_map under a phpantom-stub:// URI.
+│   in uri_classes_index under a phpantom-stub:// URI.
 │   ↓ miss
 │
 └── None
@@ -376,12 +372,42 @@ find_or_load_class("Iterator")
 
 ### Caching
 
-Every phase that successfully parses a file caches the result in `ast_map`. This means:
+Every phase that successfully parses a file caches the result in `uri_classes_index`, `fqn_class_index`, and `fqn_uri_index`. This means:
 
-- Phase 1.5 (classmap) files are parsed once, then found via Phase 1.
-- Phase 2 (PSR-4) files are parsed once, then found via Phase 1.
-- Phase 3 (stubs) are parsed once, then found via Phase 1.
-- Files opened in the editor are parsed on `didOpen`/`didChange` and always in Phase 1.
+- Phase 1 (fqn_uri_index) files are parsed once, then found via Phase 0.
+- Phase 2 (PSR-4) files are parsed once, then found via Phase 0.
+- Phase 3 (stubs) are parsed once, then found via Phase 0.
+- Files opened in the editor are parsed on `didOpen`/`didChange` and always in Phase 0.
+
+### Index Write Sites
+
+**`update_ast_inner`** (`didOpen`/`didChange`): writes all three class
+maps plus `file_imports`, `file_namespaces`, `resolved_names`,
+`symbol_maps`, `parse_errors`.
+
+**`parse_and_cache_content_versioned`** (lazy loading): writes only
+`uri_classes_index`, `fqn_class_index`, `fqn_uri_index`. Editor-only
+maps (`file_imports`, `file_namespaces`, etc.) are skipped for lazily
+loaded files to reduce memory usage.
+
+**`clear_file_maps`** (`didClose`): removes `uri_classes_index`,
+`symbol_maps`, `file_imports`, `resolved_names`, `file_namespaces`.
+Keeps `fqn_class_index` and `fqn_uri_index` so cross-file resolution
+survives file close.
+
+**Init functions**: populate `fqn_uri_index` from Composer classmap,
+Drupal scans, PSR-0, phar archives, or full workspace scans. All
+paths are converted to URI strings at init time.
+
+### Lifecycle Invariants
+
+1. Every class in `uri_classes_index` has a corresponding entry in
+   `fqn_class_index`. Both write sites maintain this.
+2. Every FQN in `fqn_class_index` has a corresponding entry in
+   `fqn_uri_index`. Violating this breaks GTD after `didClose`.
+3. `fqn_uri_index` entries are never removed by `didClose`. Once a
+   class URI is registered it persists for the session (file renames
+   trigger `didClose` + `didOpen` with the new URI).
 
 ## Embedded PHP Stubs
 
@@ -408,7 +434,7 @@ At `Backend` construction, `stubs.rs` converts the static arrays into `HashMap`s
 1. Look up the class short name in `stub_index` → get the PHP source string.
 2. Parse it with the same parser used for user code.
 3. Run name resolution (for parent classes, trait uses, etc.).
-4. Cache in `ast_map` under `phpantom-stub://ClassName`.
+4. Cache in `uri_classes_index` under `phpantom-stub://ClassName`.
 5. Return the `ClassInfo`.
 
 Because stubs are cached after first access, repeated lookups (e.g. every enum needing `UnitEnum`) hit Phase 1 and skip parsing entirely.
@@ -446,7 +472,7 @@ find_or_load_function(["str_contains", "App\\str_contains"])
 │   blocks (e.g. `if (! function_exists(...))` guards).  As a
 │   safety net, lazily parses each known autoload file path
 │   (stored in autoload_file_paths) via update_ast until the
-│   function is found.  Skips files already in ast_map.  Each
+│   function is found.  Skips files already in uri_classes_index.  Each
 │   file is parsed at most once; subsequent lookups hit Phase 1.
 │   ↓ miss
 │
@@ -457,7 +483,7 @@ find_or_load_function(["str_contains", "App\\str_contains"])
 │     2. Caches ALL functions from that file into global_functions
 │        under phpantom-stub-fn:// URIs (FQN keys only).
 │     3. Also caches any classes defined in the same stub file into
-│        ast_map (so return type references can be resolved).
+│        uri_classes_index (so return type references can be resolved).
 │     4. Returns the matching FunctionInfo.
 │   ↓ miss
 │
@@ -648,9 +674,9 @@ At resolution time, `merge_traits_into` loads the `UnitEnum` or `BackedEnum` stu
 
 - `composer.json` → `autoload.psr-4` and `autoload-dev.psr-4` mappings
 
-PSR-4 mappings come exclusively from the project's own `composer.json`. Vendor PSR-4 (`vendor/composer/autoload_psr4.php`) is not loaded. The Composer classmap is the sole source of truth for vendor code.
+PSR-4 mappings come exclusively from the project's own `composer.json`. Vendor PSR-4 (`vendor/composer/autoload_psr4.php`) is not loaded. The `fqn_uri_index` is the sole source of truth for vendor code.
 
-**Design principle:** vendor PSR-4 mappings are not loaded separately. The Composer classmap (augmented by the self-scanner, see below) is the sole source of truth for vendor code. User PSR-4 roots are walked by Go-to-implementation (Phase 5) and Find References because user files change between `dump-autoload` runs.
+**Design principle:** vendor PSR-4 mappings are not loaded separately. The `fqn_uri_index` (populated from the Composer classmap and augmented by the self-scanner, see below) is the sole source of truth for vendor code. User PSR-4 roots are walked by Go-to-implementation (Phase 5) and Find References because user files change between `dump-autoload` runs.
 
 ### Self-Generated Classmap
 
@@ -669,7 +695,7 @@ The merged pipeline works in three steps: (1) load `autoload_classmap.php` into 
 
 When self-scanning with a `composer.json` present, the scanner reads `autoload.psr-4`, `autoload-dev.psr-4`, `autoload.classmap`, and `autoload-dev.classmap` to determine which directories to walk. PSR-4 directories are filtered: only classes whose FQN matches the namespace prefix plus the relative file path are included. Vendor packages are discovered from `vendor/composer/installed.json` (both Composer 1 and 2 formats); the JSON packages array is borrowed rather than cloned to avoid allocating a copy of the entire vendor manifest. All directory walkers (full-scan, PSR-4 scanner, vendor package scanner, and go-to-implementation file collector) use the `ignore` crate for gitignore-aware traversal. Hidden directories are skipped automatically, and `.gitignore` rules are respected at every level. When no `composer.json` exists at all, the scanner falls back to walking all `.php` files under the workspace root.
 
-The result is a `HashMap<String, PathBuf>` in the same format as the existing `Backend.classmap`. Everything downstream (resolution, diagnostics, go-to-definition) works unchanged.
+The scan results are converted to URI strings and inserted into `fqn_uri_index`. Everything downstream (resolution, diagnostics, go-to-definition) uses the unified index.
 
 **Redundant I/O elimination:** `init_single_project` parses `composer.json` once and passes the pre-parsed `serde_json::Value` to `build_self_scan_composer`. Previously each function re-read and re-parsed the file independently.
 
@@ -677,13 +703,13 @@ The result is a `HashMap<String, PathBuf>` in the same format as the existing `B
 
 ### Autoload Files
 
-`vendor/composer/autoload_files.php` lists files containing global function definitions and `define()` constants. During `initialized()`, these files are scanned with the lightweight `find_symbols` byte-level pass (not a full AST parse). This populates `autoload_function_index` (function FQN → file path), `autoload_constant_index` (constant name → file path), and `class_index` (class FQN → file URI). Full parsing is deferred to the moment a symbol is first accessed via `find_or_load_function` (Phase 1.5), `resolve_constant_definition` (Phase 1.5), or `find_or_load_class` (through `class_index`).
+`vendor/composer/autoload_files.php` lists files containing global function definitions and `define()` constants. During `initialized()`, these files are scanned with the lightweight `find_symbols` byte-level pass (not a full AST parse). This populates `autoload_function_index` (function FQN → file path), `autoload_constant_index` (constant name → file path), and `fqn_uri_index` (class FQN → file URI). Full parsing is deferred to the moment a symbol is first accessed via `find_or_load_function` (Phase 1.5), `resolve_constant_definition` (Phase 1.5), or `find_or_load_class` (through `fqn_uri_index`).
 
 The byte-level scanner only discovers top-level declarations. Functions wrapped in `if (! function_exists(...))` guards (common in Laravel helpers) are at brace depth > 0 and are missed. As a safety net, all visited autoload file paths are stored in `autoload_file_paths`. When a function or constant is not found in any index or stubs, `find_or_load_function` and `resolve_constant_definition` lazily parse each known autoload file via `update_ast` as a last resort (Phase 1.75). Each file is parsed at most once.
 
 ### Non-Composer Function and Constant Discovery
 
-In projects without `composer.json`, there is no `autoload_files.php` to consult. Instead, the full-scan (`find_symbols`) runs on all workspace files during initialization, populating three indices in a single pass: `classmap` (classes), `autoload_function_index` (functions), and `autoload_constant_index` (constants). When a function or constant is first accessed, `find_or_load_function` or `resolve_constant_definition` lazily calls `update_ast` on the file, caching the result for subsequent lookups.
+In projects without `composer.json`, there is no `autoload_files.php` to consult. Instead, the full-scan (`find_symbols`) runs on all workspace files during initialization, populating three indices in a single pass: `fqn_uri_index` (classes), `autoload_function_index` (functions), and `autoload_constant_index` (constants). When a function or constant is first accessed, `find_or_load_function` or `resolve_constant_definition` lazily calls `update_ast` on the file, caching the result for subsequent lookups.
 
 ### Monorepo / Multi-Composer-Root Support
 
@@ -717,21 +743,21 @@ When the user invokes go-to-implementation on an interface or abstract class, PH
 ```
 find_implementors("Cacheable", "App\\Contracts\\Cacheable")
 │
-├── Phase 1: ast_map (already-parsed classes)
+├── Phase 1: uri_classes_index (already-parsed classes)
 │   Iterates every ClassInfo in every file already in memory.
 │   Checks interfaces list and parent_class chain against the target.
 │   ↓ continue
 │
-├── Phase 2: class_index (FQN → URI entries not yet covered)
+├── Phase 2: fqn_uri_index (FQN → URI entries not yet covered)
 │   Loads classes via class_loader for entries not seen in Phase 1.
 │   ↓ continue
 │
-├── Phase 3: classmap files (string pre-filter → parse)
-│   Collects unique file paths from the Composer classmap.
-│   Skips files already in ast_map.
+├── Phase 3: fqn_uri_index files (string pre-filter → parse)
+│   Collects unique file paths from fqn_uri_index.
+│   Skips files already in uri_classes_index.
 │   Reads each file's raw source and checks contains(target_short).
 │   Only matching files are parsed via parse_and_cache_file.
-│   Every class in a parsed file is checked (not just the classmap FQN).
+│   Every class in a parsed file is checked (not just the looked-up FQN).
 │   ↓ continue
 │
 ├── Phase 4: embedded stubs (string pre-filter → lazy parse)
@@ -741,10 +767,10 @@ find_implementors("Cacheable", "App\\Contracts\\Cacheable")
 │
 ├── Phase 5: PSR-4 directory walk (user code only)
 │   Recursively collects all .php files under every PSR-4 root.
-│   Skips files already covered by the classmap (Phase 3) or ast_map.
+│   Skips files already covered by fqn_uri_index (Phase 3) or uri_classes_index.
 │   Reads raw source, applies the same string pre-filter.
 │   Matching files are parsed via parse_and_cache_file.
-│   Discovers classes missing from the classmap.
+│   Discovers classes missing from fqn_uri_index.
 │   ↓ done
 │
 └── Vec<ClassInfo> (concrete implementors only)
@@ -752,9 +778,9 @@ find_implementors("Cacheable", "App\\Contracts\\Cacheable")
 
 ### Phase 5 Scope: User Code Only (by design)
 
-Phase 5 walks PSR-4 roots from `composer.json` (`autoload` and `autoload-dev`). Since PSR-4 mappings are sourced exclusively from the project's own `composer.json` (vendor PSR-4 is not loaded), Phase 5 inherently only discovers classes in the user's own source directories (e.g. `src/`, `app/`, `tests/`). Vendor dependencies are fully covered by the classmap (Phase 3).
+Phase 5 walks PSR-4 roots from `composer.json` (`autoload` and `autoload-dev`). Since PSR-4 mappings are sourced exclusively from the project's own `composer.json` (vendor PSR-4 is not loaded), Phase 5 inherently only discovers classes in the user's own source directories (e.g. `src/`, `app/`, `tests/`). Vendor dependencies are fully covered by fqn_uri_index (Phase 3).
 
-Phase 5 exists to catch newly-created or not-yet-indexed user classes that are missing from the classmap.
+Phase 5 exists to catch newly-created or not-yet-indexed user classes that are missing from fqn_uri_index.
 
 Note: `collect_php_files` still receives the vendor dir name because a fallback mapping like `"" => "."` resolves to the workspace root, where the walk must skip the vendor directory (and hidden directories like `.git`).
 
@@ -764,7 +790,7 @@ Phases 3–5 avoid expensive parsing by first reading the raw file content and c
 
 ### Caching
 
-`parse_and_cache_file` follows the same pattern as `find_or_load_class`: it parses the PHP file, resolves parent/interface names via `resolve_parent_class_names`, and stores the results in `ast_map`, `use_map`, and `namespace_map`. This means files discovered during a go-to-implementation scan are immediately available for subsequent completion, definition, and implementation lookups without re-parsing.
+`parse_and_cache_file` follows the same pattern as `find_or_load_class`: it parses the PHP file, resolves parent/interface names via `resolve_parent_class_names`, and stores the results in `uri_classes_index`, `fqn_class_index`, and `fqn_uri_index`. This means files discovered during a go-to-implementation scan are immediately available for subsequent completion, definition, and implementation lookups without re-parsing.
 
 ### Member-Level Implementation
 
@@ -793,12 +819,12 @@ When the user invokes "Find All References", PHPantom scans all user files for o
 
 Before scanning, `ensure_workspace_indexed` ensures all user files have symbol maps:
 
-1. **Phase 1: class_index files (user only)** — files already known from `update_ast` calls. Vendor and stub URIs are skipped.
+1. **Phase 1: fqn_uri_index files (user only)** — files already known from `update_ast` calls. Vendor and stub URIs are skipped.
 2. **Phase 2: `.gitignore`-aware workspace walk** — uses the `ignore` crate's `WalkBuilder` to recursively discover PHP files under the workspace root, respecting `.gitignore` rules (including nested and global gitignore files). This automatically skips generated/cached directories like `storage/framework/views/` (Laravel blade cache), `var/cache/` (Symfony), and `node_modules/`. The vendor directory is always skipped regardless of `.gitignore` content. Hidden directories are skipped by default.
 
 Both phases parse files in parallel using `std::thread::scope`. The work is split into chunks (one per CPU core) and each thread reads a file from disk and calls `update_ast`, which acquires write locks briefly to store results while the expensive parsing step runs without any locks held. Batches of 2 or fewer files skip threading overhead.
 
-Parsed files stay cached in `ast_map`, `symbol_maps`, `use_map`, and `namespace_map` after the scan completes. There is no post-scan eviction; keeping the entries means subsequent operations (a second find-references call, go-to-definition on a cross-file symbol) benefit from the work already done.
+Parsed files stay cached in `uri_classes_index`, `symbol_maps`, `file_imports`, and `file_namespaces` after the scan completes. There is no post-scan eviction; keeping the entries means subsequent operations (a second find-references call, go-to-definition on a cross-file symbol) benefit from the work already done.
 
 ### Cross-file scanning
 
@@ -818,7 +844,7 @@ When the user triggers "Find References" on a method, property, or constant, the
 The hierarchy set is built in two passes:
 
 1. **Ancestors** — walk the parent chain, interfaces, traits, and mixins upward from the target class, collecting every FQN encountered.
-2. **Descendants** — scan all classes in `ast_map` and `class_index` for classes that extend, implement, or use anything already in the set. This repeats until no new FQNs are added (transitive closure), bounded by `MAX_INHERITANCE_DEPTH`.
+2. **Descendants** — scan all classes in `uri_classes_index` and `fqn_uri_index` for classes that extend, implement, or use anything already in the set. This repeats until no new FQNs are added (transitive closure), bounded by `MAX_INHERITANCE_DEPTH`.
 
 For each candidate `MemberAccess` span, the subject text is resolved to class FQNs using a lightweight path:
 
@@ -920,8 +946,8 @@ Comma-separated lists are handled by walking past `Identifier,` sequences so tha
 | Tier | Source                                         | Meaning                                     |
 | ---- | ---------------------------------------------- | ------------------------------------------- |
 | `0`  | Use-imported classes                           | Developer explicitly imported this name     |
-| `1`  | Same-namespace classes (from `ast_map`)        | PHP auto-resolves without a `use` statement |
-| `2`  | Everything else (class index, classmap, stubs) | Requires a `use` import                     |
+| `1`  | Same-namespace classes (from `uri_classes_index`)        | PHP auto-resolves without a `use` statement |
+| `2`  | Everything else (fqn_uri_index, stubs) | Requires a `use` import                     |
 
 **Import affinity**. A four-digit inverted score derived from the file's namespace declaration and existing `use` imports. Namespaces that appear frequently in the file's imports score higher, pushing related classes above unrelated ones within the same tier. The score sums occurrence counts across all ancestor prefixes of the candidate's namespace.
 
@@ -935,11 +961,11 @@ The result set is capped at 300 items. When truncated, `is_incomplete` is set to
 
 Each context defines which class-like kinds are valid through `matches_kind_flags(kind, is_abstract, is_final)`. For example, `TraitUse` only matches `ClassLikeKind::Trait`, and `New` only matches non-abstract classes. This filter is applied at every source, but the amount of information available varies by source, which creates a layered filtering strategy.
 
-**Loaded classes** (in `ast_map`). The full `ClassInfo` is available, so the filter is exact. An interface will never appear in `TraitUse` completions if it has been parsed.
+**Loaded classes** (in `uri_classes_index`). The full `ClassInfo` is available, so the filter is exact. An interface will never appear in `TraitUse` completions if it has been parsed.
 
-**Unloaded stubs** (in `stub_index` but not yet parsed into `ast_map`). The raw PHP source is available. `detect_stub_class_kind` scans it for the declaration keyword (`class`, `interface`, `trait`, `enum`) and modifiers (`abstract`, `final`, `readonly`). This is fast (string search, no tree-sitter parse) and gives accurate kind information for filtering.
+**Unloaded stubs** (in `stub_index` but not yet parsed into `uri_classes_index`). The raw PHP source is available. `detect_stub_class_kind` scans it for the declaration keyword (`class`, `interface`, `trait`, `enum`) and modifiers (`abstract`, `final`, `readonly`). This is fast (string search, no tree-sitter parse) and gives accurate kind information for filtering.
 
-**Unloaded project classes** (in `class_index` or `classmap` but not parsed). No kind information is available. These are allowed through the filter with benefit of the doubt. A naming-convention heuristic (`likely_mismatch`) demotes but does not remove suspicious names (e.g. `FooInterface` is demoted in `ExtendsClass` context).
+**Unloaded project classes** (in `fqn_uri_index` but not parsed). No kind information is available. These are allowed through the filter with benefit of the doubt. A naming-convention heuristic (`likely_mismatch`) demotes but does not remove suspicious names (e.g. `FooInterface` is demoted in `ExtendsClass` context).
 
 ### Use-Map Validation
 
@@ -951,9 +977,9 @@ The file's `use` map is the most problematic source because it can contain entri
 
 Three filters run on use-map entries, in order:
 
-1. **`is_likely_namespace_not_class`**. Checks all four class sources (ast_map, class_index, classmap, stubs). If the FQN is found in any of them, it is a real class and passes. If not found, the function looks for positive namespace evidence: is the FQN declared as a namespace in `namespace_map`, or do known classes exist under it as a prefix (e.g. `Cassandra\Exception\AlreadyExistsException` proves `Cassandra\Exception` is a namespace)? If positive evidence is found, the entry is rejected. If there is no evidence either way, the entry passes (benefit of the doubt).
+1. **`is_likely_namespace_not_class`**. Checks all four class sources (uri_classes_index, fqn_uri_index, stubs). If the FQN is found in any of them, it is a real class and passes. If not found, the function looks for positive namespace evidence: is the FQN declared as a namespace in `file_namespaces`, or do known classes exist under it as a prefix (e.g. `Cassandra\Exception\AlreadyExistsException` proves `Cassandra\Exception` is a namespace)? If positive evidence is found, the entry is rejected. If there is no evidence either way, the entry passes (benefit of the doubt).
 
-2. **`matches_context_or_unloaded`**. If the class is loaded in `ast_map`, applies exact kind filtering. If not loaded but present in `stub_index`, scans the stub source for the declaration keyword. If truly unknown, allows through. This catches stub interfaces appearing in `TraitUse` and similar mismatches.
+2. **`matches_context_or_unloaded`**. If the class is loaded in `uri_classes_index`, applies exact kind filtering. If not loaded but present in `stub_index`, scans the stub source for the declaration keyword. If truly unknown, allows through. This catches stub interfaces appearing in `TraitUse` and similar mismatches.
 
 3. **`is_known_class_like`** (narrow contexts only). For contexts that expect a very specific kind (`TraitUse`, `Implements`, `ExtendsInterface`), an additional check rejects use-map entries whose FQN cannot be found in any class source at all. The reasoning: if we are looking specifically for traits and we have never seen this FQN anywhere, it is almost certainly not a trait. This is deliberately not applied to broader contexts like `New` or `Instanceof`, where an imported-but-not-yet-indexed class should still appear.
 
@@ -975,13 +1001,13 @@ The `UseImport` context (`use |` at top level) has several differences from othe
 
 ### Unloaded Stub Scanning
 
-Many stubs are never parsed into `ast_map` during a session. Rather than parse thousands of stub files eagerly, the LSP scans the raw PHP source on demand. `detect_stub_class_kind` finds the short name in the source, checks that it is preceded by a declaration keyword (`class`, `interface`, `trait`, `enum`), and extracts `abstract`/`final` modifiers. This gives accurate filtering without the cost of a full parse.
+Many stubs are never parsed into `uri_classes_index` during a session. Rather than parse thousands of stub files eagerly, the LSP scans the raw PHP source on demand. `detect_stub_class_kind` finds the short name in the source, checks that it is preceded by a declaration keyword (`class`, `interface`, `trait`, `enum`), and extracts `abstract`/`final` modifiers. This gives accurate filtering without the cost of a full parse.
 
 The scan handles PHP 8.2 `readonly` classes (`final readonly class Foo`) by stripping `readonly` before checking for `abstract`/`final`. Multi-class stub files (e.g. V8Js which declares both `V8Js` and `V8JsException`) are handled by searching for each name independently.
 
 ### Naming-Convention Heuristics
 
-When a class is not loaded and not a stub (typically a classmap or class_index entry whose file has not been opened), the LSP has no kind information. Rather than guess, it uses naming conventions to adjust sort order via the demotion flag in `sort_text`:
+When a class is not loaded and not a stub (typically a fqn_uri_index entry whose file has not been opened), the LSP has no kind information. Rather than guess, it uses naming conventions to adjust sort order via the demotion flag in `sort_text`:
 
 - Names ending in `Interface` or starting with `I[A-Z]` are demoted in `ExtendsClass` and `New`.
 - Names starting with `Abstract` or `Base[A-Z]` are demoted in `Implements`, `ExtendsInterface`, `TraitUse`, and `New`.
@@ -990,9 +1016,9 @@ Demotion sets the fourth dimension of the sort key to `1`, pushing the item belo
 
 ## Memory Overhead
 
-The `symbol_maps` store is keyed by file URI, matching `ast_map`. A typical PHP file has 100–400 navigable symbol tokens. Each `SymbolSpan` is ~50–100 bytes (two `u32` fields plus the `SymbolKind` enum with a `String` or two), totalling ~20–40 KB per open file. Variable definition sites add ~1–3 KB. For comparison, `open_files` already stores the full file content (often 50–200 KB per file), so the symbol map is a small fraction of existing memory use.
+The `symbol_maps` store is keyed by file URI, matching `uri_classes_index`. A typical PHP file has 100–400 navigable symbol tokens. Each `SymbolSpan` is ~50–100 bytes (two `u32` fields plus the `SymbolKind` enum with a `String` or two), totalling ~20–40 KB per open file. Variable definition sites add ~1–3 KB. For comparison, `open_files` already stores the full file content (often 50–200 KB per file), so the symbol map is a small fraction of existing memory use.
 
-Files that are not open (vendor files loaded via PSR-4 on demand) do not get a symbol map — they use the stored byte offsets from Tier 2 (which live on `ClassInfo` / `MethodInfo` / etc. in `ast_map`).
+Files that are not open (vendor files loaded via PSR-4 on demand) do not get a symbol map — they use the stored byte offsets from Tier 2 (which live on `ClassInfo` / `MethodInfo` / etc. in `uri_classes_index`).
 
 ## Diagnostic Philosophy
 
@@ -1053,7 +1079,7 @@ The command exists so users can measure and maintain type coverage without openi
 
 The batch pipeline runs in two parallel phases:
 
-1. **Parse phase.** Read every user file (discovered via PSR-4 source directories) and call `update_ast` to populate `fqn_index`, `ast_map`, `symbol_maps`, `use_map`, `namespace_map`, and `class_index`. After this phase, all user classes are in `fqn_index` and cross-file references resolve via O(1) hash lookup.
+1. **Parse phase.** Read every user file (discovered via PSR-4 source directories) and call `update_ast` to populate `fqn_class_index`, `uri_classes_index`, `symbol_maps`, `file_imports`, `file_namespaces`, and `fqn_uri_index`. After this phase, all user classes are in `fqn_class_index` and cross-file references resolve via O(1) hash lookup.
 
 2. **Diagnose phase.** Run all seven diagnostic collectors on every file in parallel (`std::thread::scope` with one chunk per CPU core). Because Phase 1 already indexed all user classes, the diagnostic phase never triggers lazy `parse_and_cache_file` for other user files, eliminating write-lock contention.
 

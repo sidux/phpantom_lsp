@@ -38,7 +38,7 @@ impl Backend {
         let mut symbols: Vec<DocumentSymbol> = Vec::new();
 
         // ── Classes, interfaces, traits, enums ──────────────────────
-        if let Some(classes) = self.ast_map.read().get(uri).cloned() {
+        if let Some(classes) = self.uri_classes_index.read().get(uri).cloned() {
             for class in &classes {
                 if let Some(sym) = class_to_symbol(class, content) {
                     symbols.push(sym);

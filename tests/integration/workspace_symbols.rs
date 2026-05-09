@@ -1,5 +1,4 @@
 use crate::common::create_test_backend;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tower_lsp::lsp_types::*;
 
@@ -449,7 +448,7 @@ function locatedFunc(): void {}
 fn class_index_entry_appears_when_query_matches() {
     let backend = create_test_backend();
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Vendor\\Package\\Widget".to_string(),
             "file:///vendor/package/src/Widget.php".to_string(),
@@ -470,7 +469,7 @@ fn class_index_entry_appears_when_query_matches() {
 fn class_index_not_searched_on_empty_query() {
     let backend = create_test_backend();
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Vendor\\Lib\\Gadget".to_string(),
             "file:///vendor/lib/src/Gadget.php".to_string(),
@@ -497,7 +496,7 @@ fn class_index_deduplicates_with_ast_map() {
     backend.update_ast(uri, php);
     // Also add to class_index — should not produce a duplicate.
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert("Foo".to_string(), uri.to_string());
     }
     let symbols = backend.handle_workspace_symbol("Foo").unwrap_or_default();
@@ -513,7 +512,7 @@ fn class_index_deduplicates_with_ast_map() {
 fn class_index_has_namespace_as_container() {
     let backend = create_test_backend();
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "App\\Services\\PaymentService".to_string(),
             "file:///src/Services/PaymentService.php".to_string(),
@@ -535,7 +534,7 @@ fn class_index_has_namespace_as_container() {
 fn class_index_uses_fqn_index_for_kind() {
     let backend = create_test_backend();
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "App\\Contracts\\Renderable".to_string(),
             "file:///src/Contracts/Renderable.php".to_string(),
@@ -572,10 +571,10 @@ fn class_index_uses_fqn_index_for_kind() {
 fn classmap_entry_appears_when_query_matches() {
     let backend = create_test_backend();
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "Illuminate\\Support\\Collection".to_string(),
-            PathBuf::from("/vendor/laravel/framework/src/Illuminate/Support/Collection.php"),
+            "file:///vendor/laravel/framework/src/Illuminate/Support/Collection.php".to_string(),
         );
     }
     let symbols = backend
@@ -593,10 +592,10 @@ fn classmap_entry_appears_when_query_matches() {
 fn classmap_not_searched_on_empty_query() {
     let backend = create_test_backend();
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "Carbon\\Carbon".to_string(),
-            PathBuf::from("/vendor/nesbot/carbon/src/Carbon/Carbon.php"),
+            "file:///vendor/nesbot/carbon/src/Carbon/Carbon.php".to_string(),
         );
     }
     let symbols = backend.handle_workspace_symbol("").unwrap_or_default();
@@ -618,12 +617,12 @@ fn classmap_deduplicates_with_ast_map() {
         .write()
         .insert(uri.to_string(), Arc::new(php.to_string()));
     backend.update_ast(uri, php);
-    // Also add to classmap — should not produce a duplicate.
+    // Also add to class_index — should not produce a duplicate.
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "App\\Models\\User".to_string(),
-            PathBuf::from("/src/Models/User.php"),
+            "file:///src/Models/User.php".to_string(),
         );
     }
     let symbols = backend.handle_workspace_symbol("User").unwrap_or_default();
@@ -643,19 +642,13 @@ fn classmap_deduplicates_with_class_index() {
     let backend = create_test_backend();
     // Same FQN in both class_index and classmap.
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Vendor\\Pkg\\Thing".to_string(),
             "file:///vendor/pkg/src/Thing.php".to_string(),
         );
     }
-    {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
-            "Vendor\\Pkg\\Thing".to_string(),
-            PathBuf::from("/vendor/pkg/src/Thing.php"),
-        );
-    }
+    // classmap merged into class_index — entry already present above.
     let symbols = backend.handle_workspace_symbol("Thing").unwrap_or_default();
     let thing_count = symbols
         .iter()
@@ -672,10 +665,10 @@ fn classmap_deduplicates_with_class_index() {
 fn classmap_has_namespace_as_container() {
     let backend = create_test_backend();
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "Symfony\\Component\\HttpFoundation\\Request".to_string(),
-            PathBuf::from("/vendor/symfony/http-foundation/Request.php"),
+            "file:///vendor/symfony/http-foundation/Request.php".to_string(),
         );
     }
     let symbols = backend
@@ -694,10 +687,10 @@ fn classmap_has_namespace_as_container() {
 fn classmap_location_uri_is_file_uri() {
     let backend = create_test_backend();
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "Monolog\\Logger".to_string(),
-            PathBuf::from("/vendor/monolog/monolog/src/Monolog/Logger.php"),
+            "file:///vendor/monolog/monolog/src/Monolog/Logger.php".to_string(),
         );
     }
     let symbols = backend
@@ -729,19 +722,19 @@ fn query_finds_symbols_across_all_sources() {
 
     // class_index source
     {
-        let mut idx = backend.class_index().write();
+        let mut idx = backend.fqn_uri_index().write();
         idx.insert(
             "Vendor\\MyHelper".to_string(),
             "file:///vendor/helper.php".to_string(),
         );
     }
 
-    // classmap source
+    // classmap source (now merged into class_index)
     {
-        let mut cmap = backend.classmap().write();
-        cmap.insert(
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
             "External\\MyWidget".to_string(),
-            PathBuf::from("/vendor/external/MyWidget.php"),
+            "file:///vendor/external/MyWidget.php".to_string(),
         );
     }
 

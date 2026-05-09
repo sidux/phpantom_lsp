@@ -289,13 +289,13 @@ impl Backend {
     /// so this is cheap) and delegates to
     /// [`Backend::infer_return_type_for_function`] which has the full
     /// resolution infrastructure (use maps, namespace resolution,
-    /// function loader, class loader with stubs/classmap/PSR-4).
+    /// function loader, class loader with stubs/class index/PSR-4).
     pub(crate) fn activate_body_return_inferrer(&self) -> BodyReturnInferrerGuard {
         let backend = self.clone_for_diagnostic_worker();
 
         let inferrer = move |class_fqn: &str, method: &MethodInfo| -> Option<PhpType> {
             // Find the file URI for this class.
-            let file_uri = backend.class_index.read().get(class_fqn).cloned()?;
+            let file_uri = backend.fqn_uri_index.read().get(class_fqn).cloned()?;
 
             // Read the file content.
             let content = backend.get_file_content(&file_uri)?;

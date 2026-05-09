@@ -175,7 +175,7 @@ async fn test_did_close_removes_file() {
         "After close, AST map should be cleared"
     );
     assert!(
-        backend.class_index().read().contains_key("Z"),
+        backend.fqn_uri_index().read().contains_key("Z"),
         "class_index should retain entries after close"
     );
 }

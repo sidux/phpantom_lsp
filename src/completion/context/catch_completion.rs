@@ -17,7 +17,7 @@
 //! Also provides a Throwable-filtered class completion variant for catch
 //! clause fallback and `throw new` completion, which only suggests
 //! exception classes from already-parsed sources and includes everything
-//! else (classmap, stubs) unfiltered.
+//! else (class index, stubs) unfiltered.
 
 use std::collections::{HashMap, HashSet};
 
@@ -436,10 +436,10 @@ impl Backend {
 
     /// Collect the FQN of every class that is currently loaded in the
     /// `ast_map`.  Used by `build_catch_class_name_completions` so that
-    /// classmap / stub sources can skip classes we already evaluated.
+    /// class index / stub sources can skip classes we already evaluated.
     fn collect_loaded_fqns(&self) -> HashSet<String> {
         let mut loaded = HashSet::new();
-        let amap = self.ast_map.read();
+        let amap = self.uri_classes_index.read();
         for (_uri, classes) in amap.iter() {
             for cls in classes {
                 let fqn = match &cls.file_namespace {
@@ -463,11 +463,11 @@ impl Backend {
     ///    class_index): only classes and interfaces (not traits/enums)
     ///    whose parent/interface chain is fully walkable to `\Throwable`
     ///    / `\Exception` / `\Error`.
-    /// 2. **Classmap** entries (not yet parsed) whose short name ends
+    /// 2. **Class index** entries (not yet parsed) whose short name ends
     ///    with `Exception` — filtered to exclude already-loaded FQNs.
     /// 3. **Stub** entries whose short name ends with `Exception` —
     ///    filtered to exclude already-loaded FQNs.
-    /// 4. **Classmap** entries that do *not* end with `Exception`.
+    /// 4. **Class index** entries that do *not* end with `Exception`.
     /// 5. **Stub** entries that do *not* end with `Exception`.
     pub(crate) fn build_catch_class_name_completions(
         &self,
@@ -539,7 +539,7 @@ impl Backend {
         };
 
         // Build the set of every FQN currently in the ast_map so that
-        // classmap / stub sources can exclude already-evaluated classes.
+        // class index / stub sources can exclude already-evaluated classes.
         let loaded_fqns = self.collect_loaded_fqns();
 
         // ── 1a. Use-imported classes/interfaces (must be Throwable) ─
@@ -584,7 +584,7 @@ impl Backend {
         // before calling `is_throwable_descendant` (which re-locks
         // `ast_map` internally — Rust's Mutex is not re-entrant).
         {
-            let nmap = self.namespace_map.read();
+            let nmap = self.file_namespaces.read();
             let same_ns_uris: Vec<String> = nmap
                 .iter()
                 .filter_map(|(uri, spans)| {
@@ -600,7 +600,7 @@ impl Backend {
             // tuples under the ast_map lock — classes and interfaces only.
             let mut candidates: Vec<(String, String, Option<String>)> = Vec::new();
             {
-                let amap = self.ast_map.read();
+                let amap = self.uri_classes_index.read();
                 for uri in &same_ns_uris {
                     if let Some(classes) = amap.get(uri) {
                         for cls in classes {
@@ -666,7 +666,7 @@ impl Backend {
 
         // ── 1c. class_index (must be class/interface + Throwable) ───
         {
-            let idx = self.class_index.read();
+            let idx = self.fqn_uri_index.read();
             for fqn in idx.keys() {
                 let sn = short_name(fqn);
                 if !matches_class_prefix(
@@ -704,13 +704,13 @@ impl Backend {
             }
         }
 
-        // ── 2. Classmap — names ending with "Exception" ─────────────
-        // ── 4. Classmap — names NOT ending with "Exception" ─────────
-        // We collect both buckets in a single pass over the classmap and
-        // assign different sort_text prefixes so "Exception" entries
+        // ── 2. Class index — names ending with "Exception" ───────────
+        // ── 4. Class index — names NOT ending with "Exception" ───────
+        // We collect both buckets in a single pass over the class index
+        // and assign different sort_text prefixes so "Exception" entries
         // appear first.
         {
-            let cmap = self.classmap.read();
+            let cmap = self.fqn_uri_index.read();
             for fqn in cmap.keys() {
                 if loaded_fqns.contains(fqn) {
                     continue;

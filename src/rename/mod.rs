@@ -247,7 +247,7 @@ impl Backend {
         let old_short = crate::util::short_name(old_fqn);
 
         // Find the definition file URI from the class_index.
-        let def_uri_str = self.class_index.read().get(old_fqn).cloned()?;
+        let def_uri_str = self.fqn_uri_index.read().get(old_fqn).cloned()?;
 
         let def_url = Url::parse(&def_uri_str).ok()?;
         let def_path = def_url.to_file_path().ok()?;
@@ -372,7 +372,7 @@ impl Backend {
 
             // Get the file's use_map to understand import context.
             let file_use_map = self
-                .use_map
+                .file_imports
                 .read()
                 .get(file_uri_str)
                 .cloned()
@@ -654,8 +654,8 @@ impl Backend {
 
         // Scan all known files via namespace_map, use_map, and symbol_maps.
         let all_uris: Vec<String> = {
-            let nmap = self.namespace_map.read();
-            let umap = self.use_map.read();
+            let nmap = self.file_namespaces.read();
+            let umap = self.file_imports.read();
             let smap = self.symbol_maps.read();
             let mut uris: std::collections::HashSet<String> = std::collections::HashSet::new();
             for uri in nmap.keys() {

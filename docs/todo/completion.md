@@ -257,7 +257,7 @@ and no go-to-definition because PHPantom has no record of the alias.
 
 3. **Cross-file aliases** — for aliases defined in autoloaded files
    (e.g. a `_ide_helper.php` or a framework bootstrap file), the alias
-   mapping needs to be stored in `class_index` or a parallel index so
+   mapping needs to be stored in `fqn_uri_index` or a parallel index so
    that it's available project-wide. This is the main effort: deciding
    where to persist the alias data and when to scan for it.
 
@@ -343,14 +343,14 @@ improves perceived latency on keystroke.
 **Impact: Low · Effort: Low**
 
 Same-namespace classes (source tier 2) already carry deprecation info
-because `ClassInfo` is available. Classes from `class_index`, classmap,
-and stubs (tiers 3-5) don't check for `@deprecated` because the class
+because `ClassInfo` is available. Classes from `fqn_uri_index`
+and stubs (tiers 3-4) don't check for `@deprecated` because the class
 may not be fully loaded at completion time.
 
 For classmap entries, a lightweight byte-level scan of the first
 docblock in the file (similar to `detect_stub_class_kind`) could detect
 `@deprecated` without a full parse. For stubs, the source is already
-in memory and could be scanned cheaply. For class_index entries, the
+in memory and could be scanned cheaply. For fqn_uri_index entries, the
 deprecation flag could be stored alongside the file path when the class
 is first indexed.
 
