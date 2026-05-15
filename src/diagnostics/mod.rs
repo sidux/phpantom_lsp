@@ -660,15 +660,10 @@ impl Backend {
 
         // ── Phase 1: collect and cache fast diagnostics ─────────────
         let mut fast_diagnostics = Vec::new();
-        {
-            let vc_handle = self.blade_virtual_content.read();
-            let effective_content = vc_handle
-                .get(uri_str)
-                .map(|s| s.as_str())
-                .unwrap_or(content);
-
-            self.collect_fast_diagnostics(uri_str, effective_content, &mut fast_diagnostics);
-        }
+        let effective_content_owned: Option<String> =
+            self.blade_virtual_content.read().get(uri_str).cloned();
+        let effective_content = effective_content_owned.as_deref().unwrap_or(content);
+        self.collect_fast_diagnostics(uri_str, effective_content, &mut fast_diagnostics);
 
         {
             let mut cache = self.diag_last_fast.lock();
@@ -690,12 +685,9 @@ impl Backend {
                 &self.resolved_class_cache,
             );
 
-            let vc_handle = self.blade_virtual_content.read();
-            let effective_content = vc_handle
-                .get(uri_str)
-                .map(|s| s.as_str())
-                .unwrap_or(content);
-
+            let effective_content_owned: Option<String> =
+                self.blade_virtual_content.read().get(uri_str).cloned();
+            let effective_content = effective_content_owned.as_deref().unwrap_or(content);
             self.collect_slow_diagnostics(uri_str, effective_content, &mut slow_diagnostics);
         }
 
