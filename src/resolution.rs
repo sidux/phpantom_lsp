@@ -444,13 +444,12 @@ impl Backend {
 
         // Populate the fqn_index so that `find_class_in_uri_classes_index` can
         // resolve these classes via O(1) hash lookup.  Also populate
-        // fqn_uri_index (FQN -> URI) so that `find_class_file_content` can
-        // locate the source file even after the uri_classes_index entry is cleared
-        // by didClose.  The fqn_uri_index cost is negligible (one string
-        // pair per class).
+        // fqn_uri_index (FQN → URI) so that go-to-definition can locate
+        // the source file even after the uri_classes_index entry is
+        // cleared by didClose.
         {
-            let mut fqn_idx = self.fqn_class_index.write();
             let mut class_idx = self.fqn_uri_index.write();
+            let mut fqn_idx = self.fqn_class_index.write();
             for cls in &arc_classes {
                 if cls.name.starts_with("__anonymous@") {
                     continue;
