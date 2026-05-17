@@ -29,8 +29,8 @@ within the same impact tier.
 
 > **Note:** F1 (Workspace symbol search), F2 (Document symbols), A8
 > (Implement interface methods), A9 (Auto import), D1 (Unknown class
-> diagnostic), and D3 (Unknown member diagnostic) were originally
-> planned here but have already shipped.
+> diagnostic), D3 (Unknown member diagnostic), and L4 (Custom Eloquent
+> builders) were originally planned here but have already shipped.
 
 ## Sprint 6 — 1.0 release, editor plugins & type intelligence
 
@@ -151,8 +151,7 @@ unlikely to move the needle for most users.
 | S4  | Named argument awareness in active parameter                                                                                                                                | Low-Medium  | Medium      |
 | S5  | Language construct signature help and hover                                                                                                                                 | Low         | Low         |
 |     | **[Laravel](todo/laravel.md)**                                                                                                                                              |             |             |
-| L4  | Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)                                                                                                           | Medium      | Medium      |
-| L3  | `$dates` array (deprecated)                                                                                                                                                 | Low-Medium  | Low         |
+| L3  | `$dates` array (deprecated)                                                                                                                  | Low-Medium  | Low         |
 | L6  | Factory `has*`/`for*` relationship methods                                                                                                                                  | Low-Medium  | Medium      |
 | L7  | `$pivot` property on BelongsToMany                                                                                                                                          | Medium      | Medium-High |
 | L8  | `withSum`/`withAvg`/`withMin`/`withMax` aggregate properties                                                                                                                | Low-Medium  | Medium-High |

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Laravel custom Eloquent builder support.** Models using the `#[UseEloquentBuilder]` attribute now have their custom builder's methods forwarded as static methods on the model. `query()`, `newQuery()`, and `newModelQuery()` return the custom builder type with correct generic model substitution. Contributed by @MingJen in https://github.com/AJenbo/phpantom_lsp/pull/118.
+
 ### Fixed
 
 - **`@mixin` with union types.** `@mixin Foo|Bar` now correctly exposes members from all classes in the union. Previously only single-class mixins were recognized.
@@ -14,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Unified class name completion architecture.** `throw new` and `catch()` completion now use the same `build_class_name_completions` pipeline as `new`, `extends`, `implements`, etc. `throw new` uses a `ThrowNew` context (instantiable + Throwable) and `catch()`/`@throws` uses a `Catch` context (class or interface + Throwable). This gives both contexts the same affinity scoring, FQN shortening via use-map, namespace segment drill-down, deprecation flags, and consistent filtering. The separate `build_catch_class_name_completions` function has been removed.
 - **Consolidated class completion passes.** The previous 5-pass architecture (use-map, same-namespace, fqn_uri_index, fqn_uri_index duplicate, stub_index) has been simplified to 2 passes (fqn_uri_index + stub_index) with an inline `classify` closure that determines tier (`'0'` use-imported, `'1'` same/sub-namespace, `'2'` everything else) per candidate. The redundant pass 4 (identical to pass 3) is eliminated, and tier assignment is now based on proximity checks rather than which data source produced the item.
 - **Analysis deadlock.** Lazily-parsed vendor files acquired two internal locks in the opposite order from the editor's file-change handler, causing a deadlock when both ran concurrently.
+
+### Changed
+
+- **Improved LSP responsiveness.** File parsing (`update_ast`) and diagnostics now run in background tasks, preventing interactive requests (completion, hover) from being blocked by full-file parses during typing. Contributed by @MingJen in https://github.com/AJenbo/phpantom_lsp/pull/118.
+- **Member completion caching.** Unfiltered member lists are cached per-target to speed up subsequent completions during keyword entry. Contributed by @MingJen in https://github.com/AJenbo/phpantom_lsp/pull/118.
+- **Laravel startup performance.** Common Laravel builder classes are warmed in the background at startup to eliminate the first-access penalty on Eloquent completions. Contributed by @MingJen in https://github.com/AJenbo/phpantom_lsp/pull/118.
 
 ## [0.8.0] - 2026-05-14
 
