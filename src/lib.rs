@@ -901,6 +901,12 @@ impl Backend {
         &self.fqn_uri_index
     }
 
+    /// Borrow the FQN → ClassInfo index mutex (used by integration tests
+    /// to populate class metadata for context-aware completion filtering).
+    pub fn fqn_class_index(&self) -> &Arc<RwLock<HashMap<String, Arc<ClassInfo>>>> {
+        &self.fqn_class_index
+    }
+
     /// Borrow the PSR-4 mappings mutex (used by integration tests to
     /// configure autoload mappings).
     pub fn psr4_mappings(&self) -> &Arc<RwLock<Vec<composer::Psr4Mapping>>> {

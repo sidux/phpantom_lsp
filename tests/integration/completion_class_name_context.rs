@@ -2,6 +2,8 @@ use crate::common::{create_test_backend, create_test_backend_with_stubs};
 use phpantom_lsp::Backend;
 use phpantom_lsp::atom::atom;
 use phpantom_lsp::php_type::PhpType;
+use phpantom_lsp::types::{ClassInfo, ClassLikeKind};
+use std::sync::Arc;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
 
@@ -810,6 +812,19 @@ async fn test_unloaded_classes_pass_through_filter() {
         idx.insert(
             "UnknownKind\\MysteryClass".to_string(),
             "file:///vendor/mystery.php".to_string(),
+        );
+    }
+    // Also insert into fqn_class_index so check_context_match can verify the kind.
+    {
+        let mut idx = backend.fqn_class_index().write();
+        idx.insert(
+            "UnknownKind\\MysteryClass".to_string(),
+            Arc::new(ClassInfo {
+                kind: ClassLikeKind::Interface,
+                name: atom("MysteryClass"),
+                file_namespace: Some(atom("UnknownKind")),
+                ..Default::default()
+            }),
         );
     }
 
@@ -1715,6 +1730,37 @@ async fn test_implements_demotes_abstract_looking_names() {
             "file:///vendor/c.php".to_string(),
         );
     }
+    // Insert into fqn_class_index so check_context_match can verify their kind.
+    {
+        let mut idx = backend.fqn_class_index().write();
+        idx.insert(
+            "App\\YxLoggable".to_string(),
+            Arc::new(ClassInfo {
+                kind: ClassLikeKind::Interface,
+                name: atom("YxLoggable"),
+                file_namespace: Some(atom("App")),
+                ..Default::default()
+            }),
+        );
+        idx.insert(
+            "App\\AbstractYxHandler".to_string(),
+            Arc::new(ClassInfo {
+                kind: ClassLikeKind::Interface,
+                name: atom("AbstractYxHandler"),
+                file_namespace: Some(atom("App")),
+                ..Default::default()
+            }),
+        );
+        idx.insert(
+            "App\\BaseYxController".to_string(),
+            Arc::new(ClassInfo {
+                kind: ClassLikeKind::Interface,
+                name: atom("BaseYxController"),
+                file_namespace: Some(atom("App")),
+                ..Default::default()
+            }),
+        );
+    }
 
     let uri = Url::parse("file:///test_impl_demote.php").unwrap();
     // Partial "Yx" matches YxLoggable; separate requests for the others.
@@ -1784,6 +1830,37 @@ async fn test_trait_use_demotes_non_trait_looking_names() {
         idx.insert(
             "App\\AbstractWxModel".to_string(),
             "file:///vendor/c.php".to_string(),
+        );
+    }
+    // Insert into fqn_class_index so check_context_match can verify their kind.
+    {
+        let mut idx = backend.fqn_class_index().write();
+        idx.insert(
+            "App\\WxHasTimestamps".to_string(),
+            Arc::new(ClassInfo {
+                kind: ClassLikeKind::Trait,
+                name: atom("WxHasTimestamps"),
+                file_namespace: Some(atom("App")),
+                ..Default::default()
+            }),
+        );
+        idx.insert(
+            "App\\WxUserInterface".to_string(),
+            Arc::new(ClassInfo {
+                kind: ClassLikeKind::Trait,
+                name: atom("WxUserInterface"),
+                file_namespace: Some(atom("App")),
+                ..Default::default()
+            }),
+        );
+        idx.insert(
+            "App\\AbstractWxModel".to_string(),
+            Arc::new(ClassInfo {
+                kind: ClassLikeKind::Trait,
+                name: atom("AbstractWxModel"),
+                file_namespace: Some(atom("App")),
+                ..Default::default()
+            }),
         );
     }
 
@@ -1896,6 +1973,28 @@ async fn test_extends_interface_does_not_demote_interface_names() {
         idx.insert(
             "App\\Loggable".to_string(),
             "file:///vendor/b.php".to_string(),
+        );
+    }
+    // Insert into fqn_class_index so check_context_match can verify their kind.
+    {
+        let mut idx = backend.fqn_class_index().write();
+        idx.insert(
+            "App\\LoggerInterface".to_string(),
+            Arc::new(ClassInfo {
+                kind: ClassLikeKind::Interface,
+                name: atom("LoggerInterface"),
+                file_namespace: Some(atom("App")),
+                ..Default::default()
+            }),
+        );
+        idx.insert(
+            "App\\Loggable".to_string(),
+            Arc::new(ClassInfo {
+                kind: ClassLikeKind::Interface,
+                name: atom("Loggable"),
+                file_namespace: Some(atom("App")),
+                ..Default::default()
+            }),
         );
     }
 

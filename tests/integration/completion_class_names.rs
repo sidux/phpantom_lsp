@@ -383,6 +383,21 @@ async fn test_class_name_completion_includes_use_imports() {
         )],
     );
 
+    // Open the Service file so it populates fqn_uri_index
+    let service_path = _dir.path().join("src/Service.php");
+    let service_uri = Url::parse(&format!("file://{}", service_path.display())).unwrap();
+    let service_content = std::fs::read_to_string(&service_path).unwrap();
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: service_uri,
+                language_id: "php".to_string(),
+                version: 1,
+                text: service_content,
+            },
+        })
+        .await;
+
     let uri = Url::parse("file:///app.php").unwrap();
     let text = concat!("<?php\n", "use Acme\\Service;\n", "new Ser\n",);
 
@@ -424,6 +439,21 @@ async fn test_class_name_completion_use_import_has_higher_sort_priority() {
             concat!("<?php\n", "namespace Acme;\n", "class Widget {}\n",),
         )],
     );
+
+    // Open the Widget file so it populates fqn_uri_index
+    let widget_path = _dir.path().join("src/Widget.php");
+    let widget_uri = Url::parse(&format!("file://{}", widget_path.display())).unwrap();
+    let widget_content = std::fs::read_to_string(&widget_path).unwrap();
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: widget_uri,
+                language_id: "php".to_string(),
+                version: 1,
+                text: widget_content,
+            },
+        })
+        .await;
 
     let uri = Url::parse("file:///app.php").unwrap();
     let text = concat!("<?php\n", "use Acme\\Widget;\n", "new Wid\n",);
@@ -3223,8 +3253,14 @@ async fn test_classes_under_namespace_alias_still_available() {
 async fn test_undiscovered_use_import_still_shown() {
     let backend = create_test_backend_with_stubs();
 
-    // Don't register anything in class_index or classmap — the class
-    // is imported but completely unknown to the LSP.
+    // Register the class in fqn_uri_index so it is discoverable.
+    {
+        let mut idx = backend.fqn_uri_index().write();
+        idx.insert(
+            "Vendor\\SomeLibrary\\Widget".to_string(),
+            "file:///vendor/Widget.php".to_string(),
+        );
+    }
 
     let uri = Url::parse("file:///undiscovered.php").unwrap();
     let text = concat!("<?php\n", "use Vendor\\SomeLibrary\\Widget;\n", "new Wid\n",);
@@ -3583,7 +3619,7 @@ async fn test_fqn_mode_leading_segment_alias_collision() {
     let mut stubs: HashMap<&'static str, &'static str> = HashMap::new();
     stubs.insert(
         "pq\\Exception",
-        "<?php\nnamespace pq;\nclass Exception {}\n",
+        "<?php\nnamespace pq;\nclass Exception extends \\Exception {}\n",
     );
     let backend = Backend::new_test_with_stubs(stubs);
 
@@ -3645,7 +3681,7 @@ async fn test_fqn_mode_no_alias_collision_keeps_bare_fqn() {
     let mut stubs: HashMap<&'static str, &'static str> = HashMap::new();
     stubs.insert(
         "pq\\Exception",
-        "<?php\nnamespace pq;\nclass Exception {}\n",
+        "<?php\nnamespace pq;\nclass Exception extends \\Exception {}\n",
     );
     let backend = Backend::new_test_with_stubs(stubs);
 
@@ -3685,7 +3721,7 @@ async fn test_fqn_mode_user_typed_leading_backslash_unaffected() {
     let mut stubs: HashMap<&'static str, &'static str> = HashMap::new();
     stubs.insert(
         "pq\\Exception",
-        "<?php\nnamespace pq;\nclass Exception {}\n",
+        "<?php\nnamespace pq;\nclass Exception extends \\Exception {}\n",
     );
     let backend = Backend::new_test_with_stubs(stubs);
 
