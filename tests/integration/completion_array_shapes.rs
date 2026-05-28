@@ -5841,3 +5841,195 @@ async fn test_array_shape_isset_narrowing_optional_key() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+/// Mago issue 570: Compound `isset()` on nested optional shape keys.
+/// After `isset($y['foo'])`, accessing `$y['foo']` should resolve to its shape type.
+#[tokio::test]
+async fn test_array_shape_compound_isset_nested_optional_keys() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///shape_compound_isset.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Inner { public function value(): string { return ''; } }\n",
+        "/** @param array{foo?: array{bar?: Inner}} $y */\n",
+        "function x(array $y): void {\n",
+        "    if (isset($y['foo'])) {\n",
+        "        $y['foo']['bar']->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 5,
+                character: 26,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for nested shape key access after isset"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            assert!(
+                method_names.contains(&"value"),
+                "Should suggest Inner::value() after compound isset on nested shape, got {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Mago issue 1093: Array shape narrowing via `array_key_exists` check.
+/// After checking `array_key_exists('result', $input)`, accessing `$input['result']` should resolve.
+#[tokio::test]
+async fn test_array_shape_narrowing_via_array_key_exists() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///shape_key_exists.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Result { public function format(): string { return ''; } }\n",
+        "/** @param array{valid: true, result: Result}|array{valid: false, errorCode: string} $input */\n",
+        "function test(array $input): void {\n",
+        "    if (array_key_exists('result', $input)) {\n",
+        "        $input['result']->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 5,
+                character: 26,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions after array_key_exists narrowing"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            assert!(
+                method_names.contains(&"format"),
+                "Should suggest Result::format() after array_key_exists narrowing, got {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Mago issue 1025: `?->` branch narrowing — after nullsafe access in if condition,
+/// the variable should NOT be narrowed to non-null in the else branch.
+#[tokio::test]
+async fn test_nullsafe_does_not_narrow_in_else() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nullsafe_no_narrow.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User { public function isAuthorized(): bool { return true; } public function name(): string { return ''; } }\n",
+        "function test(?User $user): void {\n",
+        "    if ($user?->isAuthorized()) {\n",
+        "        $user->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 4,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for $user inside if($user?->isAuthorized()) block"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            assert!(
+                method_names.contains(&"name"),
+                "Should suggest User::name() inside nullsafe truthy branch, got {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
