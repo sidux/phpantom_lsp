@@ -19,6 +19,7 @@ use mago_syntax::ast::*;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::atom::bytes_to_str;
 use crate::code_actions::cursor_context::{CursorContext, MemberContext, find_cursor_context};
 use crate::code_actions::{CodeActionData, make_code_action_data};
 use crate::php_type::PhpType;
@@ -385,8 +386,8 @@ struct ClassBodyInfo {
 /// Walk the AST to find class body info at the given cursor offset.
 fn find_class_body_info(content: &str, cursor: u32) -> Option<ClassBodyInfo> {
     let arena = Bump::new();
-    let file_id = mago_database::file::FileId::new("input.php");
-    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+    let file_id = mago_database::file::FileId::new(b"input.php");
+    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
     for stmt in program.statements.iter() {
         if let Some(info) = find_class_info_in_statement(stmt, content, cursor) {
@@ -477,7 +478,7 @@ fn extract_class_body_info(
             ClassLikeMember::Constant(constant) => {
                 // Collect existing constant names.
                 for item in constant.items.iter() {
-                    existing_constants.push(item.name.value.to_string());
+                    existing_constants.push(bytes_to_str(item.name.value).to_string());
                 }
                 let end = constant.span().end.offset as usize;
                 after_last_constant = Some(end);
@@ -636,8 +637,8 @@ impl Backend {
         // Verify the cursor is inside a class-like body.
         let cursor = start_offset as u32;
         let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, cursor);
         match &ctx {

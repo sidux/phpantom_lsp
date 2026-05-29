@@ -132,8 +132,8 @@ fn empty_name_is_not_navigable() {
 
 fn parse_and_extract(php: &str) -> SymbolMap {
     let arena = bumpalo::Bump::new();
-    let file_id = mago_database::file::FileId::new("test.php");
-    let program = mago_syntax::parser::parse_file_content(&arena, file_id, php);
+    let file_id = mago_database::file::FileId::new(b"test.php");
+    let program = mago_syntax::parser::parse_file_content(&arena, file_id, php.as_bytes());
     extract_symbol_map(program, php)
 }
 

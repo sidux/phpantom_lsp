@@ -17,6 +17,7 @@ use mago_syntax::ast::*;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::atom::bytes_to_str;
 use crate::diagnostics::undefined_variables::collect_compact_vars;
 use crate::parser::with_parsed_program;
 use crate::scope_collector::{
@@ -160,7 +161,7 @@ fn collect_promoted_params(params: &FunctionLikeParameterList<'_>) -> HashSet<St
     let mut promoted = HashSet::new();
     for param in params.parameters.iter() {
         if param.is_promoted_property() {
-            promoted.insert(param.variable.name.to_string());
+            promoted.insert(bytes_to_str(param.variable.name).to_string());
         }
     }
     promoted

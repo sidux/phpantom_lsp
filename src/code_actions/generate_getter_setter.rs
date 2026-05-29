@@ -29,6 +29,7 @@ use tower_lsp::lsp_types::*;
 use super::cursor_context::{CursorContext, MemberContext, find_cursor_context};
 use super::detect_indent_from_members;
 use crate::Backend;
+use crate::atom::bytes_to_str;
 use crate::docblock::{extract_var_type, get_docblock_text_for_node};
 use crate::parser::extract_hint_type;
 use crate::php_type::PhpType;
@@ -86,8 +87,8 @@ impl Backend {
         let cursor_offset = crate::util::position_to_offset(content, params.range.start);
 
         let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, cursor_offset);
 
@@ -298,7 +299,7 @@ fn collect_accessor_properties<'a>(
                 get_docblock_text_for_node(trivia, content, plain).and_then(extract_var_type);
 
             for item in plain.items.iter() {
-                let var_name = item.variable().name;
+                let var_name = bytes_to_str(item.variable().name);
                 let bare_name = var_name.strip_prefix('$').unwrap_or(var_name);
 
                 let (type_hint, type_from_docblock) = if let Some(ref hint) = native_hint {
@@ -333,7 +334,7 @@ fn collect_existing_method_names<'a>(members: &Sequence<'a, ClassLikeMember<'a>>
         .iter()
         .filter_map(|m| {
             if let ClassLikeMember::Method(method) = m {
-                Some(method.name.value.to_string())
+                Some(bytes_to_str(method.name.value).to_string())
             } else {
                 None
             }
@@ -935,8 +936,8 @@ mod tests {
 
     fn parse_and_collect(php: &str) -> Vec<AccessorProperty> {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let offset = find_property_offset(php);
         let ctx = find_cursor_context(&program.statements, offset);
@@ -1061,8 +1062,8 @@ mod tests {
     fn skips_hooked_property() {
         let php = "<?php\nclass Foo {\n    public string $name { get => $this->name; }\n}";
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         match &ctx {
@@ -1085,9 +1086,9 @@ mod tests {
     #[test]
     fn finds_existing_methods() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    public string $name;\n    public function getName(): string { return $this->name; }\n    public function setName(string $name): self { $this->name = $name; return $this; }\n}";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         match &ctx {

@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::atom::bytes_to_str;
 use crate::code_actions::cursor_context::{CursorContext, MemberContext, find_cursor_context};
 use crate::code_actions::{CodeActionData, make_code_action_data};
 use crate::completion::phpdoc::generation::enrichment_plain;
@@ -37,8 +38,8 @@ use crate::util::{find_class_at_offset, offset_to_position, position_to_byte_off
 /// invalid for extraction.
 fn selection_covers_complete_statements(content: &str, start: usize, end: usize) -> bool {
     let arena = Bump::new();
-    let file_id = mago_database::file::FileId::new("extract_fn_validate");
-    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+    let file_id = mago_database::file::FileId::new(b"extract_fn_validate");
+    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
     // Find the enclosing function/method body statements.
     let body_stmts = find_enclosing_body_statements(&program.statements, start as u32);
@@ -154,8 +155,8 @@ struct EnclosingContext {
 /// Determine the extraction target and insertion point by walking the AST.
 fn find_enclosing_context(content: &str, offset: u32, uses_this: bool) -> Option<EnclosingContext> {
     let arena = Bump::new();
-    let file_id = mago_database::file::FileId::new("extract_fn_ctx");
-    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+    let file_id = mago_database::file::FileId::new(b"extract_fn_ctx");
+    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
     let ctx = find_cursor_context(&program.statements, offset);
 
@@ -167,14 +168,14 @@ fn find_enclosing_context(content: &str, offset: u32, uses_this: bool) -> Option
         } => {
             if let MemberContext::Method(method, true) = member {
                 let is_static = method.modifiers.iter().any(|m| m.is_static());
-                let enclosing_name = method.name.value.to_string();
+                let enclosing_name = bytes_to_str(method.name.value).to_string();
 
                 // Collect sibling method names for scoped deduplication.
                 let sibling_method_names: Vec<String> = all_members
                     .iter()
                     .filter_map(|m| {
                         if let ClassLikeMember::Method(m) = m {
-                            Some(m.name.value.to_string())
+                            Some(bytes_to_str(m.name.value).to_string())
                         } else {
                             None
                         }
@@ -218,7 +219,7 @@ fn find_enclosing_context(content: &str, offset: u32, uses_this: bool) -> Option
         CursorContext::InFunction(func, true) => {
             let body_start = func.body.left_brace.start.offset as usize;
             let func_end = func.body.right_brace.end.offset as usize;
-            let enclosing_name = func.name.value.to_string();
+            let enclosing_name = bytes_to_str(func.name.value).to_string();
 
             // For function extraction, insert after the enclosing function.
             // Find the end of the line containing the closing `}`.
@@ -308,8 +309,8 @@ fn find_after_class_end(statements: &Sequence<'_, Statement<'_>>, offset: u32) -
 /// Build a `ScopeMap` for the enclosing function/method at `offset`.
 fn build_scope_map(content: &str, offset: u32) -> ScopeMap {
     let arena = Bump::new();
-    let file_id = mago_database::file::FileId::new("extract_fn_scope");
-    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+    let file_id = mago_database::file::FileId::new(b"extract_fn_scope");
+    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
     crate::scope_collector::build_scope_map_for_offset(
         program.statements.as_slice(),
         offset,
@@ -1537,8 +1538,8 @@ fn analyse_returns(
     return_value_count: usize,
 ) -> ReturnStrategy {
     let arena = Bump::new();
-    let file_id = mago_database::file::FileId::new("extract_fn_ret");
-    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+    let file_id = mago_database::file::FileId::new(b"extract_fn_ret");
+    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
     let body_stmts = find_enclosing_body_statements(&program.statements, start as u32);
 
@@ -1941,8 +1942,8 @@ fn classify_guard_returns(
 /// they mirror the original signature.
 fn resolve_enclosing_param_order(content: &str, offset: u32) -> Vec<String> {
     let arena = Bump::new();
-    let file_id = mago_database::file::FileId::new("extract_fn_pord");
-    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+    let file_id = mago_database::file::FileId::new(b"extract_fn_pord");
+    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
     let ctx = find_cursor_context(&program.statements, offset);
 
@@ -1962,7 +1963,7 @@ fn resolve_enclosing_param_order(content: &str, offset: u32) -> Vec<String> {
         Some(pl) => pl
             .parameters
             .iter()
-            .map(|p| p.variable.name.to_string())
+            .map(|p| bytes_to_str(p.variable.name).to_string())
             .collect(),
         None => Vec::new(),
     }
@@ -1996,8 +1997,8 @@ fn sort_params_by_enclosing_order(
 
 fn resolve_enclosing_return_type(content: &str, offset: u32) -> PhpType {
     let arena = Bump::new();
-    let file_id = mago_database::file::FileId::new("extract_fn_rtype");
-    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+    let file_id = mago_database::file::FileId::new(b"extract_fn_rtype");
+    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
     let ctx = find_cursor_context(&program.statements, offset);
 

@@ -48,7 +48,7 @@ use mago_syntax::ast::argument::Argument;
 use mago_syntax::ast::sequence::TokenSeparatedSequence;
 use mago_syntax::ast::*;
 
-use crate::atom::{Atom, AtomMap, atom};
+use crate::atom::{Atom, AtomMap, atom, bytes_to_str};
 use crate::completion::resolver::{Loaders, VarResolutionCtx};
 use crate::completion::types::narrowing;
 use crate::parser::{extract_hint_type, with_parsed_program};
@@ -453,7 +453,7 @@ fn walk_closures_in_expr<'b>(
             // Seed with `use(...)` variables from the outer scope.
             if let Some(ref use_clause) = closure.use_clause {
                 for use_var in use_clause.variables.iter() {
-                    let var_name = use_var.variable.name.to_string();
+                    let var_name = bytes_to_str(use_var.variable.name).to_string();
                     let from_outer = outer_scope.get(&var_name);
                     if !from_outer.is_empty() {
                         closure_scope.set(&var_name, from_outer.to_vec());
@@ -639,7 +639,7 @@ fn walk_closures_in_call<'b>(
             walk_closures_in_expr(fc.function, outer_scope, ctx, None);
 
             let func_name = match fc.function {
-                Expression::Identifier(ident) => Some(ident.value().to_string()),
+                Expression::Identifier(ident) => Some(bytes_to_str(ident.value()).to_string()),
                 _ => None,
             };
             walk_closures_in_call_args(&fc.argument_list.arguments, outer_scope, ctx, |arg_idx| {
@@ -660,7 +660,7 @@ fn walk_closures_in_call<'b>(
             walk_closures_in_expr(mc.object, outer_scope, ctx, None);
 
             let method_name = if let ClassLikeMemberSelector::Identifier(ident) = &mc.method {
-                Some(ident.value.to_string())
+                Some(bytes_to_str(ident.value).to_string())
             } else {
                 None
             };
@@ -686,7 +686,7 @@ fn walk_closures_in_call<'b>(
             walk_closures_in_expr(mc.object, outer_scope, ctx, None);
 
             let method_name = if let ClassLikeMemberSelector::Identifier(ident) = &mc.method {
-                Some(ident.value.to_string())
+                Some(bytes_to_str(ident.value).to_string())
             } else {
                 None
             };
@@ -712,7 +712,7 @@ fn walk_closures_in_call<'b>(
             walk_closures_in_expr(sc.class, outer_scope, ctx, None);
 
             let method_name = if let ClassLikeMemberSelector::Identifier(ident) = &sc.method {
-                Some(ident.value.to_string())
+                Some(bytes_to_str(ident.value).to_string())
             } else {
                 None
             };
@@ -814,7 +814,7 @@ fn seed_closure_params(
     ctx: &ForwardWalkCtx<'_>,
 ) {
     for (idx, param) in parameter_list.parameters.iter().enumerate() {
-        let pname = param.variable.name.to_string();
+        let pname = bytes_to_str(param.variable.name).to_string();
         let is_variadic = param.ellipsis.is_some();
 
         let native_type = param.hint.as_ref().map(|h| extract_hint_type(h));
@@ -1275,7 +1275,7 @@ fn infer_callable_params_from_static_receiver_fw(
     let class_name = match class_expr {
         Expression::Self_(_) => Some(ctx.current_class.name.to_string()),
         Expression::Static(_) => Some(ctx.current_class.name.to_string()),
-        Expression::Identifier(ident) => Some(ident.value().to_string()),
+        Expression::Identifier(ident) => Some(bytes_to_str(ident.value()).to_string()),
         Expression::Parent(_) => ctx.current_class.parent_class.map(|a| a.to_string()),
         _ => None,
     };
@@ -1711,7 +1711,7 @@ fn walk_class_member_body<'b>(
     if let ClassLikeMember::Method(method) = member
         && let MethodBody::Concrete(block) = &method.body
     {
-        let method_name = method.name.value.to_string();
+        let method_name = bytes_to_str(method.name.value).to_string();
         let is_static = method.modifiers.contains_static();
         analyze_function_body(
             method.parameter_list.parameters.iter(),
@@ -2627,7 +2627,7 @@ fn seed_params<'b>(
     ctx: &ForwardWalkCtx<'_>,
 ) {
     for param in parameters {
-        let pname = param.variable.name.to_string();
+        let pname = bytes_to_str(param.variable.name).to_string();
         let is_variadic = param.ellipsis.is_some();
         let native_type = param.hint.as_ref().map(|h| extract_hint_type(h));
 
@@ -2975,7 +2975,7 @@ fn process_statement<'b>(
         Statement::Unset(unset_stmt) => {
             for val in unset_stmt.values.iter() {
                 if let Expression::Variable(Variable::Direct(dv)) = val {
-                    scope.remove(dv.name);
+                    scope.remove(bytes_to_str(dv.name));
                 }
             }
         }
@@ -2985,7 +2985,7 @@ fn process_statement<'b>(
         Statement::Global(global) => {
             for var in global.variables.iter() {
                 if let Variable::Direct(dv) = var {
-                    let var_name = dv.name.to_string();
+                    let var_name = bytes_to_str(dv.name).to_string();
                     if let Some(top_scope) = &ctx.top_level_scope {
                         if let Some(types) = top_scope.get(&atom(&var_name)) {
                             scope.set(&var_name, types.clone());
@@ -3103,7 +3103,7 @@ fn process_increment_decrement<'b>(
     };
 
     let var_name = match var_expr {
-        Expression::Variable(Variable::Direct(dv)) => dv.name.to_string(),
+        Expression::Variable(Variable::Direct(dv)) => bytes_to_str(dv.name).to_string(),
         _ => return,
     };
 
@@ -3735,7 +3735,7 @@ fn try_process_inline_var_override<'b>(
                 && ctx.cursor_offset <= rhs_span.end.offset;
             if cursor_in_rhs {
                 if let Expression::Variable(Variable::Direct(dv)) = assignment.lhs {
-                    Some(dv.name.to_string())
+                    Some(bytes_to_str(dv.name).to_string())
                 } else {
                     None
                 }
@@ -3775,7 +3775,7 @@ fn try_process_inline_var_override<'b>(
         if let Expression::Assignment(assignment) = expr
             && let Expression::Variable(Variable::Direct(dv)) = assignment.lhs
         {
-            let lhs_name = dv.name.to_string();
+            let lhs_name = bytes_to_str(dv.name).to_string();
             if !multi.iter().any(|(n, _)| *n == lhs_name) {
                 return VarOverrideResult::None;
             }
@@ -3814,14 +3814,14 @@ fn try_process_inline_var_override<'b>(
                     return VarOverrideResult::None;
                 }
 
-                let var_name = dv.name.to_string();
+                let var_name = bytes_to_str(dv.name).to_string();
                 scope.set(&var_name, resolved);
                 // Scan for preceding docblocks.
                 apply_preceding_var_docblocks(&trimmed[..doc_start], scope, ctx);
                 return VarOverrideResult::NoVar;
             }
         } else if let Expression::Variable(Variable::Direct(dv)) = expr {
-            let var_name = dv.name.to_string();
+            let var_name = bytes_to_str(dv.name).to_string();
             scope.set(&var_name, resolved);
             apply_preceding_var_docblocks(&trimmed[..doc_start], scope, ctx);
             return VarOverrideResult::NoVar;
@@ -4054,7 +4054,7 @@ fn process_assignment_expr<'b>(
         // Array push: `$var[] = expr;`
         if let Expression::ArrayAppend(array_append) = assignment.lhs {
             if let Expression::Variable(Variable::Direct(dv)) = array_append.array {
-                let var_name = dv.name.to_string();
+                let var_name = bytes_to_str(dv.name).to_string();
                 let rhs_types = resolve_rhs_with_scope(assignment.rhs, scope, ctx);
                 if !rhs_types.is_empty() {
                     let value_type = ResolvedType::types_joined(&rhs_types);
@@ -4074,7 +4074,7 @@ fn process_assignment_expr<'b>(
 
         // Simple variable assignment: `$var = expr;`
         let lhs_name = match assignment.lhs {
-            Expression::Variable(Variable::Direct(dv)) => dv.name.to_string(),
+            Expression::Variable(Variable::Direct(dv)) => bytes_to_str(dv.name).to_string(),
             _ => return,
         };
 
@@ -4095,7 +4095,7 @@ fn process_assignment_expr<'b>(
         // refine the type from `string` to `numeric-string` so that
         // downstream increment/decrement inference can detect it.
         if let Expression::Literal(Literal::String(lit_str)) = assignment.rhs {
-            let raw = lit_str.raw.to_string();
+            let raw = bytes_to_str(lit_str.raw).to_string();
             let unquoted = raw
                 .strip_prefix('\'')
                 .or_else(|| raw.strip_prefix('"'))
@@ -4133,7 +4133,7 @@ fn process_compound_assignment<'b>(
     use mago_syntax::ast::assignment::AssignmentOperator;
 
     let var_name = match assignment.lhs {
-        Expression::Variable(Variable::Direct(dv)) => dv.name.to_string(),
+        Expression::Variable(Variable::Direct(dv)) => bytes_to_str(dv.name).to_string(),
         _ => return,
     };
 
@@ -4339,7 +4339,7 @@ fn resolve_rhs_with_scope<'b>(
             | AssignmentOperator::Division(_)
             | AssignmentOperator::Exponentiation(_) => {
                 let lhs_types = if let Expression::Variable(Variable::Direct(dv)) = assignment.lhs {
-                    scope.get(dv.name.as_ref()).to_vec()
+                    scope.get(bytes_to_str(dv.name)).to_vec()
                 } else {
                     vec![]
                 };
@@ -4370,7 +4370,7 @@ fn resolve_rhs_with_scope<'b>(
     // For bare variable references, read directly from scope.
     // This is the O(1) path that replaces the recursive backward scan.
     if let Expression::Variable(Variable::Direct(dv)) = rhs {
-        let var_name = dv.name.to_string();
+        let var_name = bytes_to_str(dv.name).to_string();
         let from_scope = scope.get(&var_name);
         if !from_scope.is_empty() {
             return from_scope.to_vec();
@@ -4387,10 +4387,10 @@ fn resolve_rhs_with_scope<'b>(
     // subsequent `new $var` can resolve the class-string.
     if let Expression::Access(Access::ClassConstant(cca)) = rhs
         && let ClassLikeConstantSelector::Identifier(ident) = &cca.constant
-        && ident.value == "class"
+        && ident.value == b"class"
     {
         let class_name = match cca.class {
-            Expression::Identifier(id) => Some(id.value().to_string()),
+            Expression::Identifier(id) => Some(bytes_to_str(id.value()).to_string()),
             Expression::Self_(_) | Expression::Static(_) => {
                 if !ctx.current_class.name.is_empty() {
                     Some(ctx.current_class.name.to_string())
@@ -4857,7 +4857,7 @@ fn bind_destructured_pattern<'b>(
                     } else {
                         vec![ResolvedType::from_type_string(vt.clone())]
                     };
-                    scope.set(dv.name, resolved_types);
+                    scope.set(bytes_to_str(dv.name), resolved_types);
                 }
             }
             // Nested pattern: recurse with the extracted element type.
@@ -5089,7 +5089,7 @@ fn seed_pass_by_ref_primitives<'b>(
     let (arg_list, parameters) = match expr {
         Expression::Call(Call::Function(func_call)) => {
             let func_name = match func_call.function {
-                Expression::Identifier(ident) => ident.value().to_string(),
+                Expression::Identifier(ident) => bytes_to_str(ident.value()).to_string(),
                 _ => return,
             };
             let fl = match ctx.loaders.function_loader {
@@ -5104,15 +5104,15 @@ fn seed_pass_by_ref_primitives<'b>(
         }
         Expression::Call(Call::Method(mc)) => {
             let method_name = match &mc.method {
-                ClassLikeMemberSelector::Identifier(ident) => ident.value.to_string(),
+                ClassLikeMemberSelector::Identifier(ident) => bytes_to_str(ident.value).to_string(),
                 _ => return,
             };
             let receiver_class = match mc.object {
-                Expression::Variable(Variable::Direct(dv)) if dv.name == "$this" => {
+                Expression::Variable(Variable::Direct(dv)) if dv.name == b"$this" => {
                     Some(ctx.current_class.name.to_string())
                 }
                 Expression::Variable(Variable::Direct(dv)) => {
-                    let types = scope.get(dv.name);
+                    let types = scope.get(bytes_to_str(dv.name));
                     types.iter().find_map(|rt| {
                         let name = rt.type_string.base_name()?;
                         if crate::php_type::is_primitive_scalar_name(name) {
@@ -5145,15 +5145,15 @@ fn seed_pass_by_ref_primitives<'b>(
         }
         Expression::Call(Call::NullSafeMethod(mc)) => {
             let method_name = match &mc.method {
-                ClassLikeMemberSelector::Identifier(ident) => ident.value.to_string(),
+                ClassLikeMemberSelector::Identifier(ident) => bytes_to_str(ident.value).to_string(),
                 _ => return,
             };
             let receiver_class = match mc.object {
-                Expression::Variable(Variable::Direct(dv)) if dv.name == "$this" => {
+                Expression::Variable(Variable::Direct(dv)) if dv.name == b"$this" => {
                     Some(ctx.current_class.name.to_string())
                 }
                 Expression::Variable(Variable::Direct(dv)) => {
-                    let types = scope.get(dv.name);
+                    let types = scope.get(bytes_to_str(dv.name));
                     types.iter().find_map(|rt| {
                         let name = rt.type_string.base_name()?;
                         if crate::php_type::is_primitive_scalar_name(name) {
@@ -5186,7 +5186,7 @@ fn seed_pass_by_ref_primitives<'b>(
         }
         Expression::Call(Call::StaticMethod(sc)) => {
             let method_name = match &sc.method {
-                ClassLikeMemberSelector::Identifier(ident) => ident.value.to_string(),
+                ClassLikeMemberSelector::Identifier(ident) => bytes_to_str(ident.value).to_string(),
                 _ => return,
             };
             let class_name = match sc.class {
@@ -5195,7 +5195,7 @@ fn seed_pass_by_ref_primitives<'b>(
                     Some(p) => p.to_string(),
                     None => return,
                 },
-                Expression::Identifier(ident) => ident.value().to_string(),
+                Expression::Identifier(ident) => bytes_to_str(ident.value()).to_string(),
                 _ => return,
             };
             let cls = match (ctx.class_loader)(&class_name) {
@@ -5224,7 +5224,7 @@ fn seed_pass_by_ref_primitives<'b>(
 
         // Only handle direct variable arguments.
         let var_name = match arg_expr {
-            Expression::Variable(Variable::Direct(dv)) => dv.name.to_string(),
+            Expression::Variable(Variable::Direct(dv)) => bytes_to_str(dv.name).to_string(),
             _ => continue,
         };
 
@@ -5282,7 +5282,7 @@ fn extract_call_arg_variables<'b>(expr: &'b Expression<'b>) -> Vec<String> {
             Argument::Named(named) => named.value,
         };
         if let Expression::Variable(Variable::Direct(dv)) = arg_expr {
-            vars.push(dv.name.to_string());
+            vars.push(bytes_to_str(dv.name).to_string());
         }
     }
     vars
@@ -5299,7 +5299,7 @@ fn process_assert_narrowing<'b>(
     // unknown, the variable won't be in the scope map.  A subsequent
     // `assert($x instanceof Foo)` should add it with the asserted type.
     if let Expression::Call(Call::Function(fc)) = expr
-        && matches!(fc.function, Expression::Identifier(ident) if ident.value() == "assert")
+        && matches!(fc.function, Expression::Identifier(ident) if ident.value() == b"assert")
         && let Some(arg) = fc.argument_list.arguments.first()
     {
         let arg_expr = match arg {
@@ -5310,11 +5310,11 @@ fn process_assert_narrowing<'b>(
             && bin.operator.is_instanceof()
             && let Expression::Variable(Variable::Direct(dv)) = bin.lhs
         {
-            let var_name = dv.name.to_string();
+            let var_name = bytes_to_str(dv.name).to_string();
             if scope.get(&var_name).is_empty() {
                 // Variable not in scope — seed it with the asserted type.
                 let class_name = match bin.rhs {
-                    Expression::Identifier(ident) => Some(ident.value().to_string()),
+                    Expression::Identifier(ident) => Some(bytes_to_str(ident.value()).to_string()),
                     Expression::Self_(_) => Some(ctx.current_class.name.to_string()),
                     Expression::Static(_) => Some(ctx.current_class.name.to_string()),
                     Expression::Parent(_) => ctx.current_class.parent_class.map(|a| a.to_string()),
@@ -5970,7 +5970,7 @@ fn collect_expr_assignment_deps(
     if let Expression::Assignment(assign) = expr
         && let Expression::Variable(Variable::Direct(dv)) = assign.lhs
     {
-        let lhs_name = dv.name.to_string();
+        let lhs_name = bytes_to_str(dv.name).to_string();
         let mut rhs_vars = HashSet::new();
         collect_rhs_variables(assign.rhs, &mut rhs_vars);
         deps.entry(lhs_name).or_default().extend(rhs_vars);
@@ -5983,7 +5983,7 @@ fn collect_rhs_variables(expr: &Expression<'_>, vars: &mut HashSet<String>) {
 
     match expr {
         Expression::Variable(Variable::Direct(dv)) => {
-            vars.insert(dv.name.to_string());
+            vars.insert(bytes_to_str(dv.name).to_string());
         }
         Expression::Binary(binary) => {
             collect_rhs_variables(binary.lhs, vars);
@@ -6126,8 +6126,8 @@ fn process_foreach<'b>(foreach: &'b Foreach<'b>, scope: &mut ScopeState, ctx: &F
     // check for @var annotations for each one.
     let foreach_offset = foreach.foreach.span().start.offset as usize;
     if let Expression::Variable(Variable::Direct(dv)) = foreach.expression {
-        let var_name = format!("${}", dv.name);
-        if scope.get(dv.name).is_empty()
+        let var_name = format!("${}", bytes_to_str(dv.name));
+        if scope.get(bytes_to_str(dv.name)).is_empty()
             && let Some(var_type) =
                 crate::docblock::find_var_raw_type_in_source(ctx.content, foreach_offset, &var_name)
         {
@@ -6135,7 +6135,7 @@ fn process_foreach<'b>(foreach: &'b Foreach<'b>, scope: &mut ScopeState, ctx: &F
                 &crate::util::resolve_php_type_names(&var_type, ctx.class_loader),
                 ctx,
             );
-            scope.set(dv.name, resolved);
+            scope.set(bytes_to_str(dv.name), resolved);
         }
     } else {
         // For complex expressions like `$users->active()->byName()`,
@@ -6375,7 +6375,7 @@ fn resolve_foreach_iterable_type<'b>(
 ) -> Option<PhpType> {
     // Try direct scope lookup for bare variable iterators.
     if let Expression::Variable(Variable::Direct(dv)) = foreach.expression {
-        let var_name = dv.name.to_string();
+        let var_name = bytes_to_str(dv.name).to_string();
         let from_scope = scope.get(&var_name);
         if !from_scope.is_empty() {
             return Some(ResolvedType::types_joined(from_scope));
@@ -6404,7 +6404,7 @@ fn resolve_foreach_iterable_type<'b>(
     // fallback and handles cases where the variable's type comes from a
     // docblock rather than an assignment.
     if let Expression::Variable(Variable::Direct(dv)) = foreach.expression {
-        let var_name = dv.name.to_string();
+        let var_name = bytes_to_str(dv.name).to_string();
         let foreach_offset = foreach.foreach.span().start.offset as usize;
         if let Some(docblock_type) = crate::docblock::find_iterable_raw_type_in_source(
             ctx.content,
@@ -6540,7 +6540,7 @@ fn bind_foreach_value<'b>(
         value_expr
     };
     if let Expression::Variable(Variable::Direct(dv)) = value_expr {
-        let var_name = dv.name.to_string();
+        let var_name = bytes_to_str(dv.name).to_string();
         if let Some(it) = iter_type {
             // Strategy 1: extract from the type's own generic parameters.
             let value_php_type = it.extract_value_type(false);
@@ -6690,7 +6690,10 @@ fn bind_foreach_value<'b>(
                 let (var_name, shape_key) = match elem {
                     ArrayElement::KeyValue(kv) => {
                         if let Expression::Variable(Variable::Direct(dv)) = kv.value {
-                            (dv.name.to_string(), extract_foreach_destr_key(kv.key))
+                            (
+                                bytes_to_str(dv.name).to_string(),
+                                extract_foreach_destr_key(kv.key),
+                            )
                         } else {
                             continue;
                         }
@@ -6699,7 +6702,7 @@ fn bind_foreach_value<'b>(
                         let key = Some(positional_index.to_string());
                         positional_index += 1;
                         if let Expression::Variable(Variable::Direct(dv)) = val.value {
-                            (dv.name.to_string(), key)
+                            (bytes_to_str(dv.name).to_string(), key)
                         } else {
                             continue;
                         }
@@ -6759,7 +6762,7 @@ fn extract_foreach_var_name(expr: &Expression<'_>) -> Option<String> {
         expr
     };
     if let Expression::Variable(Variable::Direct(dv)) = inner {
-        Some(dv.name.to_string())
+        Some(bytes_to_str(dv.name).to_string())
     } else {
         None
     }
@@ -6770,13 +6773,16 @@ fn extract_foreach_var_name(expr: &Expression<'_>) -> Option<String> {
 /// Handles string literals (`'user'`, `"user"`) and integer literals.
 fn extract_foreach_destr_key(key_expr: &Expression<'_>) -> Option<String> {
     match key_expr {
-        Expression::Literal(Literal::String(lit_str)) => {
-            lit_str.value.as_ref().map(|v| v.to_string()).or_else(|| {
-                let raw = lit_str.raw.to_string();
+        Expression::Literal(Literal::String(lit_str)) => lit_str
+            .value
+            .map(|v| bytes_to_str(v).to_string())
+            .or_else(|| {
+                let raw = bytes_to_str(lit_str.raw).to_string();
                 Some(raw.trim_matches('\'').trim_matches('"').to_string())
-            })
+            }),
+        Expression::Literal(Literal::Integer(lit_int)) => {
+            Some(bytes_to_str(lit_int.raw).to_string())
         }
-        Expression::Literal(Literal::Integer(lit_int)) => Some(lit_int.raw.to_string()),
         _ => None,
     }
 }
@@ -6872,7 +6878,7 @@ fn bind_foreach_key<'b>(
     ctx: &ForwardWalkCtx<'_>,
 ) {
     if let Expression::Variable(Variable::Direct(dv)) = key_expr {
-        let var_name = dv.name.to_string();
+        let var_name = bytes_to_str(dv.name).to_string();
         if let Some(it) = iter_type {
             let key_php_type = it.extract_key_type(false);
             if let Some(kt) = key_php_type {
@@ -7215,7 +7221,7 @@ fn process_try<'b>(try_stmt: &'b Try<'b>, scope: &mut ScopeState, ctx: &ForwardW
         {
             // Bind the caught exception variable.
             if let Some(ref var) = catch.variable {
-                let var_name = var.name.to_string();
+                let var_name = bytes_to_str(var.name).to_string();
                 let parsed_hint = extract_hint_type(&catch.hint);
                 let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
                     &parsed_hint,
@@ -7261,7 +7267,7 @@ fn process_try<'b>(try_stmt: &'b Try<'b>, scope: &mut ScopeState, ctx: &ForwardW
     for catch in try_stmt.catch_clauses.iter() {
         let mut catch_scope = pre_try_scope.clone();
         if let Some(ref var) = catch.variable {
-            let var_name = var.name.to_string();
+            let var_name = bytes_to_str(var.name).to_string();
             let parsed_hint = extract_hint_type(&catch.hint);
             let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
                 &parsed_hint,
@@ -7848,7 +7854,7 @@ fn resolve_in_array_element_type_fw(
 ) -> Option<PhpType> {
     // If the haystack is a simple variable, look it up in the scope.
     if let Expression::Variable(Variable::Direct(dv)) = haystack_expr {
-        let var_name = dv.name.to_string();
+        let var_name = bytes_to_str(dv.name).to_string();
         let types = scope.get(&var_name);
         if !types.is_empty() {
             let joined = ResolvedType::types_joined(types);
@@ -7924,7 +7930,7 @@ fn apply_phpstan_assert_condition_narrowing<'b>(
     match call {
         Call::Function(func_call) => {
             let func_name = match func_call.function {
-                Expression::Identifier(ident) => ident.value().to_string(),
+                Expression::Identifier(ident) => bytes_to_str(ident.value()).to_string(),
                 _ => return,
             };
             let func_info = match ctx.loaders.function_loader {
@@ -7977,12 +7983,12 @@ fn apply_phpstan_assert_condition_narrowing<'b>(
         }
         Call::StaticMethod(static_call) => {
             let class_name = match static_call.class {
-                Expression::Identifier(ident) => ident.value().to_string(),
+                Expression::Identifier(ident) => bytes_to_str(ident.value()).to_string(),
                 Expression::Self_(_) | Expression::Static(_) => ctx.current_class.name.to_string(),
                 _ => return,
             };
             let method_name = match &static_call.method {
-                ClassLikeMemberSelector::Identifier(ident) => ident.value.to_string(),
+                ClassLikeMemberSelector::Identifier(ident) => bytes_to_str(ident.value).to_string(),
                 _ => return,
             };
             let class_info = match (ctx.class_loader)(&class_name) {
@@ -8048,11 +8054,11 @@ fn apply_phpstan_assert_condition_narrowing<'b>(
         Call::Method(method_call) => {
             // Instance method: `$var->method()` with `@phpstan-assert-if-true Type $this`
             let receiver_var = match method_call.object {
-                Expression::Variable(Variable::Direct(dv)) => dv.name.to_string(),
+                Expression::Variable(Variable::Direct(dv)) => bytes_to_str(dv.name).to_string(),
                 _ => return,
             };
             let method_name = match &method_call.method {
-                ClassLikeMemberSelector::Identifier(ident) => ident.value.to_string(),
+                ClassLikeMemberSelector::Identifier(ident) => bytes_to_str(ident.value).to_string(),
                 _ => return,
             };
             // Resolve the receiver's type to find the method's assertions.
@@ -8458,7 +8464,7 @@ fn is_null_expr(expr: &Expression<'_>) -> bool {
         Expression::Literal(Literal::Null(_)) => true,
         Expression::ConstantAccess(ca) => {
             let name = ca.name.value();
-            let clean = crate::util::strip_fqn_prefix(name);
+            let clean = crate::util::strip_fqn_prefix(bytes_to_str(name));
             clean.eq_ignore_ascii_case("null")
         }
         _ => false,
@@ -8468,7 +8474,7 @@ fn is_null_expr(expr: &Expression<'_>) -> bool {
 /// Extract a direct variable name from an expression.
 fn expr_to_var_name(expr: &Expression<'_>) -> Option<String> {
     if let Expression::Variable(Variable::Direct(dv)) = expr {
-        Some(dv.name.to_string())
+        Some(bytes_to_str(dv.name).to_string())
     } else {
         None
     }
@@ -8685,7 +8691,7 @@ fn process_condition_assignment<'b>(
         && assignment.operator.is_assign()
         && let Expression::Variable(Variable::Direct(dv)) = assignment.lhs
     {
-        let var_name = dv.name.to_string();
+        let var_name = bytes_to_str(dv.name).to_string();
         let rhs_types = resolve_rhs_with_scope(assignment.rhs, scope, ctx);
         if !rhs_types.is_empty() {
             scope.set(&var_name, rhs_types);
@@ -8889,7 +8895,7 @@ fn collect_condition_property_keys_inner(expr: &Expression<'_>, keys: &mut Vec<S
         // Type guard functions: `is_string($a->foo)`, `is_int($a->foo)`, etc.
         Expression::Call(Call::Function(func_call)) => {
             if let Expression::Identifier(ident) = func_call.function {
-                let func_name = ident.value();
+                let func_name = bytes_to_str(ident.value());
                 let is_type_guard = matches!(
                     func_name,
                     "is_array"
@@ -8999,7 +9005,7 @@ fn collect_condition_var_names_inner(expr: &Expression<'_>, names: &mut Vec<Stri
     match expr {
         Expression::Binary(bin) if bin.operator.is_instanceof() => {
             if let Expression::Variable(Variable::Direct(dv)) = bin.lhs {
-                let name = dv.name.to_string();
+                let name = bytes_to_str(dv.name).to_string();
                 if !names.contains(&name) {
                     names.push(name);
                 }
@@ -9026,7 +9032,7 @@ fn collect_condition_var_names_inner(expr: &Expression<'_>, names: &mut Vec<Stri
         // is_a($var, ...) and get_class($var) === ...
         Expression::Call(Call::Function(func_call)) => {
             let func_name = match func_call.function {
-                Expression::Identifier(ident) => ident.value(),
+                Expression::Identifier(ident) => bytes_to_str(ident.value()),
                 _ => return,
             };
             if (func_name == "is_a" || func_name == "get_class")
@@ -9037,7 +9043,7 @@ fn collect_condition_var_names_inner(expr: &Expression<'_>, names: &mut Vec<Stri
                     Argument::Named(named) => named.value,
                 };
                 if let Expression::Variable(Variable::Direct(dv)) = arg_expr {
-                    let name = dv.name.to_string();
+                    let name = bytes_to_str(dv.name).to_string();
                     if !names.contains(&name) {
                         names.push(name);
                     }
@@ -9170,7 +9176,7 @@ fn try_enter_closure_expr<'b>(
                 // Seed with `use(...)` variables from the outer scope.
                 if let Some(ref use_clause) = closure.use_clause {
                     for use_var in use_clause.variables.iter() {
-                        let var_name = use_var.variable.name.to_string();
+                        let var_name = bytes_to_str(use_var.variable.name).to_string();
                         let from_outer = scope.get(&var_name);
                         if !from_outer.is_empty() {
                             closure_scope.set(&var_name, from_outer.to_vec());
@@ -9305,7 +9311,7 @@ fn infer_callable_params_for_call(
     match call {
         Call::Function(fc) => {
             let func_name = match fc.function {
-                Expression::Identifier(ident) => Some(ident.value().to_string()),
+                Expression::Identifier(ident) => Some(bytes_to_str(ident.value()).to_string()),
                 _ => None,
             };
             if let Some(ref name) = func_name {
@@ -9322,7 +9328,7 @@ fn infer_callable_params_for_call(
         }
         Call::Method(mc) => {
             let method_name = if let ClassLikeMemberSelector::Identifier(ident) = &mc.method {
-                Some(ident.value.to_string())
+                Some(bytes_to_str(ident.value).to_string())
             } else {
                 None
             };
@@ -9345,7 +9351,7 @@ fn infer_callable_params_for_call(
         }
         Call::NullSafeMethod(mc) => {
             let method_name = if let ClassLikeMemberSelector::Identifier(ident) = &mc.method {
-                Some(ident.value.to_string())
+                Some(bytes_to_str(ident.value).to_string())
             } else {
                 None
             };
@@ -9368,7 +9374,7 @@ fn infer_callable_params_for_call(
         }
         Call::StaticMethod(sc) => {
             let method_name = if let ClassLikeMemberSelector::Identifier(ident) = &sc.method {
-                Some(ident.value.to_string())
+                Some(bytes_to_str(ident.value).to_string())
             } else {
                 None
             };

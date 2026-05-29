@@ -6032,4 +6032,3 @@ async fn test_nullsafe_does_not_narrow_in_else() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
-

@@ -23,6 +23,7 @@ use tower_lsp::lsp_types::*;
 
 use super::cursor_context::{CursorContext, MemberContext, find_cursor_context};
 use crate::Backend;
+use crate::atom::bytes_to_str;
 use crate::util::offset_to_position;
 
 // ── Data types ──────────────────────────────────────────────────────────────
@@ -69,8 +70,8 @@ impl Backend {
         let cursor_offset = crate::util::position_to_offset(content, params.range.start);
 
         let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, cursor_offset);
 
@@ -159,7 +160,7 @@ fn find_promotion_candidate(
     };
 
     // Must be __construct.
-    if method.name.value != "__construct" {
+    if method.name.value != b"__construct" {
         return None;
     }
 
@@ -185,7 +186,7 @@ fn find_promotion_candidate(
         return None;
     }
 
-    let param_name = param.variable.name;
+    let param_name = bytes_to_str(param.variable.name);
     // Strip the leading `$` for property matching.
     let bare_name = param_name.strip_prefix('$').unwrap_or(param_name);
 
@@ -278,7 +279,7 @@ fn find_matching_property<'a>(
             && let Property::Plain(plain) = property
         {
             for item in plain.items.iter() {
-                let var_name = item.variable().name;
+                let var_name = bytes_to_str(item.variable().name);
                 let item_bare = var_name.strip_prefix('$').unwrap_or(var_name);
                 if item_bare == bare_name {
                     return Some((property, plain));
@@ -454,8 +455,8 @@ mod tests {
     /// Helper: parse PHP and find a promotion candidate at the given byte offset.
     fn find_candidate(php: &str, offset: u32) -> Option<PromotionCandidate> {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
         let ctx = find_cursor_context(&program.statements, offset);
         find_promotion_candidate(&ctx, php, offset)
     }

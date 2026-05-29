@@ -123,8 +123,8 @@ fn is_valid_expression(selected_text: &str) -> bool {
     // the selection is not a valid expression.
     let wrapper = format!("<?php $__x = {};", body);
     let arena = bumpalo::Bump::new();
-    let file_id = mago_database::file::FileId::new("extract_check.php");
-    let program = mago_syntax::parser::parse_file_content(&arena, file_id, &wrapper);
+    let file_id = mago_database::file::FileId::new(b"extract_check.php");
+    let program = mago_syntax::parser::parse_file_content(&arena, file_id, wrapper.as_bytes());
     program.errors.is_empty()
 }
 

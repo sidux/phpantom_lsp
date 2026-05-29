@@ -21,8 +21,8 @@ impl Backend {
     /// and walks every statement/expression to emit `FoldingRange` entries.
     pub fn handle_folding_range(&self, content: &str) -> Option<Vec<FoldingRange>> {
         let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
         let mut ranges: Vec<FoldingRange> = Vec::new();
 

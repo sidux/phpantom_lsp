@@ -31,6 +31,7 @@ use super::cursor_context::{
 };
 use super::detect_indent_from_members;
 use crate::Backend;
+use crate::atom::bytes_to_str;
 use crate::util::offset_to_position;
 
 // ── Data types ──────────────────────────────────────────────────────────────
@@ -51,8 +52,8 @@ fn existing_hook_names<'a>(property: &Property<'a>) -> (bool, bool) {
             let mut has_set = false;
             for hook in hooked.hook_list.hooks.iter() {
                 match hook.name.value {
-                    "get" => has_get = true,
-                    "set" => has_set = true,
+                    b"get" => has_get = true,
+                    b"set" => has_set = true,
                     _ => {}
                 }
             }
@@ -212,8 +213,8 @@ impl Backend {
         let cursor_offset = crate::util::position_to_offset(content, params.range.start);
 
         let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, cursor_offset);
 
@@ -264,14 +265,20 @@ impl Backend {
                 // can't have hooks anyway.
                 if let Some(first_item) = plain.items.first() {
                     let var = first_item.variable();
-                    var.name.strip_prefix('$').unwrap_or(var.name).to_string()
+                    bytes_to_str(var.name)
+                        .strip_prefix('$')
+                        .unwrap_or(bytes_to_str(var.name))
+                        .to_string()
                 } else {
                     return;
                 }
             }
             Property::Hooked(hooked) => {
                 let var = hooked.item.variable();
-                var.name.strip_prefix('$').unwrap_or(var.name).to_string()
+                bytes_to_str(var.name)
+                    .strip_prefix('$')
+                    .unwrap_or(bytes_to_str(var.name))
+                    .to_string()
             }
         };
 

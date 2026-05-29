@@ -7,7 +7,7 @@ use mago_span::HasSpan;
 use mago_syntax::ast::*;
 
 use crate::Backend;
-use crate::atom::atom;
+use crate::atom::{atom, atom_bytes, bytes_to_str};
 use crate::docblock;
 use crate::types::*;
 
@@ -48,7 +48,7 @@ fn try_extract_function_exists_guard<'a>(condition: &'a Expression<'a>) -> Optio
         Expression::Identifier(ident) => ident.value(),
         _ => return None,
     };
-    if func_name != "function_exists" {
+    if func_name != b"function_exists".as_slice() {
         return None;
     }
 
@@ -63,7 +63,8 @@ fn try_extract_function_exists_guard<'a>(condition: &'a Expression<'a>) -> Optio
         // from `raw`.
         let name = lit_str
             .value
-            .or_else(|| crate::util::unquote_php_string(lit_str.raw))?;
+            .map(bytes_to_str)
+            .or_else(|| crate::util::unquote_php_string(bytes_to_str(lit_str.raw)))?;
         if !name.is_empty() {
             return Some(name);
         }
@@ -104,7 +105,7 @@ impl Backend {
                         continue;
                     }
 
-                    let name = atom(func.name.value);
+                    let name = atom_bytes(func.name.value);
                     let name_offset = func.name.span.start.offset;
                     let php_version = doc_ctx.and_then(|ctx| ctx.php_version);
                     let mut parameters = extract_parameters(
@@ -408,7 +409,7 @@ impl Backend {
                     let ns_name = namespace
                         .name
                         .as_ref()
-                        .map(|ident| ident.value().to_string())
+                        .map(|ident| bytes_to_str(ident.value()).to_string())
                         .filter(|s| !s.is_empty());
 
                     // Merge: if we already have a namespace and the inner
@@ -561,7 +562,7 @@ impl Backend {
                         let end = item.value.span().end.offset as usize;
                         let value = content.get(start..end).map(|s| s.to_string());
                         defines.push((
-                            item.name.value.to_string(),
+                            bytes_to_str(item.name.value).to_string(),
                             item.name.span.start.offset,
                             value,
                         ));
@@ -697,7 +698,7 @@ impl Backend {
                 Expression::Identifier(ident) => ident,
                 _ => return None,
             };
-            if !ident.value().eq_ignore_ascii_case("define") {
+            if !ident.value().eq_ignore_ascii_case(b"define") {
                 return None;
             }
             let args: Vec<_> = func_call.argument_list.arguments.iter().collect();
@@ -723,7 +724,7 @@ impl Backend {
                     let end = val_expr.span().end.offset as usize;
                     content.get(start..end).map(|s| s.to_string())
                 });
-                return Some((name.to_string(), offset, value_text));
+                return Some((bytes_to_str(name).to_string(), offset, value_text));
             }
         }
         None

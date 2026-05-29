@@ -248,15 +248,15 @@ fn collect_from_statement(
             );
         }
         Statement::Class(class) => {
-            let class_name = class.name.value.to_string();
+            let class_name = crate::atom::bytes_to_str(class.name.value).to_string();
             collect_from_class_members(class.members.as_slice(), ctx, resolver, Some(&class_name));
         }
         Statement::Trait(tr) => {
-            let trait_name = tr.name.value.to_string();
+            let trait_name = crate::atom::bytes_to_str(tr.name.value).to_string();
             collect_from_class_members(tr.members.as_slice(), ctx, resolver, Some(&trait_name));
         }
         Statement::Enum(en) => {
-            let enum_name = en.name.value.to_string();
+            let enum_name = crate::atom::bytes_to_str(en.name.value).to_string();
             collect_from_class_members(en.members.as_slice(), ctx, resolver, Some(&enum_name));
         }
         Statement::Interface(_) => {
@@ -936,7 +936,7 @@ fn expr_has_extract(expr: &Expression<'_>) -> bool {
     match expr {
         Expression::Call(Call::Function(fc)) => {
             if let Expression::Identifier(ident) = fc.function
-                && ident.value().eq_ignore_ascii_case("extract")
+                && ident.value().eq_ignore_ascii_case(b"extract")
             {
                 return true;
             }
@@ -1134,7 +1134,7 @@ fn collect_compact_from_expr(expr: &Expression<'_>, vars: &mut HashSet<String>) 
     match expr {
         Expression::Call(Call::Function(fc)) => {
             if let Expression::Identifier(ident) = fc.function
-                && ident.value().eq_ignore_ascii_case("compact")
+                && ident.value().eq_ignore_ascii_case(b"compact")
             {
                 // Each string argument is a variable name (without $).
                 for arg in fc.argument_list.arguments.iter() {
@@ -1143,9 +1143,9 @@ fn collect_compact_from_expr(expr: &Expression<'_>, vars: &mut HashSet<String>) 
                         // (without quotes); fall back to `raw` and
                         // strip quotes manually if `value` is `None`.
                         let name: &str = if let Some(v) = s.value {
-                            v
+                            crate::atom::bytes_to_str(v)
                         } else {
-                            let raw = s.raw;
+                            let raw = crate::atom::bytes_to_str(s.raw);
                             raw.strip_prefix('\'')
                                 .or_else(|| raw.strip_prefix('"'))
                                 .and_then(|inner| {

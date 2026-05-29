@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::atom::{Atom, atom};
+use crate::atom::{Atom, atom, bytes_to_str};
 use crate::php_type::PhpType;
 use crate::symbol_map::extract_symbol_map;
 use crate::types::TypeAliasDef;
@@ -87,8 +87,8 @@ impl Backend {
     /// Returns `true` when at least one class signature changed.
     fn update_ast_inner(&self, uri: &str, content: &str) -> bool {
         let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = parse_file_content(&arena, file_id, content);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program = parse_file_content(&arena, file_id, content.as_bytes());
 
         // Run mago-names resolver while the arena is still alive.
         // This produces a `ResolvedNames` that maps every identifier's
@@ -151,7 +151,7 @@ impl Backend {
                     let block_ns: Option<String> = ns
                         .name
                         .as_ref()
-                        .map(|ident| ident.value().to_string())
+                        .map(|ident| bytes_to_str(ident.value()).to_string())
                         .filter(|n| !n.is_empty());
 
                     // Record the byte span of this namespace block.

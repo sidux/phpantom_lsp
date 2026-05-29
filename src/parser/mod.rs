@@ -19,7 +19,7 @@ pub(crate) mod error_format;
 mod functions;
 mod use_statements;
 
-use crate::atom::atom;
+use crate::atom::{atom, bytes_to_str, last_segment};
 
 use mago_span::HasSpan;
 use mago_syntax::ast::*;
@@ -90,18 +90,16 @@ impl DocblockCtx<'_> {
     }
 
     /// Check whether `attr_short_name` resolves to `PhpStormStubsElementAvailable`.
-    pub(crate) fn is_element_available_attr(&self, attr_short_name: &str) -> bool {
-        let canonical = self
-            .resolve_attr_last_segment(attr_short_name)
-            .unwrap_or(attr_short_name);
+    pub(crate) fn is_element_available_attr(&self, attr_short_name: &[u8]) -> bool {
+        let name_str = bytes_to_str(attr_short_name);
+        let canonical = self.resolve_attr_last_segment(name_str).unwrap_or(name_str);
         canonical == ATTR_ELEMENT_AVAILABLE
     }
 
     /// Check whether `attr_short_name` resolves to `LanguageLevelTypeAware`.
-    fn is_language_level_type_aware_attr(&self, attr_short_name: &str) -> bool {
-        let canonical = self
-            .resolve_attr_last_segment(attr_short_name)
-            .unwrap_or(attr_short_name);
+    fn is_language_level_type_aware_attr(&self, attr_short_name: &[u8]) -> bool {
+        let name_str = bytes_to_str(attr_short_name);
+        let canonical = self.resolve_attr_last_segment(name_str).unwrap_or(name_str);
         canonical == ATTR_LANGUAGE_LEVEL_TYPE_AWARE
     }
 }
@@ -200,7 +198,7 @@ fn extract_version_availability(
 ) -> Option<VersionAvailability> {
     for attr_list in attribute_lists.iter() {
         for attr in attr_list.attributes.iter() {
-            if !ctx.is_element_available_attr(attr.name.last_segment()) {
+            if !ctx.is_element_available_attr(last_segment(attr.name.value())) {
                 continue;
             }
 
@@ -211,7 +209,7 @@ fn extract_version_availability(
             for arg in arg_list.arguments.iter() {
                 match arg {
                     argument::Argument::Named(named) => {
-                        let name = named.name.value.to_string();
+                        let name = bytes_to_str(named.name.value).to_string();
                         let value = extract_string_literal_value(named.value, ctx.content);
                         if let Some(ver_str) = value {
                             let ver = PhpVersion::from_composer_constraint(&ver_str);
@@ -259,7 +257,7 @@ pub(crate) fn extract_language_level_type(
 ) -> Option<PhpType> {
     for attr_list in attribute_lists.iter() {
         for attr in attr_list.attributes.iter() {
-            if !ctx.is_language_level_type_aware_attr(attr.name.last_segment()) {
+            if !ctx.is_language_level_type_aware_attr(last_segment(attr.name.value())) {
                 continue;
             }
 
@@ -270,7 +268,7 @@ pub(crate) fn extract_language_level_type(
             for arg in arg_list.arguments.iter() {
                 match arg {
                     argument::Argument::Named(named) => {
-                        let name = named.name.value.to_string();
+                        let name = bytes_to_str(named.name.value).to_string();
                         if name == "default" {
                             default_type = extract_string_literal_value(named.value, ctx.content);
                         }
@@ -503,7 +501,7 @@ pub(crate) fn extract_deprecated_attribute(
             for arg in arg_list.arguments.iter() {
                 match arg {
                     argument::Argument::Named(named) => {
-                        let name = named.name.value.to_string();
+                        let name = bytes_to_str(named.name.value).to_string();
                         let value = extract_string_literal_value(named.value, ctx.content);
                         match name.as_str() {
                             // JetBrains stubs use `reason:`, native PHP 8.4
@@ -553,37 +551,39 @@ fn is_known_deprecated_attr(name: &Identifier<'_>, ctx: &DocblockCtx<'_>) -> boo
     match name {
         Identifier::FullyQualified(fq) => {
             // Input boundary: AST fully-qualified names include the leading `\`.
-            let stripped = strip_fqn_prefix(fq.value);
+            let stripped = strip_fqn_prefix(bytes_to_str(fq.value));
             DEPRECATED_FQNS.contains(&stripped)
         }
         Identifier::Qualified(q) => {
             // Resolve the first segment via the use-map, then rebuild.
-            let first_seg = q.value.split('\\').next().unwrap_or(q.value);
+            let q_str = bytes_to_str(q.value);
+            let first_seg = q_str.split('\\').next().unwrap_or(q_str);
             if let Some(resolved_prefix) = ctx.use_map.get(first_seg) {
-                let rest = &q.value[first_seg.len()..]; // includes leading '\'
+                let rest = &q_str[first_seg.len()..]; // includes leading '\'
                 let fqn = format!("{}{}", resolved_prefix, rest);
                 DEPRECATED_FQNS.contains(&fqn.as_str())
             } else {
                 // No use-map entry — prepend file namespace if present.
                 let fqn = if let Some(ns) = &ctx.namespace {
-                    format!("{}\\{}", ns, q.value)
+                    format!("{}\\{}", ns, q_str)
                 } else {
-                    q.value.to_string()
+                    q_str.to_string()
                 };
                 DEPRECATED_FQNS.contains(&fqn.as_str())
             }
         }
         Identifier::Local(local) => {
             // Check use-map first (e.g. `use JetBrains\PhpStorm\Deprecated;`)
-            if let Some(fqn) = ctx.use_map.get(local.value) {
+            let local_str = bytes_to_str(local.value);
+            if let Some(fqn) = ctx.use_map.get(local_str) {
                 DEPRECATED_FQNS.contains(&fqn.as_str())
             } else {
                 // No import — the name lives in the current namespace.
                 // Only matches if the file is in the global namespace.
                 let fqn = if let Some(ns) = &ctx.namespace {
-                    format!("{}\\{}", ns, local.value)
+                    format!("{}\\{}", ns, local_str)
                 } else {
-                    local.value.to_string()
+                    local_str.to_string()
                 };
                 DEPRECATED_FQNS.contains(&fqn.as_str())
             }
@@ -772,13 +772,14 @@ pub(crate) fn with_parsed_program<T: Default>(
             let mut borrow = cell.borrow_mut();
             let entry = borrow.as_mut().unwrap();
             let arena = bumpalo::Bump::new();
-            let file_id = mago_database::file::FileId::new("input.php");
+            let file_id = mago_database::file::FileId::new(b"input.php");
             // SAFETY: `program` borrows from `arena` and `entry.content`.
             // The arena is moved into `entry.arena` immediately after
             // extracting the raw pointer — the heap-allocated chunks do
             // not move, so the pointer stays valid.  `entry.content` lives
             // inside the `RefCell` until the guard is dropped.
-            let program = mago_syntax::parser::parse_file_content(&arena, file_id, &entry.content);
+            let program =
+                mago_syntax::parser::parse_file_content(&arena, file_id, entry.content.as_bytes());
             let program_ptr: *const () = (program as *const Program<'_>).cast();
             entry.program_ptr = Some(program_ptr);
             entry.arena = Some(arena);
@@ -804,8 +805,9 @@ pub(crate) fn with_parsed_program<T: Default>(
     let content_owned = content.to_string();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let arena = bumpalo::Bump::new();
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, &content_owned);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program =
+            mago_syntax::parser::parse_file_content(&arena, file_id, content_owned.as_bytes());
         f(program, &content_owned)
     }));
 
@@ -824,7 +826,7 @@ pub(crate) fn with_parsed_program<T: Default>(
 /// generics, shapes, or callables), the mapping is straightforward.
 pub(crate) fn extract_hint_type(hint: &Hint) -> PhpType {
     match hint {
-        Hint::Identifier(ident) => PhpType::Named(ident.value().to_string()),
+        Hint::Identifier(ident) => PhpType::Named(bytes_to_str(ident.value()).to_string()),
         Hint::Nullable(nullable) => PhpType::Nullable(Box::new(extract_hint_type(nullable.hint))),
         Hint::Union(union) => {
             let mut members = Vec::new();
@@ -913,7 +915,7 @@ pub(crate) fn extract_parameters(
             }
         })
         .map(|param| {
-            let name = atom(param.variable.name);
+            let name = atom(bytes_to_str(param.variable.name));
             let is_variadic = param.ellipsis.is_some();
             let is_reference = param.ampersand.is_some();
             let has_default = param.default_value.is_some();
@@ -1023,7 +1025,7 @@ pub(crate) fn extract_property_info(property: &Property) -> Vec<PropertyInfo> {
         .variables()
         .iter()
         .map(|var| {
-            let raw_name = var.name.to_string();
+            let raw_name = bytes_to_str(var.name).to_string();
             // Strip the leading `$` for property names since PHP access
             // syntax is `$this->name` not `$this->$name`.
             let name = if let Some(stripped) = raw_name.strip_prefix('$') {
@@ -1102,7 +1104,7 @@ impl Backend {
                         let block_ns: Option<String> = ns
                             .name
                             .as_ref()
-                            .map(|ident| ident.value().to_string())
+                            .map(|ident| bytes_to_str(ident.value()).to_string())
                             .filter(|n| !n.is_empty());
 
                         let mut block_classes = Vec::new();

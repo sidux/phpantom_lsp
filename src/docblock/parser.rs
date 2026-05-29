@@ -94,10 +94,10 @@ impl DocblockInfo {
 pub fn parse_docblock(docblock: &str, base_span: Span) -> Option<DocblockInfo> {
     let arena = Bump::new();
 
-    // `parse_phpdoc_with_span` requires `content: &'arena str`.
-    // We allocate the string into the arena so that the borrow lives
+    // `parse_phpdoc_with_span` requires `content: &'arena [u8]`.
+    // We allocate the bytes into the arena so that the borrow lives
     // long enough.
-    let content: &str = arena.alloc_str(docblock);
+    let content: &[u8] = arena.alloc_slice_copy(docblock.as_bytes());
 
     let document = mago_docblock::parse_phpdoc_with_span(&arena, content, base_span).ok()?;
 
@@ -108,6 +108,7 @@ pub fn parse_docblock(docblock: &str, base_span: Span) -> Option<DocblockInfo> {
 /// [`TagInfo`] values, and extract the free-text description from
 /// `Text` elements that appear before the first tag.
 fn collect_tags(document: &mago_docblock::document::Document<'_>) -> DocblockInfo {
+    use crate::atom::bytes_to_str;
     let mut tags = Vec::new();
     let mut description_parts: Vec<String> = Vec::new();
     let mut seen_tag = false;
@@ -117,9 +118,9 @@ fn collect_tags(document: &mago_docblock::document::Document<'_>) -> DocblockInf
             Element::Tag(tag) => {
                 seen_tag = true;
                 tags.push(TagInfo {
-                    name: tag.name.to_owned(),
+                    name: bytes_to_str(tag.name).to_owned(),
                     kind: tag.kind,
-                    description: tag.description.to_owned(),
+                    description: bytes_to_str(tag.description).to_owned(),
                     span: tag.span,
                     description_span: tag.description_span,
                 });
@@ -128,14 +129,17 @@ fn collect_tags(document: &mago_docblock::document::Document<'_>) -> DocblockInf
                 for seg in &text.segments {
                     match seg {
                         TextSegment::Paragraph { content, .. } => {
-                            description_parts.push((*content).to_owned());
+                            description_parts.push(bytes_to_str(content).to_owned());
                         }
                         TextSegment::InlineCode(code) => {
-                            description_parts.push(format!("`{}`", code.content));
+                            description_parts.push(format!("`{}`", bytes_to_str(code.content)));
                         }
                         TextSegment::InlineTag(tag) => {
-                            description_parts
-                                .push(format!("{{@{} {}}}", tag.name, tag.description));
+                            description_parts.push(format!(
+                                "{{@{} {}}}",
+                                bytes_to_str(tag.name),
+                                bytes_to_str(tag.description)
+                            ));
                         }
                     }
                 }

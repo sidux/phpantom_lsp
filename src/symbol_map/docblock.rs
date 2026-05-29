@@ -95,6 +95,7 @@ pub fn get_docblock_text_with_offset<'a>(
     content: &str,
     node: &impl HasSpan,
 ) -> Option<(&'a str, u32)> {
+    use crate::atom::bytes_to_str;
     let node_start = node.span().start.offset;
     let candidate_idx = trivia.partition_point(|t| t.span.start.offset < node_start);
     if candidate_idx == 0 {
@@ -117,7 +118,7 @@ pub fn get_docblock_text_with_offset<'a>(
 
         match t.kind {
             TriviaKind::DocBlockComment => {
-                return Some((t.value, t.span.start.offset));
+                return Some((bytes_to_str(t.value), t.span.start.offset));
             }
             TriviaKind::WhiteSpace
             | TriviaKind::SingleLineComment
@@ -553,7 +554,7 @@ pub(super) fn emit_type_spans(
     );
 
     let arena = Bump::new();
-    let effective_token = arena.alloc_str(effective_token);
+    let effective_token = arena.alloc_slice_copy(effective_token.as_bytes());
     match mago_type_syntax::parse_str(&arena, parse_span, effective_token) {
         Ok(ty) => {
             let mut local_spans: Vec<SymbolSpan> = Vec::new();
@@ -732,6 +733,7 @@ fn emit_type_spans_from_ast(
     base_offset: u32,
     spans: &mut Vec<SymbolSpan>,
 ) {
+    use crate::atom::bytes_to_str;
     match ty {
         // ── Composite types ─────────────────────────────────────────
         type_ast::Type::Union(u) => {
@@ -751,7 +753,7 @@ fn emit_type_spans_from_ast(
 
         // ── Named / Reference types ─────────────────────────────────
         type_ast::Type::Reference(r) => {
-            let name = r.identifier.value;
+            let name = bytes_to_str(r.identifier.value);
             let id_start = base_offset + r.identifier.span.start.offset;
             let id_end = base_offset + r.identifier.span.end.offset;
 
@@ -821,7 +823,7 @@ fn emit_type_spans_from_ast(
         type_ast::Type::Callable(c) => {
             // Emit span for the callable keyword if it's navigable
             // (e.g. `Closure` is a class, `callable` is not).
-            let kw_name = c.keyword.value;
+            let kw_name = bytes_to_str(c.keyword.value);
             let kw_start = base_offset + c.keyword.span.start.offset;
             let kw_end = base_offset + c.keyword.span.end.offset;
             emit_identifier_span(kw_name, kw_start, kw_end, spans);
@@ -905,7 +907,7 @@ fn emit_type_spans_from_ast(
         }
 
         // ── Variable ($this) ────────────────────────────────────────
-        type_ast::Type::Variable(v) if v.value == "$this" => {
+        type_ast::Type::Variable(v) if v.value == b"$this" => {
             let start = base_offset + v.span.start.offset;
             let end = base_offset + v.span.end.offset;
             spans.push(SymbolSpan {
@@ -961,7 +963,7 @@ fn emit_type_spans_from_ast(
         | type_ast::Type::NonEmptyUnspecifiedLiteralString(k) => {
             // `static`, `self`, and `parent` are parsed as keywords by
             // mago but should still produce SelfStaticParent spans.
-            let name = k.value;
+            let name = bytes_to_str(k.value);
             if name == "static" || name == "self" || name == "parent" {
                 let start = base_offset + k.span.start.offset;
                 let end = base_offset + k.span.end.offset;

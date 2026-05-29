@@ -727,7 +727,8 @@ pub fn resolve_conditional_with_args_and_defaults<'b>(
                     Argument::Positional(pos) => Some(pos.value),
                     Argument::Named(named) => {
                         // Also match named arguments by param name
-                        if named.name.value == param_name_without_dollar {
+                        if crate::atom::bytes_to_str(named.name.value) == param_name_without_dollar
+                        {
                             Some(named.value)
                         } else {
                             None
@@ -802,7 +803,7 @@ pub fn resolve_conditional_with_args_and_defaults<'b>(
                 if let Some(Expression::Variable(Variable::Direct(dv))) = arg_expr
                     && let Some(resolver) = var_resolver
                 {
-                    let names = resolver(dv.name);
+                    let names = resolver(crate::atom::bytes_to_str(dv.name));
                     if !names.is_empty() {
                         let names: Vec<String> = names
                             .into_iter()
@@ -866,11 +867,16 @@ pub fn resolve_conditional_with_args_and_defaults<'b>(
                     Some(Expression::Literal(Literal::String(lit_str))) => {
                         // `value` is the unquoted content; fall back
                         // to stripping quotes from `raw`.
-                        let inner = lit_str.value.map(|v| v.to_string()).unwrap_or_else(|| {
-                            crate::util::unquote_php_string(lit_str.raw)
-                                .unwrap_or(lit_str.raw)
+                        let inner = lit_str
+                            .value
+                            .map(|v| crate::atom::bytes_to_str(v).to_string())
+                            .unwrap_or_else(|| {
+                                crate::util::unquote_php_string(crate::atom::bytes_to_str(
+                                    lit_str.raw,
+                                ))
+                                .unwrap_or(crate::atom::bytes_to_str(lit_str.raw))
                                 .to_string()
-                        });
+                            });
                         inner == *expected
                     }
                     _ => false,
@@ -1126,11 +1132,13 @@ fn try_resolve_with_template_default(
 pub(crate) fn extract_class_string_from_expr(expr: &Expression<'_>) -> Option<String> {
     if let Expression::Access(Access::ClassConstant(cca)) = expr
         && let ClassLikeConstantSelector::Identifier(ident) = &cca.constant
-        && ident.value == "class"
+        && ident.value == b"class"
     {
         // Extract the class name from the LHS
         return match cca.class {
-            Expression::Identifier(class_ident) => Some(class_ident.value().to_string()),
+            Expression::Identifier(class_ident) => {
+                Some(crate::atom::bytes_to_str(class_ident.value()).to_string())
+            }
             Expression::Self_(_) => Some("self".to_string()),
             Expression::Static(_) => Some("static".to_string()),
             Expression::Parent(_) => Some("parent".to_string()),

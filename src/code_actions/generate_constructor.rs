@@ -24,6 +24,7 @@ use tower_lsp::lsp_types::*;
 use super::cursor_context::{CursorContext, MemberContext, find_cursor_context};
 use super::detect_indent_from_members;
 use crate::Backend;
+use crate::atom::bytes_to_str;
 use crate::docblock::{extract_var_type, get_docblock_text_for_node};
 use crate::parser::extract_hint_type;
 use crate::php_type::PhpType;
@@ -74,8 +75,8 @@ impl Backend {
         let cursor_offset = crate::util::position_to_offset(content, params.range.start);
 
         let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, cursor_offset);
 
@@ -206,7 +207,7 @@ impl Backend {
 fn has_constructor<'a>(members: &Sequence<'a, ClassLikeMember<'a>>) -> bool {
     members.iter().any(|m| {
         if let ClassLikeMember::Method(method) = m {
-            method.name.value.eq_ignore_ascii_case("__construct")
+            method.name.value.eq_ignore_ascii_case(b"__construct")
         } else {
             false
         }
@@ -258,7 +259,7 @@ fn collect_qualifying_properties<'a>(
         let decl_end = find_line_end(content, prop_span.end.offset as usize);
 
         for item in plain.items.iter() {
-            let var_name = item.variable().name;
+            let var_name = bytes_to_str(item.variable().name);
             let bare_name = var_name.strip_prefix('$').unwrap_or(var_name);
 
             // Determine the type hint for the parameter.
@@ -820,9 +821,9 @@ mod tests {
     #[test]
     fn detects_existing_constructor() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    public function __construct() {}\n}";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         // Find the class and check for constructor.
         let ctx = find_cursor_context(&program.statements, 20);
@@ -836,9 +837,9 @@ mod tests {
     #[test]
     fn detects_no_constructor() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    public string $name;\n}";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         if let CursorContext::InClassLike { all_members, .. } = &ctx {
@@ -851,9 +852,9 @@ mod tests {
     #[test]
     fn detects_constructor_case_insensitive() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    public function __CONSTRUCT() {}\n}";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         if let CursorContext::InClassLike { all_members, .. } = &ctx {
@@ -868,9 +869,9 @@ mod tests {
     #[test]
     fn collects_non_static() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    public string $name;\n    private int $age;\n}";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         if let CursorContext::InClassLike { all_members, .. } = &ctx {
@@ -904,9 +905,9 @@ mod tests {
     #[test]
     fn skips_static_properties() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    public string $name;\n    public static int $count;\n}";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         if let CursorContext::InClassLike { all_members, .. } = &ctx {
@@ -921,9 +922,9 @@ mod tests {
     #[test]
     fn includes_readonly_properties() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    public string $name;\n    public readonly int $id;\n}";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         if let CursorContext::InClassLike { all_members, .. } = &ctx {
@@ -949,9 +950,9 @@ mod tests {
     #[test]
     fn extracts_default_values() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    public string $status = 'active';\n}";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         if let CursorContext::InClassLike { all_members, .. } = &ctx {
@@ -967,9 +968,9 @@ mod tests {
     #[test]
     fn extracts_docblock_type_when_no_native_hint() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    /** @var string */\n    public $name;\n}";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         if let CursorContext::InClassLike { all_members, .. } = &ctx {
@@ -992,9 +993,9 @@ mod tests {
     #[test]
     fn skips_compound_docblock_type() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    /** @var int|string */\n    public $id;\n}";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         if let CursorContext::InClassLike { all_members, .. } = &ctx {
@@ -1013,9 +1014,9 @@ mod tests {
     #[test]
     fn preserves_nullable_native_type() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    public ?string $name;\n}";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         if let CursorContext::InClassLike { all_members, .. } = &ctx {
@@ -1037,9 +1038,9 @@ mod tests {
     #[test]
     fn preserves_union_native_type() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    public int|string $id;\n}";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         if let CursorContext::InClassLike { all_members, .. } = &ctx {
@@ -1061,9 +1062,9 @@ mod tests {
     #[test]
     fn captures_declaration_span() {
         let arena = Box::leak(Box::new(Bump::new()));
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php\nclass Foo {\n    public string $name;\n}\n";
-        let program = mago_syntax::parser::parse_file_content(arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(arena, file_id, php.as_bytes());
 
         let ctx = find_cursor_context(&program.statements, 20);
         if let CursorContext::InClassLike { all_members, .. } = &ctx {

@@ -482,7 +482,7 @@ fn find_fcc_target_in_expr(
 
         // Check the LHS is the variable we're looking for.
         if let Expression::Variable(Variable::Direct(dv)) = assignment.lhs {
-            if dv.name != var_name {
+            if dv.name != var_name.as_bytes() {
                 return None;
             }
 

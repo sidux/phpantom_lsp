@@ -22,6 +22,8 @@ use mago_database::file::FileId;
 use mago_span::{Position, Span};
 use mago_type_syntax::ast;
 
+use crate::atom::bytes_to_str;
+
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
@@ -304,7 +306,7 @@ impl PhpType {
         );
 
         let arena = Bump::new();
-        let effective = arena.alloc_str(effective);
+        let effective = arena.alloc_slice_copy(effective.as_bytes());
         match mago_type_syntax::parse_str(&arena, span, effective) {
             Ok(ty) => convert(&ty),
             Err(_) => PhpType::Raw(input.to_owned()),
@@ -3906,7 +3908,7 @@ fn convert(ty: &ast::Type<'_>) -> PhpType {
 
         // -- Named / Reference types ------------------------------------------
         ast::Type::Reference(r) => {
-            let name = r.identifier.value.to_string();
+            let name = bytes_to_str(r.identifier.value).to_string();
             match &r.parameters {
                 Some(params) => {
                     let args: Vec<PhpType> =
@@ -3919,22 +3921,22 @@ fn convert(ty: &ast::Type<'_>) -> PhpType {
 
         // -- Array-like types with optional generic parameters ----------------
         ast::Type::Array(a) => {
-            convert_keyword_with_optional_generics(a.keyword.value, &a.parameters)
+            convert_keyword_with_optional_generics(bytes_to_str(a.keyword.value), &a.parameters)
         }
         ast::Type::NonEmptyArray(a) => {
-            convert_keyword_with_optional_generics(a.keyword.value, &a.parameters)
+            convert_keyword_with_optional_generics(bytes_to_str(a.keyword.value), &a.parameters)
         }
         ast::Type::AssociativeArray(a) => {
-            convert_keyword_with_optional_generics(a.keyword.value, &a.parameters)
+            convert_keyword_with_optional_generics(bytes_to_str(a.keyword.value), &a.parameters)
         }
         ast::Type::List(l) => {
-            convert_keyword_with_optional_generics(l.keyword.value, &l.parameters)
+            convert_keyword_with_optional_generics(bytes_to_str(l.keyword.value), &l.parameters)
         }
         ast::Type::NonEmptyList(l) => {
-            convert_keyword_with_optional_generics(l.keyword.value, &l.parameters)
+            convert_keyword_with_optional_generics(bytes_to_str(l.keyword.value), &l.parameters)
         }
         ast::Type::Iterable(i) => {
-            convert_keyword_with_optional_generics(i.keyword.value, &i.parameters)
+            convert_keyword_with_optional_generics(bytes_to_str(i.keyword.value), &i.parameters)
         }
 
         // -- Slice: T[] -------------------------------------------------------
@@ -3990,7 +3992,7 @@ fn convert(ty: &ast::Type<'_>) -> PhpType {
 
         // -- Callable types ---------------------------------------------------
         ast::Type::Callable(c) => {
-            let kind = c.keyword.value.to_string();
+            let kind = bytes_to_str(c.keyword.value).to_string();
             match &c.specification {
                 Some(spec) => {
                     let params: Vec<CallableParam> = spec
@@ -4061,12 +4063,12 @@ fn convert(ty: &ast::Type<'_>) -> PhpType {
         }
 
         // -- Variable (e.g. $this in conditional types) -----------------------
-        ast::Type::Variable(v) => PhpType::Named(v.value.to_string()),
+        ast::Type::Variable(v) => PhpType::Named(bytes_to_str(v.value).to_string()),
 
         // -- Literal types ----------------------------------------------------
-        ast::Type::LiteralInt(l) => PhpType::Literal(l.raw.to_string()),
-        ast::Type::LiteralFloat(l) => PhpType::Literal(l.raw.to_string()),
-        ast::Type::LiteralString(l) => PhpType::Literal(l.raw.to_string()),
+        ast::Type::LiteralInt(l) => PhpType::Literal(bytes_to_str(l.raw).to_string()),
+        ast::Type::LiteralFloat(l) => PhpType::Literal(bytes_to_str(l.raw).to_string()),
+        ast::Type::LiteralString(l) => PhpType::Literal(bytes_to_str(l.raw).to_string()),
 
         // -- Negated / Posited literals (e.g. -42, +42) -----------------------
         ast::Type::Negated(n) => PhpType::Literal(format!("-{}", n.number)),
@@ -4107,7 +4109,7 @@ fn convert(ty: &ast::Type<'_>) -> PhpType {
         | ast::Type::UnspecifiedLiteralString(k)
         | ast::Type::UnspecifiedLiteralFloat(k)
         | ast::Type::NonEmptyUnspecifiedLiteralString(k) => {
-            PhpType::Named(normalize_keyword_casing(k.value))
+            PhpType::Named(normalize_keyword_casing(bytes_to_str(k.value)))
         }
 
         // -- Catch-all for anything else (non_exhaustive) ---------------------
@@ -4509,7 +4511,7 @@ mod tests {
             Position::new(input.len() as u32),
         );
         let arena = Bump::new();
-        let input_arena = arena.alloc_str(input);
+        let input_arena = arena.alloc_slice_copy(input.as_bytes());
         let mago_canonical = match mago_type_syntax::parse_str(&arena, span, input_arena) {
             Ok(ty) => ty.to_string(),
             Err(_) => {

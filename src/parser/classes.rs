@@ -22,7 +22,7 @@ use mago_syntax::ast::sequence::Sequence;
 fn has_scope_attribute(method: &Method<'_>) -> bool {
     for attr_list in method.attribute_lists.iter() {
         for attr in attr_list.attributes.iter() {
-            if attr.name.last_segment() == "Scope" {
+            if last_segment(attr.name.value()) == b"Scope" {
                 return true;
             }
         }
@@ -48,8 +48,8 @@ fn extract_attribute_targets(
 
     for attr_list in attribute_lists.iter() {
         for attr in attr_list.attributes.iter() {
-            let short = attr.name.last_segment();
-            if short != "Attribute" {
+            let short = last_segment(attr.name.value());
+            if short != b"Attribute" {
                 continue;
             }
 
@@ -146,7 +146,7 @@ fn parse_attribute_target_flags(text: &str) -> u8 {
 use mago_syntax::ast::*;
 
 use crate::Backend;
-use crate::atom::{Atom, AtomMap, atom};
+use crate::atom::{Atom, AtomMap, atom, atom_bytes, bytes_to_str, last_segment};
 use crate::docblock;
 use crate::types::*;
 use crate::virtual_members::laravel::infer_relationship_from_body;
@@ -273,8 +273,8 @@ fn extract_collected_by_attribute(
 ) -> Option<String> {
     for attr_list in attribute_lists.iter() {
         for attr in attr_list.attributes.iter() {
-            let short = attr.name.last_segment();
-            if short != "CollectedBy" {
+            let short = last_segment(attr.name.value());
+            if short != b"CollectedBy" {
                 continue;
             }
             let arg_list = attr.argument_list.as_ref()?;
@@ -299,8 +299,8 @@ fn extract_use_eloquent_builder_attribute(
 ) -> Option<String> {
     for attr_list in attribute_lists.iter() {
         for attr in attr_list.attributes.iter() {
-            let short = attr.name.last_segment();
-            if short != "UseEloquentBuilder" {
+            let short = last_segment(attr.name.value());
+            if short != b"UseEloquentBuilder" {
                 continue;
             }
             let arg_list = attr.argument_list.as_ref()?;
@@ -443,7 +443,7 @@ fn extract_casts_definitions<'a>(
         match member {
             ClassLikeMember::Property(Property::Plain(plain)) => {
                 for item in plain.items.iter() {
-                    let var_name = item.variable().name.to_string();
+                    let var_name = bytes_to_str(item.variable().name).to_string();
                     let stripped = var_name.strip_prefix('$').unwrap_or(&var_name);
                     if stripped != "casts" {
                         continue;
@@ -458,7 +458,7 @@ fn extract_casts_definitions<'a>(
                     }
                 }
             }
-            ClassLikeMember::Method(method) if method.name.value == "casts" => {
+            ClassLikeMember::Method(method) if method.name.value == b"casts" => {
                 if let MethodBody::Concrete(block) = &method.body {
                     let start = block.left_brace.start.offset as usize;
                     let end = block.right_brace.end.offset as usize;
@@ -597,7 +597,7 @@ fn extract_attributes_definitions<'a>(
     for member in members {
         if let ClassLikeMember::Property(Property::Plain(plain)) = member {
             for item in plain.items.iter() {
-                let var_name = item.variable().name.to_string();
+                let var_name = bytes_to_str(item.variable().name).to_string();
                 let stripped = var_name.strip_prefix('$').unwrap_or(&var_name);
                 if stripped != "attributes" {
                     continue;
@@ -685,7 +685,7 @@ fn extract_timestamp_config<'a>(
         match member {
             ClassLikeMember::Property(Property::Plain(plain)) => {
                 for item in plain.items.iter() {
-                    let var_name = item.variable().name.to_string();
+                    let var_name = bytes_to_str(item.variable().name).to_string();
                     let stripped = var_name.strip_prefix('$').unwrap_or(&var_name);
                     if stripped != "timestamps" {
                         continue;
@@ -707,7 +707,7 @@ fn extract_timestamp_config<'a>(
             }
             ClassLikeMember::Constant(constant) => {
                 for item in constant.items.iter() {
-                    let name = item.name.value.to_string();
+                    let name = bytes_to_str(item.name.value).to_string();
                     if name != "CREATED_AT" && name != "UPDATED_AT" {
                         continue;
                     }
@@ -755,7 +755,7 @@ fn extract_column_names<'a>(
     for member in members {
         if let ClassLikeMember::Property(Property::Plain(plain)) = member {
             for item in plain.items.iter() {
-                let var_name = item.variable().name.to_string();
+                let var_name = bytes_to_str(item.variable().name).to_string();
                 let stripped = var_name.strip_prefix('$').unwrap_or(&var_name);
                 if !targets.contains(&stripped) {
                     continue;
@@ -793,7 +793,7 @@ fn extract_dates_definitions<'a>(
     for member in members {
         if let ClassLikeMember::Property(Property::Plain(plain)) = member {
             for item in plain.items.iter() {
-                let var_name = item.variable().name.to_string();
+                let var_name = bytes_to_str(item.variable().name).to_string();
                 let stripped = var_name.strip_prefix('$').unwrap_or(&var_name);
                 if stripped != "dates" {
                     continue;
@@ -901,17 +901,22 @@ impl Backend {
                         continue;
                     }
 
-                    let class_name = atom(class.name.value);
+                    let class_name = atom_bytes(class.name.value);
 
                     let parent_class = class
                         .extends
                         .as_ref()
-                        .and_then(|ext| ext.types.first().map(|ident| atom(ident.value())));
+                        .and_then(|ext| ext.types.first().map(|ident| atom_bytes(ident.value())));
 
                     let interfaces: Vec<Atom> = class
                         .implements
                         .as_ref()
-                        .map(|imp| imp.types.iter().map(|ident| atom(ident.value())).collect())
+                        .map(|imp| {
+                            imp.types
+                                .iter()
+                                .map(|ident| atom_bytes(ident.value()))
+                                .collect()
+                        })
                         .unwrap_or_default();
 
                     let doc_info = extract_class_docblock(class, doc_ctx);
@@ -1034,7 +1039,7 @@ impl Backend {
                         continue;
                     }
 
-                    let iface_name = atom(iface.name.value);
+                    let iface_name = atom_bytes(iface.name.value);
 
                     // Interfaces can extend multiple parent interfaces.
                     // Store the first one in `parent_class` for backward
@@ -1044,7 +1049,12 @@ impl Backend {
                     let all_parents: Vec<Atom> = iface
                         .extends
                         .as_ref()
-                        .map(|ext| ext.types.iter().map(|ident| atom(ident.value())).collect())
+                        .map(|ext| {
+                            ext.types
+                                .iter()
+                                .map(|ident| atom_bytes(ident.value()))
+                                .collect()
+                        })
                         .unwrap_or_default();
 
                     let parent_class = all_parents.first().copied();
@@ -1129,7 +1139,7 @@ impl Backend {
                         continue;
                     }
 
-                    let trait_name = atom(trait_def.name.value);
+                    let trait_name = atom_bytes(trait_def.name.value);
 
                     let doc_info = extract_class_docblock(trait_def, doc_ctx);
 
@@ -1211,7 +1221,7 @@ impl Backend {
                         continue;
                     }
 
-                    let enum_name = atom(enum_def.name.value);
+                    let enum_name = atom_bytes(enum_def.name.value);
 
                     let ExtractedMembers {
                         methods,
@@ -1241,7 +1251,12 @@ impl Backend {
                     let mut interfaces: Vec<Atom> = enum_def
                         .implements
                         .as_ref()
-                        .map(|imp| imp.types.iter().map(|ident| atom(ident.value())).collect())
+                        .map(|imp| {
+                            imp.types
+                                .iter()
+                                .map(|ident| atom_bytes(ident.value()))
+                                .collect()
+                        })
                         .unwrap_or_default();
 
                     // Also add the implicit interface to the interfaces
@@ -1346,12 +1361,17 @@ impl Backend {
         let parent_class = anon
             .extends
             .as_ref()
-            .and_then(|ext| ext.types.first().map(|ident| atom(ident.value())));
+            .and_then(|ext| ext.types.first().map(|ident| atom_bytes(ident.value())));
 
         let interfaces: Vec<Atom> = anon
             .implements
             .as_ref()
-            .map(|imp| imp.types.iter().map(|ident| atom(ident.value())).collect())
+            .map(|imp| {
+                imp.types
+                    .iter()
+                    .map(|ident| atom_bytes(ident.value()))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let ExtractedMembers {
@@ -1880,7 +1900,7 @@ impl Backend {
                         continue;
                     }
 
-                    let name = atom(method.name.value);
+                    let name = atom_bytes(method.name.value);
                     let name_offset = method.name.span.start.offset;
                     let php_version = doc_ctx.and_then(|ctx| ctx.php_version);
                     let mut parameters = extract_parameters(
@@ -2067,7 +2087,7 @@ impl Backend {
                         constructor_body = Some(&method.body);
                         for param in method.parameter_list.parameters.iter() {
                             if param.is_promoted_property() {
-                                let raw_name = param.variable.name.to_string();
+                                let raw_name = bytes_to_str(param.variable.name).to_string();
                                 let prop_name =
                                     atom(raw_name.strip_prefix('$').unwrap_or(&raw_name));
                                 let saved_native_hint =
@@ -2114,7 +2134,7 @@ impl Backend {
                                     if let Expression::Instantiation(inst) = dv.value
                                         && let Expression::Identifier(ident) = inst.class
                                     {
-                                        let raw = ident.value().to_string();
+                                        let raw = bytes_to_str(ident.value()).to_string();
                                         let fqn = resolve_name_via_ctx(&raw, doc_ctx);
                                         return Some(PhpType::Named(fqn));
                                     }
@@ -2424,7 +2444,7 @@ impl Backend {
                             ctx.content.get(start..end).map(|s| s.to_string())
                         });
                         constants.push(ConstantInfo {
-                            name: atom(item.name.value),
+                            name: atom_bytes(item.name.value),
                             name_offset: item.name.span.start.offset,
                             type_hint: type_hint.clone(),
                             visibility,
@@ -2440,7 +2460,7 @@ impl Backend {
                     }
                 }
                 ClassLikeMember::EnumCase(enum_case) => {
-                    let case_name = atom(enum_case.item.name().value);
+                    let case_name = atom_bytes(enum_case.item.name().value);
                     let case_name_offset = enum_case.item.name().span.start.offset;
                     let enum_value = if let EnumCaseItem::Backed(backed) = &enum_case.item {
                         let start = backed.value.span().start.offset as usize;
@@ -2468,7 +2488,7 @@ impl Backend {
                 }
                 ClassLikeMember::TraitUse(trait_use) => {
                     for trait_name_ident in trait_use.trait_names.iter() {
-                        used_traits.push(atom(trait_name_ident.value()));
+                        used_traits.push(atom_bytes(trait_name_ident.value()));
                     }
 
                     // Extract `@use` generics from the docblock on the
@@ -2499,12 +2519,14 @@ impl Backend {
                         for adaptation in spec.adaptations.iter() {
                             match adaptation {
                                 TraitUseAdaptation::Precedence(prec) => {
-                                    let trait_name = atom(prec.method_reference.trait_name.value());
-                                    let method_name = atom(prec.method_reference.method_name.value);
+                                    let trait_name =
+                                        atom_bytes(prec.method_reference.trait_name.value());
+                                    let method_name =
+                                        atom_bytes(prec.method_reference.method_name.value);
                                     let insteadof: Vec<Atom> = prec
                                         .trait_names
                                         .iter()
-                                        .map(|id| atom(id.value()))
+                                        .map(|id| atom_bytes(id.value()))
                                         .collect();
                                     trait_precedences.push(TraitPrecedence {
                                         trait_name,
@@ -2516,14 +2538,15 @@ impl Backend {
                                     let (trait_name, method_name) =
                                         match &alias_adapt.method_reference {
                                             TraitUseMethodReference::Identifier(ident) => {
-                                                (None, atom(ident.value))
+                                                (None, atom_bytes(ident.value))
                                             }
                                             TraitUseMethodReference::Absolute(abs) => (
-                                                Some(atom(abs.trait_name.value())),
-                                                atom(abs.method_name.value),
+                                                Some(atom_bytes(abs.trait_name.value())),
+                                                atom_bytes(abs.method_name.value),
                                             ),
                                         };
-                                    let alias = alias_adapt.alias.as_ref().map(|a| atom(a.value));
+                                    let alias =
+                                        alias_adapt.alias.as_ref().map(|a| atom_bytes(a.value));
                                     let visibility = alias_adapt.visibility.as_ref().map(|m| {
                                         if m.is_private() {
                                             Visibility::Private
@@ -2559,16 +2582,16 @@ impl Backend {
                     && let Expression::Assignment(assign) = expr_stmt.expression
                     && let Expression::Access(Access::Property(pa)) = assign.lhs
                     && let Expression::Variable(Variable::Direct(dv)) = pa.object
-                    && dv.name == "$this"
+                    && dv.name == b"$this"
                     && let ClassLikeMemberSelector::Identifier(ident) = &pa.property
                     && let Expression::Instantiation(inst) = assign.rhs
                     && let Expression::Identifier(class_ident) = inst.class
                 {
-                    let prop_name = ident.value.to_string();
+                    let prop_name = bytes_to_str(ident.value).to_string();
                     if let Some(prop) = properties.iter_mut().find(|p| {
                         p.name == prop_name && p.type_hint.is_none() && p.native_type_hint.is_none()
                     }) {
-                        let raw = class_ident.value().to_string();
+                        let raw = bytes_to_str(class_ident.value()).to_string();
                         let fqn = resolve_name_via_ctx(&raw, doc_ctx);
                         prop.type_hint = Some(PhpType::Named(fqn));
                     }

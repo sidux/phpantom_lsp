@@ -58,8 +58,8 @@ impl Backend {
         let cursor_offset = position_to_byte_offset(content, params.range.start) as u32;
 
         let arena = bumpalo::Bump::new();
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
 
         let php_version = self.php_version();
 
@@ -829,8 +829,8 @@ mod tests {
         php_version: PhpVersion,
     ) -> Option<(Simplification, u32, u32)> {
         let arena = bumpalo::Bump::new();
-        let file_id = mago_database::file::FileId::new("input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, php);
+        let file_id = mago_database::file::FileId::new(b"input.php");
+        let program = mago_syntax::parser::parse_file_content(&arena, file_id, php.as_bytes());
 
         let mut best: Option<(Simplification, u32, u32)> = None;
         for stmt in program.statements.iter() {
@@ -1063,9 +1063,9 @@ mod tests {
     #[test]
     fn null_literal_detected() {
         let arena = bumpalo::Bump::new();
-        let file_id = mago_database::file::FileId::new("input.php");
+        let file_id = mago_database::file::FileId::new(b"input.php");
         let php = "<?php $x = null;";
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, php);
+        let program = mago_syntax::parser::parse_file_content(&arena, file_id, php.as_bytes());
         let mut found = false;
         for stmt in program.statements.iter() {
             if let Statement::Expression(expr_stmt) = stmt

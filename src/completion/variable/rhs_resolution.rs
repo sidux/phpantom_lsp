@@ -31,7 +31,7 @@ use mago_syntax::ast::class_like::member::ClassLikeMember;
 use mago_syntax::ast::*;
 
 use crate::Backend;
-use crate::atom::{Atom, AtomMap};
+use crate::atom::{Atom, AtomMap, bytes_to_str};
 use crate::docblock;
 use crate::parser::{extract_hint_type, with_parsed_program};
 use crate::php_type::PhpType;
@@ -160,12 +160,14 @@ fn extract_instanceof_pair(expr: &Expression<'_>) -> Option<(String, PhpType)> {
     {
         // LHS: the variable
         let var_name = match bin.lhs {
-            Expression::Variable(Variable::Direct(dv)) => dv.name.to_string(),
+            Expression::Variable(Variable::Direct(dv)) => bytes_to_str(dv.name).to_string(),
             _ => return None,
         };
         // RHS: the class name
         let class_type = match bin.rhs {
-            Expression::Identifier(ident) => PhpType::Named(ident.value().to_string()),
+            Expression::Identifier(ident) => {
+                PhpType::Named(bytes_to_str(ident.value()).to_string())
+            }
             Expression::Self_(_) => PhpType::Named("self".to_string()),
             Expression::Static(_) => PhpType::Named("static".to_string()),
             Expression::Parent(_) => PhpType::Named("parent".to_string()),
@@ -505,7 +507,7 @@ fn resolve_rhs_expression_inner<'b>(
         // offset, so the recursive resolution only considers
         // assignments *before* the current one, preventing cycles.
         Expression::Variable(Variable::Direct(dv)) => {
-            let rhs_var = dv.name.to_string();
+            let rhs_var = bytes_to_str(dv.name).to_string();
             // Guard: never recurse into the same variable (self-assignment).
             if rhs_var == ctx.var_name {
                 return vec![];
@@ -518,7 +520,7 @@ fn resolve_rhs_expression_inner<'b>(
         }
         // ── Global constant access: `PHP_EOL`, `SORT_ASC`, etc. ────
         Expression::ConstantAccess(ca) => {
-            let name = ca.name.value().to_string();
+            let name = bytes_to_str(ca.name.value()).to_string();
             let name_clean = strip_fqn_prefix(&name);
             // `true`, `false`, `null` are parsed as ConstantAccess by
             // some AST variants — handle them the same as literals.
@@ -663,7 +665,7 @@ fn resolve_rhs_pipe(pipe: &Pipe<'_>, ctx: &VarResolutionCtx<'_>) -> Vec<Resolved
     match pipe.callable {
         Expression::PartialApplication(PartialApplication::Function(fpa)) => {
             let func_name = match fpa.function {
-                Expression::Identifier(ident) => ident.value().to_string(),
+                Expression::Identifier(ident) => bytes_to_str(ident.value()).to_string(),
                 _ => return vec![],
             };
             if let Some(fl) = ctx.function_loader()
@@ -695,13 +697,13 @@ fn resolve_rhs_instantiation(
     ctx: &VarResolutionCtx<'_>,
 ) -> Vec<ResolvedType> {
     let class_name = match inst.class {
-        Expression::Self_(_) => Some("self"),
-        Expression::Static(_) => Some("static"),
-        Expression::Identifier(ident) => Some(ident.value()),
+        Expression::Self_(_) => Some("self".to_string()),
+        Expression::Static(_) => Some("static".to_string()),
+        Expression::Identifier(ident) => Some(bytes_to_str(ident.value()).to_string()),
         _ => None,
     };
-    if let Some(name) = class_name {
-        let fqn = match name {
+    if let Some(ref name) = class_name {
+        let fqn = match name.as_str() {
             "self" | "static" => ctx.current_class.name.to_string(),
             other => crate::util::resolve_name_via_loader(other, ctx.class_loader),
         };
@@ -910,7 +912,7 @@ fn resolve_rhs_instantiation(
     // new $f`).  Extract the class name from the class-string and
     // use it to resolve the instantiated type.
     if let Expression::Variable(Variable::Direct(dv)) = inst.class {
-        let var_name = dv.name.to_string();
+        let var_name = bytes_to_str(dv.name).to_string();
         let resolved =
             crate::completion::variable::class_string_resolution::resolve_class_string_targets(
                 &var_name,
@@ -1683,7 +1685,7 @@ fn resolve_rhs_array_access<'b>(
     let raw_type: Option<PhpType> = if let Expression::Variable(Variable::Direct(base_dv)) =
         current_expr
     {
-        let base_var = base_dv.name.to_string();
+        let base_var = bytes_to_str(base_dv.name).to_string();
         // When a scope_var_resolver is available (forward walk),
         // prefer it over the docblock scan.  The forward walk
         // already incorporates @var annotations AND applies
@@ -1830,11 +1832,15 @@ enum ArrayBracketSegment {
 /// element access.
 fn classify_array_index(index: &Expression<'_>) -> ArrayBracketSegment {
     if let Expression::Literal(Literal::String(s)) = index {
-        let key = s.value.map(|v| v.to_string()).unwrap_or_else(|| {
-            crate::util::unquote_php_string(s.raw)
-                .unwrap_or(s.raw)
-                .to_string()
-        });
+        let key = s
+            .value
+            .map(|v| bytes_to_str(v).to_string())
+            .unwrap_or_else(|| {
+                let raw_str = bytes_to_str(s.raw);
+                crate::util::unquote_php_string(raw_str)
+                    .unwrap_or(raw_str)
+                    .to_string()
+            });
         ArrayBracketSegment::StringKey(key)
     } else {
         ArrayBracketSegment::ElementAccess
@@ -2344,7 +2350,9 @@ fn resolve_rhs_function_call<'b>(
                     // Look up the method's original return type to check if
                     // it contains static/self/$this before resolution replaces it.
                     let method_name = match sma.method {
-                        ClassLikeMemberSelector::Identifier(ident) => ident.value.to_string(),
+                        ClassLikeMemberSelector::Identifier(ident) => {
+                            bytes_to_str(ident.value).to_string()
+                        }
                         _ => String::new(),
                     };
                     if !method_name.is_empty() {
@@ -2391,13 +2399,15 @@ fn resolve_rhs_function_call<'b>(
             PartialApplication::Method(ma) => {
                 let receiver_is_this = matches!(
                     ma.object,
-                    Expression::Variable(Variable::Direct(dv)) if dv.name == "$this"
+                    Expression::Variable(Variable::Direct(dv)) if dv.name == b"$this"
                 );
                 if receiver_is_this {
                     // Look up the method's original return type to check if
                     // it contains static/self/$this.
                     let method_name = match ma.method {
-                        ClassLikeMemberSelector::Identifier(ident) => ident.value.to_string(),
+                        ClassLikeMemberSelector::Identifier(ident) => {
+                            bytes_to_str(ident.value).to_string()
+                        }
                         _ => String::new(),
                     };
                     if !method_name.is_empty() {
@@ -2440,7 +2450,7 @@ fn resolve_rhs_function_call<'b>(
             PartialApplication::Function(fa) => {
                 // `strlen(...)()` — resolve the inner function name.
                 if let Expression::Identifier(ident) = fa.function {
-                    let name = ident.value().to_string();
+                    let name = bytes_to_str(ident.value()).to_string();
                     let function_loader = ctx.function_loader();
                     if let Some(fl) = function_loader
                         && let Some(func_info) = fl(&name)
@@ -2469,7 +2479,7 @@ fn resolve_rhs_function_call<'b>(
     }
 
     let func_name = match func_call.function {
-        Expression::Identifier(ident) => Some(ident.value().to_string()),
+        Expression::Identifier(ident) => Some(bytes_to_str(ident.value()).to_string()),
         _ => None,
     };
 
@@ -2669,7 +2679,7 @@ fn resolve_rhs_function_call<'b>(
     // callable/Closure return type, or look for a
     // closure/arrow-function literal in the assignment.
     if let Expression::Variable(Variable::Direct(dv)) = func_call.function {
-        let var_name = dv.name.to_string();
+        let var_name = bytes_to_str(dv.name).to_string();
         let offset = expr.span().start.offset as usize;
 
         // 1. Try docblock annotation:
@@ -2842,7 +2852,7 @@ fn resolve_rhs_method_call_inner<'b>(
     ctx: &VarResolutionCtx<'_>,
 ) -> Vec<ResolvedType> {
     let method_name = match method {
-        ClassLikeMemberSelector::Identifier(ident) => ident.value.to_string(),
+        ClassLikeMemberSelector::Identifier(ident) => bytes_to_str(ident.value).to_string(),
         // Variable method name (`$obj->$method()`) — can't resolve statically.
         _ => return vec![],
     };
@@ -2853,7 +2863,7 @@ fn resolve_rhs_method_call_inner<'b>(
     // `static`/`self`/`$this`.
     let (owner_classes, receiver_resolved): (Vec<Arc<ClassInfo>>, Vec<ResolvedType>) =
         if let Expression::Variable(Variable::Direct(dv)) = object
-            && dv.name == "$this"
+            && dv.name == b"$this"
         {
             let classes: Vec<Arc<ClassInfo>> = ctx
                 .all_classes
@@ -2864,7 +2874,7 @@ fn resolve_rhs_method_call_inner<'b>(
                 .collect();
             (classes, vec![])
         } else if let Expression::Variable(Variable::Direct(dv)) = object {
-            let var = dv.name.to_string();
+            let var = bytes_to_str(dv.name).to_string();
             // Check match-arm narrowing override first — when inside
             // a match(true) arm, the variable may be narrowed to a
             // specific class by the arm's instanceof condition.
@@ -3299,10 +3309,10 @@ fn resolve_rhs_static_call(
         Expression::Self_(_) => Some(current_class_name.to_string()),
         Expression::Static(_) => Some(current_class_name.to_string()),
         Expression::Parent(_) => ctx.current_class.parent_class.map(|a| a.to_string()),
-        Expression::Identifier(ident) => Some(ident.value().to_string()),
+        Expression::Identifier(ident) => Some(bytes_to_str(ident.value()).to_string()),
         // ── `$var::method()` where `$var` holds a class-string ──
         Expression::Variable(Variable::Direct(dv)) => {
-            let var_name = dv.name.to_string();
+            let var_name = bytes_to_str(dv.name).to_string();
             let targets =
                 crate::completion::variable::class_string_resolution::resolve_class_string_targets(
                     &var_name,
@@ -3316,7 +3326,7 @@ fn resolve_rhs_static_call(
             // resolve the method return type through each and union the results.
             if targets.len() > 1 {
                 if let ClassLikeMemberSelector::Identifier(ident) = &static_call.method {
-                    let method_name_str = ident.value.to_string();
+                    let method_name_str = bytes_to_str(ident.value).to_string();
                     let mut union_types: Vec<PhpType> = Vec::new();
                     let mut union_classes: Vec<ResolvedType> = Vec::new();
                     for target in &targets {
@@ -3455,7 +3465,7 @@ fn resolve_rhs_static_call(
     if let Some(cls_name) = class_name
         && let ClassLikeMemberSelector::Identifier(ident) = &static_call.method
     {
-        let method_name = ident.value.to_string();
+        let method_name = bytes_to_str(ident.value).to_string();
         let owner = (ctx.class_loader)(&cls_name)
             .map(Arc::unwrap_or_clone)
             .or_else(|| {
@@ -3638,7 +3648,7 @@ fn resolve_rhs_property_access(
     // itself) or a typed constant (→ use its type_hint).
     if let Access::ClassConstant(cca) = access {
         let class_name = match cca.class {
-            Expression::Identifier(ident) => Some(ident.value().to_string()),
+            Expression::Identifier(ident) => Some(bytes_to_str(ident.value()).to_string()),
             Expression::Self_(_) => Some(current_class_name.to_string()),
             Expression::Static(_) => Some(current_class_name.to_string()),
             _ => None,
@@ -3654,7 +3664,9 @@ fn resolve_rhs_property_access(
             );
 
             let const_name = match &cca.constant {
-                ClassLikeConstantSelector::Identifier(ident) => Some(ident.value.to_string()),
+                ClassLikeConstantSelector::Identifier(ident) => {
+                    Some(bytes_to_str(ident.value).to_string())
+                }
                 _ => None,
             };
 
@@ -3729,7 +3741,7 @@ fn resolve_rhs_property_access(
     // ── Static property access: `self::$prop`, `static::$prop`, `Foo::$prop` ──
     if let Access::StaticProperty(spa) = access {
         let class_name = match spa.class {
-            Expression::Identifier(ident) => Some(ident.value().to_string()),
+            Expression::Identifier(ident) => Some(bytes_to_str(ident.value()).to_string()),
             Expression::Self_(_) => Some(current_class_name.to_string()),
             Expression::Static(_) => Some(current_class_name.to_string()),
             Expression::Parent(_) => {
@@ -3743,7 +3755,7 @@ fn resolve_rhs_property_access(
         };
         let prop_name = match &spa.property {
             Variable::Direct(dv) => {
-                let raw = dv.name.to_string();
+                let raw = bytes_to_str(dv.name).to_string();
                 Some(raw.strip_prefix('$').unwrap_or(&raw).to_string())
             }
             _ => None,
@@ -3784,7 +3796,9 @@ fn resolve_rhs_property_access(
         && let Some(sel) = prop_selector
     {
         let prop_name = match sel {
-            ClassLikeMemberSelector::Identifier(ident) => Some(ident.value.to_string()),
+            ClassLikeMemberSelector::Identifier(ident) => {
+                Some(bytes_to_str(ident.value).to_string())
+            }
             _ => None,
         };
         if let Some(prop_name) = prop_name {
@@ -3802,7 +3816,7 @@ fn resolve_rhs_property_access(
             // `object` but declared type is `Foo`) to avoid losing
             // declared type information.
             if let Expression::Variable(Variable::Direct(dv)) = obj
-                && dv.name == "$this"
+                && dv.name == b"$this"
             {
                 let narrowed = try_resolve_this_property_from_assignment(&prop_name, ctx);
                 if !narrowed.is_empty() {
@@ -3879,7 +3893,7 @@ fn resolve_rhs_property_access(
 
             let owner_classes: Vec<Arc<ClassInfo>> =
                 if let Expression::Variable(Variable::Direct(dv)) = obj
-                    && dv.name == "$this"
+                    && dv.name == b"$this"
                 {
                     all_classes
                         .iter()
@@ -3888,7 +3902,7 @@ fn resolve_rhs_property_access(
                         .into_iter()
                         .collect()
                 } else if let Expression::Variable(Variable::Direct(dv)) = obj {
-                    let var = dv.name.to_string();
+                    let var = bytes_to_str(dv.name).to_string();
                     // Check match-arm narrowing override first.
                     if let Some(overridden) = ctx.match_arm_narrowing.get(&var).cloned() {
                         ResolvedType::into_arced_classes(overridden)
@@ -4116,13 +4130,13 @@ fn extract_this_property_assignment_rhs<'b>(
     let Expression::Variable(Variable::Direct(dv)) = pa.object else {
         return None;
     };
-    if dv.name != "$this" {
+    if dv.name != b"$this" {
         return None;
     }
     let ClassLikeMemberSelector::Identifier(ident) = &pa.property else {
         return None;
     };
-    if ident.value != prop_name {
+    if bytes_to_str(ident.value) != prop_name {
         return None;
     }
     Some(assignment.rhs)
