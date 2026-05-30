@@ -54,43 +54,6 @@ cheaper to add: write one function, append it to an array.
 
 ---
 
-## A3. Switch → match conversion
-
-**Impact: Low · Effort: Medium**
-
-Offer a code action to convert a `switch` statement to a `match`
-expression when the conversion is safe (PHP 8.0+).
-
-### When the conversion is safe
-
-- Every `case` body is a single expression statement (assignment to the
-  same variable, or a `return`).
-- No `case` body falls through to the next (every case ends with
-  `break`, `return`, or `throw`).
-- The switch subject is a simple expression (variable, property access,
-  method call) — not something with side effects that shouldn't be
-  evaluated multiple times.
-
-### Implementation
-
-- Walk the AST for `Statement::Switch` nodes.
-- Check each arm against the safety criteria above.
-- If all arms pass, build the `match` expression text:
-  - Each `case VALUE:` becomes `VALUE =>`.
-  - `default:` becomes `default =>`.
-  - The body expression (minus the trailing `break;`) becomes the arm's
-    RHS.
-  - If all arms assign to the same variable, hoist the assignment:
-    `$result = match ($x) { ... };`.
-  - If all arms return, convert to `return match ($x) { ... };`.
-- Offer as `refactor.rewrite` code action kind.
-- Only offer when `php_version >= 8.0`.
-
-**Note:** This is a structural AST transformation with no type
-resolution dependency, but the safety checks for fall-through and
-side-effect-free subjects require careful AST inspection. Not trivial,
-but bounded in scope.
-
 ---
 
 

@@ -8,6 +8,7 @@ mod classmap_scanner;
 mod code_action_add_override;
 mod code_action_add_throws;
 mod code_action_change_visibility;
+mod code_action_convert_switch_to_match;
 mod code_action_extract_function;
 mod code_action_extract_interface;
 mod code_action_fix_return_type;

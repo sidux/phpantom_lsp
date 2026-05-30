@@ -73,6 +73,7 @@
 //! diagnostic from the cache and pushes updated diagnostics.
 
 mod change_visibility;
+mod convert_switch_to_match;
 mod convert_to_arrow_function;
 mod convert_to_instance_variable;
 pub(crate) mod cursor_context;
@@ -236,6 +237,9 @@ impl Backend {
 
         // ── Convert to arrow function ───────────────────────────────────
         self.collect_convert_to_arrow_function_actions(uri, content, params, &mut actions);
+
+        // ── Convert switch to match expression ──────────────────────────
+        self.collect_convert_switch_to_match_actions(uri, content, params, &mut actions);
 
         // ── Extract interface ────────────────────────────────────────────
         self.collect_extract_interface_actions(uri, content, params, &mut actions);
