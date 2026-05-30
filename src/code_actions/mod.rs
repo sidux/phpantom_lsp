@@ -78,6 +78,7 @@ mod convert_to_instance_variable;
 pub(crate) mod cursor_context;
 mod extract_constant;
 mod extract_function;
+mod extract_interface;
 mod extract_variable;
 mod generate_constructor;
 mod generate_getter_setter;
@@ -236,6 +237,9 @@ impl Backend {
         // ── Convert to arrow function ───────────────────────────────────
         self.collect_convert_to_arrow_function_actions(uri, content, params, &mut actions);
 
+        // ── Extract interface ────────────────────────────────────────────
+        self.collect_extract_interface_actions(uri, content, params, &mut actions);
+
         actions
     }
 
@@ -330,6 +334,7 @@ impl Backend {
             // ── Import all missing classes ───────────────────────────────
             "source.importAllClasses" => self.resolve_import_all_classes(&data, &content),
             "refactor.extractFunction" => self.resolve_extract_function(&data, &content),
+            "refactor.extractInterface" => self.resolve_extract_interface(&data, &content),
             "refactor.inlineVariable" => self.resolve_inline_variable(&data, &content),
             "refactor.extractInstanceVariable" => {
                 self.resolve_convert_to_instance_variable(&data, &content)

@@ -9,6 +9,7 @@ mod code_action_add_override;
 mod code_action_add_throws;
 mod code_action_change_visibility;
 mod code_action_extract_function;
+mod code_action_extract_interface;
 mod code_action_fix_return_type;
 mod code_action_generate_constructor;
 mod code_action_implement_methods;

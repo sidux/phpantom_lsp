@@ -27,7 +27,6 @@ within the same impact tier.
 | --- | --------------------------------------------------------------------------------------------------------------------- | ---------- | ------ |
 | C2  | [`#[ArrayShape]` return shapes on stub functions](todo/completion.md#c2-arrayshape-return-shapes-on-stub-functions)   | Medium     | Medium |
 | A3  | Switch → match conversion                                                                                             | Low-Medium | Medium |
-| A10 | [Generate interface from class](todo/actions.md#a10-generate-interface-from-class)                                    | Low-Medium | Medium |
 | D10 | [PHPMD diagnostic proxy](todo/diagnostics.md#d10-phpmd-diagnostic-proxy)                                              | Low        | Medium |
 
 ## Sprint 7 — 1.0 release & IDE extensions
