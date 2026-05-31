@@ -372,6 +372,19 @@ impl Backend {
                 return Ok(Some(response));
             }
 
+            // ── Eloquent relation/column string completion ──────────
+            // Like array shape completion, this triggers inside string
+            // literals where the cursor is in a method argument position
+            // for an Eloquent method that accepts relation or column names.
+            if matches!(
+                string_ctx,
+                StringContext::InStringLiteral | StringContext::NotInString
+            ) && let Some(response) =
+                self.try_eloquent_string_completion(&content, position, &ctx)
+            {
+                return Ok(Some(response));
+            }
+
             if matches!(string_ctx, StringContext::InStringLiteral) {
                 return Ok(None);
             }

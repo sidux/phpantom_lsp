@@ -14,6 +14,8 @@
 /// - **named_args**: Named argument completion inside function/method call parens
 /// - **array_shape**: Array shape key completion (`$arr['` → suggest known keys)
 ///   and raw variable type resolution for array shape value chaining
+/// - **eloquent_string**: Eloquent relation dot-notation and column name string
+///   completion inside method arguments like `with('`, `where('`, etc.
 /// - **use_edit**: Use-statement insertion and conflict analysis
 ///
 /// ## Sub-grouped modules
@@ -72,6 +74,7 @@
 pub mod array_shape;
 pub(crate) mod builder;
 pub(crate) mod call_resolution;
+pub(crate) mod eloquent_string;
 pub(crate) mod handler;
 pub mod named_args;
 pub(crate) mod resolve;

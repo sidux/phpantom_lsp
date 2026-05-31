@@ -737,7 +737,7 @@ impl PhpType {
             PhpType::Nullable(inner) => inner.is_string_subtype(),
             PhpType::Generic(name, _) => matches!(
                 name.to_ascii_lowercase().as_str(),
-                "class-string" | "interface-string"
+                "class-string" | "interface-string" | "model-property"
             ),
             _ => false,
         }
@@ -3674,6 +3674,7 @@ pub(crate) fn is_builtin_non_class_type(name: &str) -> bool {
             | "literal-string"
             | "class-string"
             | "interface-string"
+            | "model-property"
             | "array-key"
             | "list"
             | "non-empty-list"
@@ -3733,6 +3734,7 @@ fn is_scalar_name(name: &str) -> bool {
             | "interface-string"
             | "trait-string"
             | "enum-string"
+            | "model-property"
             | "numeric-string"
             | "non-empty-string"
             | "non-empty-lowercase-string"
