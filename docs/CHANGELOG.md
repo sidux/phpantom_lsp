@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Consolidated class completion passes.** The previous 5-pass architecture (use-map, same-namespace, fqn_uri_index, fqn_uri_index duplicate, stub_index) has been simplified to 2 passes (fqn_uri_index + stub_index) with an inline `classify` closure that determines tier (`'0'` use-imported, `'1'` same/sub-namespace, `'2'` everything else) per candidate. The redundant pass 4 (identical to pass 3) is eliminated, and tier assignment is now based on proximity checks rather than which data source produced the item.
 - **Analysis deadlock.** Lazily-parsed vendor files acquired two internal locks in the opposite order from the editor's file-change handler, causing a deadlock when both ran concurrently.
 - **External tool diagnostics on large files.** PHPStan, Mago, and PHPCS diagnostics no longer time out on files that produce a large report. Their output is now read while the tool is still running, so a report bigger than the operating system's pipe buffer can no longer stall the tool and force a timeout.
+- **Promote to constructor property.** Promoting a parameter whose property is declared together with others on one line (`private int $a, $b;`) no longer deletes the sibling properties. The action is now offered only when the property is declared on its own.
 
 ### Changed
 

@@ -23,24 +23,6 @@ handle this automatically.
 upstream stubs land).
 
 
-## B18. "Promote constructor param" deletes sibling properties
-
-**Severity: High (data loss).** In
-`src/code_actions/promote_constructor_param.rs:194,239`,
-`find_matching_property` matches one variable inside a
-`PlainProperty` but returns the whole declaration. The deletion
-span is then computed from `property.span()` extended to full
-lines via `find_line_start`/`find_line_end`. For a multi-variable
-declaration such as `private int $name, $other;`, promoting
-`$name` deletes `$other`'s declaration as well, silently dropping
-a property.
-
-**Fix:** Guard with `plain.items.len() == 1`, or rewrite only the
-matched item (delete just that variable from the declaration and
-keep the siblings), mirroring how `extract_property_default`
-reads a single item.
-
-
 ## B19. Underflow panic parsing malformed `@method` tags
 
 **Severity: High (panic).** In

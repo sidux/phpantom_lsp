@@ -193,6 +193,14 @@ fn find_promotion_candidate(
     // Find the matching property declaration in the class body.
     let (property, plain_prop) = find_matching_property(all_members, bare_name)?;
 
+    // Only promote a property declared on its own. A multi-variable
+    // declaration (`private int $a, $b;`) is a single statement whose span
+    // covers every variable, so deleting it would silently drop the
+    // siblings. Decline the action rather than corrupt the declaration.
+    if plain_prop.items.len() != 1 {
+        return None;
+    }
+
     // Property must not be static.
     if is_static(plain_prop.modifiers.iter()) {
         return None;
@@ -729,6 +737,51 @@ class Foo {
         assert!(
             c.is_none(),
             "should not offer when param is used elsewhere in the body"
+        );
+    }
+
+    #[test]
+    fn rejects_multi_variable_declaration() {
+        // Promoting `$name` from a shared declaration would delete `$other`
+        // too, so the action must decline rather than drop a property.
+        let php = "\
+<?php
+class Foo {
+    private int $name, $other;
+
+    public function __construct(int $name) {
+        $this->name = $name;
+    }
+}
+";
+        let pos = php.find("int $name)").unwrap() as u32;
+        let c = find_candidate(php, pos);
+        assert!(
+            c.is_none(),
+            "should not offer for multi-variable property declarations"
+        );
+    }
+
+    #[test]
+    fn rejects_multi_variable_declaration_second_item() {
+        // The rejection must hold regardless of which variable in the
+        // shared declaration is being promoted: promoting `$other` here
+        // would otherwise delete `$name` too.
+        let php = "\
+<?php
+class Foo {
+    private int $name, $other;
+
+    public function __construct(int $other) {
+        $this->other = $other;
+    }
+}
+";
+        let pos = php.find("int $other)").unwrap() as u32;
+        let c = find_candidate(php, pos);
+        assert!(
+            c.is_none(),
+            "should not offer when promoting a later variable in a shared declaration"
         );
     }
 
