@@ -163,6 +163,20 @@ fn method_tag_name_matches_type_keyword() {
     );
 }
 
+#[test]
+fn method_tag_malformed_does_not_panic() {
+    // A malformed signature where `(` is preceded by `>` at index 1
+    // previously underflowed `i - 2` and panicked. It should now be
+    // parsed gracefully (yielding no method).
+    let doc = "/** @method >() */";
+    let methods = extract_method_tags(doc);
+    assert!(methods.is_empty());
+
+    // A few more degenerate shapes that exercise the same scanner.
+    assert!(extract_method_tags("/** @method <>() */").is_empty());
+    assert!(extract_method_tags("/** @method static >() */").is_empty());
+}
+
 // ─── @property tag extraction ───────────────────────────────────────
 
 #[test]

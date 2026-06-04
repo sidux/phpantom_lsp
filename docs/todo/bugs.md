@@ -23,23 +23,6 @@ handle this automatically.
 upstream stubs land).
 
 
-## B19. Underflow panic parsing malformed `@method` tags
-
-**Severity: High (panic).** In
-`src/docblock/virtual_members.rs:343`, the closing-`>` branch is
-guarded only by `if i > 0 && bytes[i - 1] == b'>'` and then
-computes `let mut k = i - 2;`. A tag shaped like `@method >()`
-has the `(` at index 1, so `i - 2` underflows `usize` and panics.
-`parse_method_signature` / `extract_method_tags` is reached from
-completion, hover, and go-to-definition
-(`src/virtual_members/phpdoc.rs`, `src/definition/member/mod.rs`),
-none of which are wrapped in `catch_unwind`, so a malformed
-docblock crashes the request.
-
-**Fix:** Tighten the guard to `i > 1` (or compute `k` with
-`checked_sub`).
-
-
 ## B20. CRLF byte-offset drift in text-based edits
 
 **Severity: Medium (file corruption on CRLF files).** Several

@@ -340,7 +340,7 @@ fn parse_method_signature(input: &str) -> Option<MethodSignatureParts<'_>> {
             b'(' if paren_depth == 0 => {
                 // Check if preceded by `>` (closing a template param list)
                 // or by an identifier directly.
-                let (ident_end, template_str) = if i > 0 && bytes[i - 1] == b'>' {
+                let (ident_end, template_str) = if i > 1 && bytes[i - 1] == b'>' {
                     // Walk backwards to find matching `<` at depth 0.
                     let mut angle_depth = 1i32;
                     let mut k = i - 2; // start before the `>`
