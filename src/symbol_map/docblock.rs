@@ -1417,12 +1417,16 @@ fn emit_see_reference(reference: &str, file_offset: u32, spans: &mut Vec<SymbolS
     // consumers to prepend the current file's namespace and produce a
     // doubled name like `App\Models\App\Models\User`.  Treat any
     // backslash-containing reference as FQN by prepending `\`.
+    // `file_offset` points at the original (pre-prefix) token, so the number
+    // of synthetic characters we prepend must be subtracted back out of every
+    // offset computed on the lengthened string, otherwise the emitted spans
+    // are shifted one byte to the right.
     let owned_reference;
-    let reference = if reference.contains('\\') && !reference.starts_with('\\') {
+    let (reference, prefix_len) = if reference.contains('\\') && !reference.starts_with('\\') {
         owned_reference = format!("\\{reference}");
-        &owned_reference
+        (&owned_reference as &str, 1u32)
     } else {
-        reference
+        (reference, 0u32)
     };
 
     // Check for `Class::member` form.
@@ -1440,13 +1444,15 @@ fn emit_see_reference(reference: &str, file_offset: u32, spans: &mut Vec<SymbolS
             return;
         }
 
-        // Emit a ClassReference span for the class portion.
+        // Emit a ClassReference span for the class portion. Lengths and the
+        // separator position were measured on the prefixed string, so undo
+        // the synthetic prefix to land on the original source bytes.
         let class_start = file_offset;
-        let class_end = file_offset + class_part.len() as u32;
+        let class_end = file_offset + class_part.len() as u32 - prefix_len;
         spans.push(class_ref_span(class_start, class_end, class_part));
 
         // Emit a MemberAccess span for the member portion.
-        let member_start = file_offset + sep_pos as u32 + 2;
+        let member_start = file_offset + sep_pos as u32 + 2 - prefix_len;
         let is_property = member_part.starts_with('$');
         let member_name = if is_property {
             &member_part[1..] // strip $
@@ -1481,12 +1487,12 @@ fn emit_see_reference(reference: &str, file_offset: u32, spans: &mut Vec<SymbolS
         let first_char = clean.chars().next().unwrap_or('a');
         if first_char.is_ascii_uppercase() {
             let start = file_offset;
-            let end = file_offset + reference.len() as u32;
+            let end = file_offset + reference.len() as u32 - prefix_len;
             spans.push(class_ref_span(start, end, reference));
         } else {
             // Lowercase first char — treat as function reference.
             let start = file_offset;
-            let end = file_offset + reference.len() as u32;
+            let end = file_offset + reference.len() as u32 - prefix_len;
             spans.push(SymbolSpan {
                 start,
                 end,

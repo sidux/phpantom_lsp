@@ -53,8 +53,10 @@ pub(crate) const ARGUMENT_COUNT_MISMATCH_CODE: &str = "argument_count_mismatch";
 /// phpstorm-stubs with proper version filtering applied.
 /// Regenerate with `php scripts/check_overloads.php`.
 fn overload_min_args(name: &str) -> Option<u32> {
-    // Compare lowercase to match PHP's case-insensitive function names.
-    match name.to_ascii_lowercase().as_str() {
+    // Strip a leading namespace separator so `\mt_rand()` in namespaced code
+    // matches the same overload entry as `mt_rand()`. Compare lowercase to
+    // match PHP's case-insensitive function names.
+    match name.trim_start_matches('\\').to_ascii_lowercase().as_str() {
         "apc_add" => Some(1),
         "apc_store" => Some(1),
         "apcu_add" => Some(1),
@@ -273,6 +275,13 @@ impl Backend {
                 Some(r) => r,
                 None => continue,
             };
+
+            // A callable that accepts any number of arguments (e.g. a class
+            // with no explicit constructor, which PHP lets you call with
+            // extra arguments) is never an argument-count error.
+            if resolved.accepts_any_args {
+                continue;
+            }
 
             let params = &resolved.parameters;
             let actual_args = call_site.arg_count;
@@ -678,6 +687,41 @@ function test(): void {
         assert!(
             diags.iter().any(|d| d.message.contains("got 3")),
             "Expected too-many-args diagnostic, got: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_extra_args_to_constructorless_class() {
+        // PHP silently ignores arguments passed to a class with no
+        // constructor, so even with the extra-arguments check enabled the
+        // call must not be flagged.
+        let php = r#"<?php
+class Plain {}
+function test(): void {
+    new Plain("x");
+}
+"#;
+        let diags = collect_extra(php);
+        assert!(
+            diags.is_empty(),
+            "Constructor-less class should accept any args, got: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn leading_backslash_builtin_honours_overload_minimum() {
+        // `\mt_rand()` in namespaced code must hit the same overload entry
+        // as `mt_rand()` (min 0 args), not the stub's full required count.
+        let php = r#"<?php
+namespace App;
+function test(): void {
+    \mt_rand();
+}
+"#;
+        let diags = collect_with_stubs_extra(php);
+        assert!(
+            diags.is_empty(),
+            "Leading-backslash builtin should respect overload minimum, got: {diags:?}",
         );
     }
 

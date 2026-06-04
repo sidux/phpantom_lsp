@@ -150,6 +150,51 @@ async fn class_removed_from_changed_file_is_no_longer_suggested() {
 }
 
 #[tokio::test]
+async fn composer_change_purges_stale_vendor_functions() {
+    // After a `composer update`, autoloaded functions/constants from the old
+    // vendor tree must be removed from the indexes, not left to linger.
+    let (backend, dir) = create_psr4_workspace(COMPOSER_JSON, &[]);
+    let vendor_func = dir.path().join("vendor/old/pkg/functions.php");
+    let outside_func = dir.path().join("app/helpers.php");
+
+    // Seed a vendor-tree function and a non-vendor function.
+    backend
+        .autoload_function_index()
+        .write()
+        .insert("old_vendor_func".to_string(), vendor_func.clone());
+    backend
+        .autoload_function_index()
+        .write()
+        .insert("app_helper".to_string(), outside_func.clone());
+    backend
+        .autoload_constant_index()
+        .write()
+        .insert("OLD_VENDOR_CONST".to_string(), vendor_func.clone());
+
+    // A `composer update` rewrites composer.json; the editor notifies us.
+    backend
+        .did_change_watched_files(change_event(&dir.path().join("composer.json")))
+        .await;
+
+    let fi = backend.autoload_function_index().read();
+    assert!(
+        !fi.contains_key("old_vendor_func"),
+        "stale vendor function must be purged after composer change"
+    );
+    assert!(
+        fi.contains_key("app_helper"),
+        "non-vendor function must survive a composer change"
+    );
+    assert!(
+        !backend
+            .autoload_constant_index()
+            .read()
+            .contains_key("OLD_VENDOR_CONST"),
+        "stale vendor constant must be purged after composer change"
+    );
+}
+
+#[tokio::test]
 async fn created_file_becomes_suggestable() {
     let (backend, dir) = create_psr4_workspace(COMPOSER_JSON, &[]);
     let path = dir.path().join("app/Models/NewModel.php");

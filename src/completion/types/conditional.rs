@@ -381,7 +381,16 @@ pub fn resolve_conditional_with_text_args_and_defaults(
                     tpl,
                 )
             } else if condition.as_ref().is_null() {
-                if arg_text.is_none() || arg_text == Some("") || arg_text == Some("null") {
+                // The null (`then`) branch is taken when the argument is
+                // absent (the parameter falls back to its null default) or
+                // when `null` is passed explicitly. This mirrors the AST
+                // path's rule so the same call resolves identically through
+                // the inline-text and AST resolution paths.
+                let arg_is_null = arg_text.is_none_or(|t| {
+                    let t = t.trim();
+                    t.is_empty() || t.eq_ignore_ascii_case("null")
+                });
+                if arg_is_null {
                     // No argument provided or explicitly null → null branch
                     resolve_conditional_with_text_args_and_defaults(
                         then_type,
@@ -826,8 +835,15 @@ pub fn resolve_conditional_with_args_and_defaults<'b>(
                     tpl,
                 )
             } else if condition.as_ref().is_null() {
-                if arg_expr.is_none() {
-                    // No argument provided → param uses default (null)
+                // The null (`then`) branch is taken when the argument is
+                // absent (the parameter falls back to its null default) or
+                // when `null` is passed explicitly.
+                let arg_is_null = match arg_expr {
+                    None => true,
+                    Some(expr) => matches!(expr, Expression::Literal(Literal::Null(_))),
+                };
+                if arg_is_null {
+                    // No argument provided or explicitly null → null branch
                     resolve_conditional_with_args_and_defaults(
                         then_type,
                         params,
@@ -838,7 +854,7 @@ pub fn resolve_conditional_with_args_and_defaults<'b>(
                         tpl,
                     )
                 } else {
-                    // Argument was provided → not null
+                    // Argument was provided and not null → else branch
                     resolve_conditional_with_args_and_defaults(
                         else_type,
                         params,

@@ -238,6 +238,87 @@ async fn test_generic_extends_two_params_resolves() {
     }
 }
 
+/// A single generic argument against a two-parameter class with a
+/// key-like leading bound binds to the trailing (value) parameter.
+/// `@extends Collection<Language>` against `Collection<TKey of array-key,
+/// TValue>` must yield `TValue => Language`, not `TKey => Language`.
+#[tokio::test]
+async fn test_generic_extends_short_args_right_align() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///generics_right_align.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @template TKey of array-key\n",
+        " * @template TValue\n",
+        " */\n",
+        "class Collection {\n",
+        "    /** @return TValue */\n",
+        "    public function first() {}\n",
+        "}\n",
+        "\n",
+        "class Language {\n",
+        "    public int $priority;\n",
+        "    public function getCode(): string {}\n",
+        "}\n",
+        "\n",
+        "/**\n",
+        " * @extends Collection<Language>\n",
+        " */\n",
+        "class LanguageCollection extends Collection {\n",
+        "}\n",
+        "\n",
+        "function test() {\n",
+        "    $col = new LanguageCollection();\n",
+        "    $col->first()->\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 23,
+                character: 19,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"getCode"),
+                "Single arg should bind to TValue (Language) and show 'getCode', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
 /// Test that @template-covariant is also parsed correctly.
 #[tokio::test]
 async fn test_generic_template_covariant() {

@@ -964,10 +964,13 @@ impl Backend {
                                 break;
                             };
 
+                            // `name_offset` points at the `$` sigil while
+                            // `prop.name` excludes it, so the range must span
+                            // the `$` plus the name (`$name`, not `$nam`).
                             let offset = prop.name_offset;
                             let start = offset_to_position(content, offset as usize);
                             let end =
-                                offset_to_position(content, offset as usize + prop.name.len());
+                                offset_to_position(content, offset as usize + 1 + prop.name.len());
                             push_unique_location(&mut locations, &parsed_uri, start, end);
                         }
                     }

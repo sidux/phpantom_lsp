@@ -3368,6 +3368,75 @@ fn see_tag_multiple_on_same_docblock() {
 }
 
 #[test]
+fn see_tag_qualified_member_spans_aligned() {
+    // A qualified-but-not-FQN reference (`App\Foo::bar()`) gets a synthetic
+    // leading `\` for FQN handling. The emitted spans must still align with
+    // the original source bytes, not be shifted by the synthetic prefix.
+    let php = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @see App\\Foo::bar()\n",
+        " */\n",
+        "class Baz {}\n",
+    );
+    let map = parse_and_extract(php);
+
+    // Class portion: span must start at `App` and end right after `App\Foo`.
+    let class_offset = php.find("App\\Foo").unwrap() as u32;
+    let hit = map
+        .lookup(class_offset)
+        .expect("Should find App\\Foo class");
+    assert_eq!(hit.start, class_offset, "class span start aligned");
+    assert_eq!(
+        hit.end,
+        class_offset + "App\\Foo".len() as u32,
+        "class span end must not overshoot by the synthetic prefix"
+    );
+
+    // Member portion: lookup at the exact `bar` offset must succeed (a
+    // one-byte shift would make this miss).
+    let member_offset = php.find("bar").unwrap() as u32;
+    let hit = map.lookup(member_offset).expect("Should find bar member");
+    assert_eq!(hit.start, member_offset, "member span start aligned");
+    assert_eq!(
+        hit.end,
+        member_offset + "bar".len() as u32,
+        "member span end aligned"
+    );
+    if let SymbolKind::MemberAccess {
+        ref member_name, ..
+    } = hit.kind
+    {
+        assert_eq!(member_name, "bar");
+    } else {
+        panic!("Expected MemberAccess for bar");
+    }
+}
+
+#[test]
+fn see_tag_qualified_class_span_aligned() {
+    // A bare qualified class reference (no `::`) also gets the synthetic
+    // prefix; its span must not overshoot.
+    let php = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @see App\\Models\\User\n",
+        " */\n",
+        "class Baz {}\n",
+    );
+    let map = parse_and_extract(php);
+
+    let offset = php.find("App\\Models\\User").unwrap() as u32;
+    let hit = map.lookup(offset).expect("Should find App\\Models\\User");
+    assert_eq!(hit.start, offset, "class span start aligned");
+    assert_eq!(
+        hit.end,
+        offset + "App\\Models\\User".len() as u32,
+        "class span end must not overshoot by the synthetic prefix"
+    );
+}
+
+#[test]
 fn see_tag_on_method_docblock() {
     let php = concat!(
         "<?php\n",

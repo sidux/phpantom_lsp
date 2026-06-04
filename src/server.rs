@@ -722,12 +722,18 @@ impl LanguageServer for Backend {
                 }
                 {
                     let mut fi = self.autoload_function_index.write();
+                    // Purge functions that pointed into the old vendor tree
+                    // before re-inserting, so symbols removed by a
+                    // `composer update` no longer resolve.
+                    fi.retain(|_, v| !v.starts_with(&vendor_path));
                     for (fqn, path) in vendor_scan.function_index {
                         fi.insert(fqn, path);
                     }
                 }
                 {
                     let mut ci = self.autoload_constant_index.write();
+                    // Same for constants from the old vendor tree.
+                    ci.retain(|_, v| !v.starts_with(&vendor_path));
                     for (name, path) in vendor_scan.constant_index {
                         ci.insert(name, path);
                     }

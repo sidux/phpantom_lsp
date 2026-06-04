@@ -287,8 +287,9 @@ fn find_name_start(content: &[u8], keyword_offset: usize) -> usize {
         pos += 1;
     }
 
-    // Skip whitespace between keyword and name.
-    while pos < len && (content[pos] == b' ' || content[pos] == b'\t') {
+    // Skip all whitespace (including newlines) between keyword and name,
+    // so the legal `class\nFoo {` layout locates the name correctly.
+    while pos < len && content[pos].is_ascii_whitespace() {
         pos += 1;
     }
 

@@ -8580,13 +8580,23 @@ fn strip_falsy_from_scope(var_name: &str, scope: &mut ScopeState) {
     }
 }
 
-/// Apply guard-clause null narrowing.
-/// Split an array access key like `$a["test"]` into base variable and
-/// key name.  Returns `None` for non-array-access keys.
+/// Split a single-level array access key like `$a["test"]` into base
+/// variable and key name.  Returns `None` for non-array-access keys and
+/// for multi-level access (`$a["x"]["y"]`), which this single-key
+/// narrowing cannot represent and would otherwise mis-split.
 fn split_array_access_key(key: &str) -> Option<(&str, &str)> {
     let bracket_pos = key.find("[\"")?;
     let base = &key[..bracket_pos];
+    // The base must be a plain expression with no earlier array access.
+    if base.contains('[') {
+        return None;
+    }
     let key_name = key[bracket_pos + 2..].strip_suffix("\"]")?;
+    // A nested access leaves bracket characters inside the extracted key
+    // (e.g. `x"]["y`); reject it rather than narrowing a bogus key.
+    if key_name.contains('[') || key_name.contains(']') {
+        return None;
+    }
     Some((base, key_name))
 }
 
@@ -9413,5 +9423,32 @@ fn widen_literal(ty: &PhpType) -> PhpType {
         PhpType::Literal(s) if s.parse::<f64>().is_ok() => PhpType::float(),
         PhpType::Literal(s) if s == "true" || s == "false" => PhpType::bool(),
         _ => ty.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_array_access_key;
+
+    #[test]
+    fn splits_single_level_string_key() {
+        assert_eq!(split_array_access_key("$a[\"test\"]"), Some(("$a", "test")));
+    }
+
+    #[test]
+    fn rejects_non_array_access() {
+        assert_eq!(split_array_access_key("$a"), None);
+    }
+
+    #[test]
+    fn rejects_nested_array_access() {
+        // `$a["x"]["y"]` must not be mis-split into base `$a` and key
+        // `x"]["y`; single-key narrowing cannot represent it.
+        assert_eq!(split_array_access_key("$a[\"x\"][\"y\"]"), None);
+    }
+
+    #[test]
+    fn rejects_base_with_earlier_access() {
+        assert_eq!(split_array_access_key("$a[0][\"y\"]"), None);
     }
 }

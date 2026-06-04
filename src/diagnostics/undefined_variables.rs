@@ -10,14 +10,16 @@
 //! setups).  This is the single most impactful diagnostic for catching
 //! typos in variable names.
 //!
-//! ## Implementation (Phase 1 — conservative)
+//! ## Implementation
 //!
-//! The implementation is deliberately simple: any assignment anywhere
-//! in the function counts as a definition, regardless of control flow.
-//! This avoids false positives from branch-dependent definitions at the
-//! cost of missing some genuinely undefined variables that are only
-//! assigned in one branch.  This matches the approach taken by
-//! Intelephense.
+//! A variable read is flagged only when no write of the same name exists
+//! at a **lower byte offset** in the same frame.  Writes inside any
+//! control-flow branch (if/else, switch, try/catch) still count, so the
+//! analysis is conservative about branches but strict about source order:
+//! it catches the common "used before assigned" typo while avoiding false
+//! positives from branch-dependent definitions.  `/** @var Type $var */`
+//! annotations are treated as a write at the annotation's position and are
+//! scoped to the frame they appear in.
 //!
 //! ## Suppression / false-positive avoidance
 //!
@@ -339,7 +341,9 @@ fn check_scope(
     let compact_vars = collect_compact_vars(statements);
 
     // Collect variable names annotated with `/** @var Type $var */`
-    // inline docblocks.
+    // inline docblocks, each with the byte offset of its `$` sigil so it
+    // can be treated as a scoped, source-ordered write rather than a
+    // file-wide "always defined" name.
     let var_annotated = collect_var_annotations(ctx.content);
 
     // Collect byte offsets suppressed by the `@` error control
@@ -367,9 +371,6 @@ fn check_scope(
     for cv in &compact_vars {
         always_defined.insert(cv.as_str());
     }
-    for av in &var_annotated {
-        always_defined.insert(av.as_str());
-    }
 
     // Pre-compute the "own writes" for each frame: writes that are
     // directly inside the frame (not inside a nested sub-frame).
@@ -392,6 +393,16 @@ fn check_scope(
                     && !is_in_nested_frame(access.offset, frame, &scope.frames)
                 {
                     writes.push((access.name.as_str(), access.offset));
+                }
+            }
+            // `/** @var Type $var */` annotations act as a write at the
+            // annotation's offset, but only within the frame they appear in.
+            for (name, offset) in &var_annotated {
+                if *offset >= frame.start
+                    && *offset <= frame.end
+                    && !is_in_nested_frame(*offset, frame, &scope.frames)
+                {
+                    writes.push((name.as_str(), *offset));
                 }
             }
             writes
@@ -1206,20 +1217,32 @@ fn collect_compact_from_expr(expr: &Expression<'_>, vars: &mut HashSet<String>) 
 // ─── @var annotation collection ─────────────────────────────────────────────
 
 /// Scan the source text for `/** @var Type $varName */` inline
-/// docblocks and return the set of variable names they declare.
-fn collect_var_annotations(content: &str) -> HashSet<String> {
-    let mut vars = HashSet::new();
+/// docblocks and return each declared variable name paired with the byte
+/// offset of its `$` sigil.
+///
+/// The offset lets callers treat the annotation as a write at that
+/// position so it (a) only defines the variable within the scope it
+/// appears in, and (b) follows the same "prior write in source order"
+/// rule as ordinary assignments.
+fn collect_var_annotations(content: &str) -> Vec<(String, u32)> {
+    let mut vars = Vec::new();
     // Look for patterns like: @var SomeType $varName
     // The regex-like scan: find `@var ` followed by a type, then `$name`.
+    let mut line_start = 0usize;
     for line in content.lines() {
-        let trimmed = line.trim();
-        // Must be inside a doc comment context.
-        if !trimmed.contains("@var") {
+        // `lines()` strips the line terminator; track the running byte
+        // offset so we can report absolute positions.
+        let this_line_start = line_start;
+        line_start += line.len() + 1; // +1 for the stripped '\n'
+
+        if !line.contains("@var") {
             continue;
         }
         // Find `@var` and extract the variable name after the type.
-        if let Some(var_pos) = trimmed.find("@var") {
-            let after_var = &trimmed[var_pos + 4..];
+        if let Some(var_pos) = line.find("@var") {
+            let after_var_off = var_pos + 4;
+            let after_var = &line[after_var_off..];
+            let ws = after_var.len() - after_var.trim_start().len();
             let after_var = after_var.trim_start();
             // Skip the type (everything before the $).
             if let Some(dollar_pos) = after_var.find('$') {
@@ -1235,7 +1258,8 @@ fn collect_var_annotations(content: &str) -> HashSet<String> {
                 // Trim trailing `*/` if present.
                 let var_name = var_name.trim_end_matches("*/").trim();
                 if var_name.len() > 1 {
-                    vars.insert(var_name.to_string());
+                    let dollar_offset = this_line_start + after_var_off + ws + dollar_pos;
+                    vars.push((var_name.to_string(), dollar_offset as u32));
                 }
             }
         }

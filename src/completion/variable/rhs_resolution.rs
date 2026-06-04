@@ -433,21 +433,11 @@ fn resolve_rhs_expression_inner<'b>(
                 ResolvedType::extend_unique(&mut combined, resolve_rhs_expression(binary.rhs, ctx));
                 combined
             } else {
-                // The LHS resolved to nothing — the expression is
-                // something we can't type (e.g. array access on a bare
-                // `array`).  At runtime it could be any value, so
-                // include `mixed` to represent the unknown LHS.
-                // Without this, `$x = $params['key'] ?? null` would
-                // resolve to just `null`, causing false type_error
-                // diagnostics on the guarded usage of `$x`.
-                //
-                // WORKAROUND: This is a band-aid for B3 (array access
-                // on bare `array` returns empty instead of `mixed`).
-                // Once B3 is fixed at its root cause, the LHS will
-                // resolve to `mixed` naturally and this fallback path
-                // will rarely trigger.  The injected `mixed` poisons
-                // all downstream type checks on the variable, so fixing
-                // B3 properly is important.
+                // The LHS resolved to nothing typeable (a genuinely
+                // unresolvable expression). At runtime it could be any
+                // value, so represent the unknown LHS as `mixed` and union
+                // it with the RHS, mirroring how a `mixed` LHS is handled
+                // above.
                 let mut combined = vec![ResolvedType::from_type_string(PhpType::mixed())];
                 ResolvedType::extend_unique(&mut combined, resolve_rhs_expression(binary.rhs, ctx));
                 combined
@@ -1728,7 +1718,12 @@ fn resolve_rhs_array_access<'b>(
     };
 
     let Some(mut current) = raw_type else {
-        return vec![];
+        // The base expression's type is unknown (e.g. an untyped parameter
+        // or an unresolvable call). Accessing an offset on an unknown value
+        // yields `mixed`, matching PHPStan's treatment of `mixed[$k]`. This
+        // is the honest answer rather than an empty (untyped) result, and it
+        // lets the `??` handler union it without a special case.
+        return vec![ResolvedType::from_type_string(PhpType::mixed())];
     };
 
     // Expand type aliases so that shape/generic extraction can see the
@@ -4065,13 +4060,58 @@ fn find_this_property_assignment_in_toplevel<'b>(
                 }
             }
             Statement::If(if_stmt) => {
-                for inner in if_stmt.body.statements().iter() {
-                    if let Some(found) = find_this_property_assignment_in_toplevel(
+                // Walk the then-branch, every elseif branch, and the else
+                // branch: an assignment to `$this->prop` in any of them
+                // (before the cursor) is a valid narrowing source.
+                let search = |inner: &'b Statement<'b>| {
+                    find_this_property_assignment_in_toplevel(
                         std::iter::once(inner),
                         prop_name,
                         cursor_offset,
-                    ) {
-                        return Some(found);
+                    )
+                };
+                match &if_stmt.body {
+                    IfBody::Statement(body) => {
+                        if let Some(found) = search(body.statement) {
+                            return Some(found);
+                        }
+                        for elseif in body.else_if_clauses.iter() {
+                            if let Some(found) = search(elseif.statement) {
+                                return Some(found);
+                            }
+                        }
+                        if let Some(ref else_clause) = body.else_clause
+                            && let Some(found) = search(else_clause.statement)
+                        {
+                            return Some(found);
+                        }
+                    }
+                    IfBody::ColonDelimited(body) => {
+                        if let Some(found) = find_this_property_assignment_in_toplevel(
+                            body.statements.iter(),
+                            prop_name,
+                            cursor_offset,
+                        ) {
+                            return Some(found);
+                        }
+                        for elseif in body.else_if_clauses.iter() {
+                            if let Some(found) = find_this_property_assignment_in_toplevel(
+                                elseif.statements.iter(),
+                                prop_name,
+                                cursor_offset,
+                            ) {
+                                return Some(found);
+                            }
+                        }
+                        if let Some(ref else_clause) = body.else_clause
+                            && let Some(found) = find_this_property_assignment_in_toplevel(
+                                else_clause.statements.iter(),
+                                prop_name,
+                                cursor_offset,
+                            )
+                        {
+                            return Some(found);
+                        }
                     }
                 }
             }

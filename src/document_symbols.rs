@@ -200,6 +200,49 @@ fn class_to_symbol(class: &ClassInfo, content: &str) -> Option<DocumentSymbol> {
     })
 }
 
+/// Compute the full declaration range for a callable (method or
+/// function) starting at `name_offset`.
+///
+/// Finds the parameter list, then the body `{…}` (returning the offset
+/// just past the matching `}`) or the `;` of an abstract/interface
+/// declaration. Falls back to the name-only end when the structure can
+/// not be located.
+fn callable_declaration_end(content: &str, name_offset: usize, name_len: usize) -> usize {
+    let fallback = name_offset + name_len;
+    let Some(rel_paren) = content[name_offset..].find('(') else {
+        return fallback;
+    };
+    let paren_open = name_offset + rel_paren;
+    let Some(paren_close) = crate::util::find_matching_forward(content, paren_open, b'(', b')')
+    else {
+        return fallback;
+    };
+    // After the parameter list, the declaration ends at the body's closing
+    // brace or at the `;` of an abstract/interface method.
+    for (i, ch) in content[paren_close + 1..].char_indices() {
+        match ch {
+            '{' => {
+                let brace_open = paren_close + 1 + i;
+                return crate::util::find_matching_forward(content, brace_open, b'{', b'}')
+                    .map(|c| c + 1)
+                    .unwrap_or(fallback);
+            }
+            ';' => return paren_close + 1 + i + 1,
+            _ => {}
+        }
+    }
+    fallback
+}
+
+/// Compute the full declaration range for a property or constant, which
+/// ends at its terminating `;`.
+fn statement_declaration_end(content: &str, name_offset: usize, name_len: usize) -> usize {
+    let fallback = name_offset + name_len;
+    crate::util::find_semicolon_balanced(&content[name_offset..])
+        .map(|p| name_offset + p + 1)
+        .unwrap_or(fallback)
+}
+
 /// Convert a `MethodInfo` to a `DocumentSymbol`.
 #[allow(deprecated)]
 fn method_to_symbol(method: &MethodInfo, content: &str) -> Option<DocumentSymbol> {
@@ -211,10 +254,11 @@ fn method_to_symbol(method: &MethodInfo, content: &str) -> Option<DocumentSymbol
     let name_end = offset_to_position(content, method.name_offset as usize + method.name.len());
     let selection_range = Range::new(pos, name_end);
 
-    // For the full range, use the name offset as the start.
-    // We don't have the method's end offset readily available, so we
-    // use the selection range as a reasonable approximation.
-    let range = selection_range;
+    // The full range must enclose the whole declaration (signature and
+    // body), with the selection range (the name) nested inside it.
+    let decl_end =
+        callable_declaration_end(content, method.name_offset as usize, method.name.len());
+    let range = Range::new(pos, offset_to_position(content, decl_end));
 
     let detail = build_method_detail(method);
     let tags = if method.deprecation_message.is_some() {
@@ -253,7 +297,8 @@ fn property_to_symbol(prop: &PropertyInfo, content: &str) -> Option<DocumentSymb
     let pos = offset_to_position(content, prop.name_offset as usize);
     let name_end = offset_to_position(content, prop.name_offset as usize + dollar_name_len);
     let selection_range = Range::new(pos, name_end);
-    let range = selection_range;
+    let decl_end = statement_declaration_end(content, prop.name_offset as usize, dollar_name_len);
+    let range = Range::new(pos, offset_to_position(content, decl_end));
 
     let detail = prop.type_hint_str();
     let tags = if prop.deprecation_message.is_some() {
@@ -288,7 +333,9 @@ fn constant_to_symbol(
     let pos = offset_to_position(content, constant.name_offset as usize);
     let name_end = offset_to_position(content, constant.name_offset as usize + constant.name.len());
     let selection_range = Range::new(pos, name_end);
-    let range = selection_range;
+    let decl_end =
+        statement_declaration_end(content, constant.name_offset as usize, constant.name.len());
+    let range = Range::new(pos, offset_to_position(content, decl_end));
 
     let kind = if constant.is_enum_case {
         SymbolKind::ENUM_MEMBER
@@ -334,7 +381,8 @@ fn function_to_symbol(func: &FunctionInfo, content: &str) -> Option<DocumentSymb
     let pos = offset_to_position(content, func.name_offset as usize);
     let name_end = offset_to_position(content, func.name_offset as usize + func.name.len());
     let selection_range = Range::new(pos, name_end);
-    let range = selection_range;
+    let decl_end = callable_declaration_end(content, func.name_offset as usize, func.name.len());
+    let range = Range::new(pos, offset_to_position(content, decl_end));
 
     let detail = build_function_detail(func);
     let tags = if func.deprecation_message.is_some() {

@@ -3461,8 +3461,11 @@ pub(crate) fn replace_star_wildcards(s: &str) -> std::borrow::Cow<'_, str> {
             result.push_str("mixed");
             i += 1;
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            // Copy the whole UTF-8 character, not a single byte, so
+            // multibyte characters in the type string are not mangled.
+            let ch = s[i..].chars().next().unwrap();
+            result.push(ch);
+            i += ch.len_utf8();
         }
     }
 
@@ -3548,8 +3551,11 @@ fn strip_variance_annotations_from_type(s: &str) -> std::borrow::Cow<'_, str> {
         {
             i += "contravariant ".len();
         } else {
-            cleaned.push(bytes[i] as char);
-            i += 1;
+            // Copy the whole UTF-8 character so multibyte characters in the
+            // type string survive intact.
+            let ch = s[i..].chars().next().unwrap();
+            cleaned.push(ch);
+            i += ch.len_utf8();
         }
     }
 
@@ -4211,7 +4217,9 @@ fn evaluate_value_of(resolved: &PhpType) -> PhpType {
     match resolved {
         PhpType::ArrayShape(entries) => {
             let mut values: Vec<PhpType> = entries.iter().map(|e| e.value_type.clone()).collect();
-            values.dedup();
+            // Deduplicate the whole value set (not just adjacent duplicates),
+            // so `array{a: int, b: string, c: int}` yields `int|string`.
+            dedup_types(&mut values);
             match values.len() {
                 0 => PhpType::Named("never".to_string()),
                 1 => values.into_iter().next().unwrap(),
@@ -4882,6 +4890,22 @@ mod tests {
     }
 
     #[test]
+    fn replace_star_wildcards_preserves_multibyte() {
+        // A multibyte character alongside a generic wildcard must survive
+        // the rewrite intact (not be mangled byte-by-byte).
+        use super::replace_star_wildcards;
+        let result = replace_star_wildcards("Map<Café, *>");
+        assert_eq!(result.as_ref(), "Map<Café, mixed>");
+    }
+
+    #[test]
+    fn strip_variance_annotations_preserves_multibyte() {
+        use super::strip_variance_annotations_from_type;
+        let result = strip_variance_annotations_from_type("Map<café, covariant Naïve>");
+        assert_eq!(result.as_ref(), "Map<café, Naïve>");
+    }
+
+    #[test]
     fn replace_star_wildcards_no_star() {
         use super::replace_star_wildcards;
         let result = replace_star_wildcards("Collection<int, User>");
@@ -5232,6 +5256,28 @@ mod tests {
                 assert_eq!(*inner, PhpType::Named("T".to_owned()));
             }
             other => panic!("Expected ValueOf, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn value_of_shape_dedups_non_adjacent_values() {
+        // `value-of<array{a: int, b: string, c: int}>` must collapse the
+        // two non-adjacent `int` values into a single union member.
+        let ty = PhpType::parse("value-of<array{a: int, b: string, c: int}>");
+        // `substitute` short-circuits on an empty map, so pass an unrelated
+        // binding to force the `value-of` evaluation path to run.
+        let subs =
+            std::collections::HashMap::from([("T".to_string(), PhpType::Named("int".to_string()))]);
+        let evaluated = ty.substitute(&subs);
+        match &evaluated {
+            PhpType::Union(members) => {
+                assert_eq!(
+                    members.len(),
+                    2,
+                    "expected int|string (deduped), got {evaluated:?}"
+                );
+            }
+            other => panic!("Expected a 2-member union, got {other:?}"),
         }
     }
 

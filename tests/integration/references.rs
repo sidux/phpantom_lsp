@@ -317,6 +317,42 @@ class Foo {
     );
 }
 
+#[test]
+fn property_declaration_range_covers_full_name() {
+    let backend = create_test_backend();
+    let uri = "file:///tmp/test_refs_prop_range.php";
+    let content = r#"<?php
+
+class Foo {
+    public string $name = '';
+
+    public function test(): void {
+        echo $this->name;
+    }
+}
+"#;
+
+    open_file(&backend, uri, content);
+
+    let results = backend
+        .find_references(uri, content, Position::new(6, 21), true)
+        .expect("should find references");
+
+    // The declaration is the reference on the property declaration line.
+    let decl = results
+        .iter()
+        .find(|loc| loc.range.start.line == 3)
+        .expect("should include the property declaration");
+
+    // `    public string $name` — the `$` is at column 18 and `$name`
+    // spans five UTF-16 columns (18..23).
+    assert_eq!(decl.range.start.character, 18, "range should start at `$`");
+    assert_eq!(
+        decl.range.end.character, 23,
+        "range should cover the full `$name`, not `$nam`"
+    );
+}
+
 // ─── Variable references ────────────────────────────────────────────────────
 
 #[test]

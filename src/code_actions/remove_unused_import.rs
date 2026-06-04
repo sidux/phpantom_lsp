@@ -417,31 +417,33 @@ pub(crate) fn extend_range_for_group_member(content: &str, range: &Range) -> Opt
         return None;
     }
 
-    // Locate the member text from the diagnostic range.
-    let start_col = range.start.character as usize;
-    let end_col = range.end.character as usize;
-    if end_col > line.len() || start_col >= end_col {
+    // Locate the member text from the diagnostic range. The range columns
+    // are UTF-16 code units; convert them to byte offsets before slicing
+    // `line` (and convert back to UTF-16 columns for the resulting edit).
+    let start_byte = crate::util::utf16_col_to_byte_offset(line, range.start.character);
+    let end_byte = crate::util::utf16_col_to_byte_offset(line, range.end.character);
+    if end_byte > line.len() || start_byte >= end_byte {
         return None;
     }
 
-    let member_text = &line[start_col..end_col];
+    let member_text = &line[start_byte..end_byte];
 
     // Find this member in the line and determine whether to remove
     // a leading or trailing comma.
-    let member_start_in_line = start_col;
+    let member_start_in_line = start_byte;
 
     // Look for a trailing comma+whitespace to consume.
-    let after_member = &line[end_col..];
+    let after_member = &line[end_byte..];
     let (removal_end, _has_trailing_comma) = if let Some(rest) = after_member.strip_prefix(',') {
         let skip = 1 + rest.len() - rest.trim_start().len();
-        (end_col + skip, true)
+        (end_byte + skip, true)
     } else {
-        (end_col, false)
+        (end_byte, false)
     };
 
     // If no trailing comma, look for a leading comma+whitespace.
     let before_member = &line[..member_start_in_line];
-    let removal_start = if removal_end == end_col {
+    let removal_start = if removal_end == end_byte {
         // No trailing comma — remove leading comma.
         let trimmed = before_member.trim_end();
         if trimmed.ends_with(',') {
@@ -471,8 +473,14 @@ pub(crate) fn extend_range_for_group_member(content: &str, range: &Range) -> Opt
         return None;
     }
 
-    let start_pos = Position::new(range.start.line, removal_start as u32);
-    let end_pos = Position::new(range.start.line, removal_end as u32);
+    let start_pos = Position::new(
+        range.start.line,
+        crate::util::byte_offset_to_utf16_col(line, removal_start),
+    );
+    let end_pos = Position::new(
+        range.start.line,
+        crate::util::byte_offset_to_utf16_col(line, removal_end),
+    );
 
     Some(TextEdit {
         range: Range {

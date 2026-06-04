@@ -18640,6 +18640,71 @@ async fn test_null_coalesce_unknown_lhs_resolves_rhs() {
     }
 }
 
+/// Array access on an untyped base resolves to `mixed` (not an empty
+/// untyped result), so the `??` RHS still contributes its members.
+#[tokio::test]
+async fn test_null_coalesce_array_access_untyped_base_resolves_rhs() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nc_arr_untyped.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Fallback {\n",
+        "    public function fallbackMethod(): void {}\n",
+        "}\n",
+        "class Svc {\n",
+        "    public function test($params): void {\n",
+        "        $x = $params['key'] ?? new Fallback();\n",
+        "        $x->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 7,
+                    character: 12,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Should return completions");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                method_names.contains(&"fallbackMethod"),
+                "Should include Fallback's method, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
 /// Non-nullable LHS via clone expression — RHS should be ignored.
 #[tokio::test]
 async fn test_null_coalesce_clone_lhs_ignores_rhs() {

@@ -1117,8 +1117,24 @@ fn build_trait_substitution_map(
     };
 
     let mut map = HashMap::new();
+    // Right-align a short argument list to the trailing template params,
+    // matching PHPStan/Psalm convention for `@use Collection<User>`.
+    let offset = right_align_offset(
+        &trait_info.template_params,
+        &trait_info.template_param_bounds,
+        type_args.len(),
+    );
     for (i, param_name) in trait_info.template_params.iter().enumerate() {
-        if let Some(arg) = type_args.get(i) {
+        if i < offset {
+            let fallback = trait_info
+                .template_param_bounds
+                .get(param_name)
+                .cloned()
+                .unwrap_or_else(PhpType::mixed);
+            map.insert(param_name.to_string(), fallback);
+            continue;
+        }
+        if let Some(arg) = type_args.get(i - offset) {
             map.insert(param_name.to_string(), arg.clone());
         }
     }
@@ -1182,8 +1198,28 @@ fn build_substitution_map(
 
     let mut map = HashMap::new();
 
+    // Right-align a short argument list to the trailing template params,
+    // matching `build_generic_subs` and PHPStan/Psalm convention so that
+    // `@extends Collection<User>` binds `User` to the value parameter.
+    let offset = right_align_offset(
+        &parent.template_params,
+        &parent.template_param_bounds,
+        type_args.len(),
+    );
+
     for (i, param_name) in parent.template_params.iter().enumerate() {
-        if let Some(arg) = type_args.get(i) {
+        if i < offset {
+            // Skipped leading (key-like) param: fall back to its declared
+            // bound or `mixed` so the raw template name never leaks.
+            let fallback = parent
+                .template_param_bounds
+                .get(param_name)
+                .cloned()
+                .unwrap_or_else(PhpType::mixed);
+            map.insert(param_name.to_string(), fallback);
+            continue;
+        }
+        if let Some(arg) = type_args.get(i - offset) {
             // Apply any active substitutions to the type argument.
             // This handles chaining: if arg is "T" and active_subs has
             // {T => Foo}, the result is {param_name => Foo}.
@@ -1313,18 +1349,11 @@ pub(crate) fn build_generic_subs(
     // The heuristic only activates when every skipped leading param
     // has an `array-key` (or `int` / `string`) bound, which is the
     // universal convention for collection key parameters.
-    let offset = if type_args.len() < class.template_params.len() {
-        let skip = class.template_params.len() - type_args.len();
-        let all_skipped_are_key_like = class.template_params[..skip].iter().all(|param| {
-            class
-                .template_param_bounds
-                .get(param)
-                .is_some_and(is_key_like_bound)
-        });
-        if all_skipped_are_key_like { skip } else { 0 }
-    } else {
-        0
-    };
+    let offset = right_align_offset(
+        &class.template_params,
+        &class.template_param_bounds,
+        type_args.len(),
+    );
 
     let mut subs = HashMap::new();
     for (i, param_name) in class.template_params.iter().enumerate() {
@@ -1432,6 +1461,33 @@ pub(crate) fn apply_generic_args(class: &ClassInfo, type_args: &[PhpType]) -> Cl
 /// that are conventionally used as collection key bounds.  This is
 /// used by [`apply_generic_args`] to right-align generic arguments
 /// when fewer arguments than template parameters are provided.
+/// Compute the right-alignment offset when fewer type arguments are
+/// provided than template parameters.
+///
+/// PHP/PHPStan/Psalm bind a short generic argument list to the *trailing*
+/// template parameters: `Collection<User>` against `Collection<TKey,
+/// TValue>` binds `TValue => User` and leaves `TKey` to its bound. The
+/// heuristic only activates when every skipped leading parameter has a
+/// key-like bound (`array-key`, `int`, or `string`), the universal
+/// convention for collection key parameters. Otherwise it returns `0`
+/// (left-aligned) so unrelated generics are not mis-bound.
+fn right_align_offset(
+    template_params: &[Atom],
+    template_param_bounds: &crate::atom::AtomMap<PhpType>,
+    num_args: usize,
+) -> usize {
+    if num_args >= template_params.len() {
+        return 0;
+    }
+    let skip = template_params.len() - num_args;
+    let all_skipped_are_key_like = template_params[..skip].iter().all(|param| {
+        template_param_bounds
+            .get(param)
+            .is_some_and(is_key_like_bound)
+    });
+    if all_skipped_are_key_like { skip } else { 0 }
+}
+
 fn is_key_like_bound(bound: &PhpType) -> bool {
     match bound {
         PhpType::Named(_) => bound.is_array_key() || bound.is_int() || bound.is_string_type(),

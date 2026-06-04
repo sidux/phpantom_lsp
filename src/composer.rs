@@ -199,6 +199,34 @@ pub(crate) fn get_bin_dir(package: &ComposerPackage) -> String {
 ///
 /// Returns an empty `HashMap` if the file does not exist or cannot be
 /// parsed.
+/// Unescape a PHP single-quoted string body.
+///
+/// In a single-quoted PHP string only two escape sequences are special:
+/// `\\` produces a literal backslash and `\'` produces a literal quote.
+/// Any other backslash is literal. A single left-to-right pass is the
+/// only correct way to handle these (sequential `replace` calls are
+/// order-dependent and mis-handle adjacent escapes).
+fn unescape_php_single_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('\\') => out.push('\\'),
+                Some('\'') => out.push('\''),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub fn parse_autoload_classmap(
     workspace_root: &Path,
     vendor_dir: &str,
@@ -224,12 +252,9 @@ pub fn parse_autoload_classmap(
         if let Some(rest) = trimmed.strip_prefix('\'')
             && let Some(arrow_pos) = rest.find("' => ")
         {
-            // Unescape PHP single-quoted string escapes:
-            //   \\  →  \
-            //   \'  →  '
-            let class_name = rest[..arrow_pos]
-                .replace("\\\\'", "'")
-                .replace("\\\\", "\\");
+            // Unescape PHP single-quoted string escapes (`\\` → `\`,
+            // `\'` → `'`) in a single left-to-right pass.
+            let class_name = unescape_php_single_quoted(&rest[..arrow_pos]);
 
             let rhs = rest[arrow_pos + "' => ".len()..]
                 .trim()
@@ -868,6 +893,31 @@ mod tests {
     /// Helper: parse a JSON string into a [`ComposerPackage`].
     fn pkg(json: &str) -> ComposerPackage {
         json.parse::<ComposerPackage>().unwrap()
+    }
+
+    // ── unescape_php_single_quoted ──────────────────────────────────
+
+    #[test]
+    fn unescape_namespace_separators() {
+        // `App\\Models\\User` in the source is the FQN `App\Models\User`.
+        assert_eq!(
+            unescape_php_single_quoted("App\\\\Models\\\\User"),
+            "App\\Models\\User"
+        );
+    }
+
+    #[test]
+    fn unescape_quote_and_backslash_before_quote() {
+        // `\'` → `'` and a literal backslash followed by a quote
+        // (`\\\'` → `\'`).
+        assert_eq!(unescape_php_single_quoted("a\\'b"), "a'b");
+        assert_eq!(unescape_php_single_quoted("a\\\\\\'b"), "a\\'b");
+    }
+
+    #[test]
+    fn unescape_lone_backslash_is_literal() {
+        // A backslash before a non-special character stays literal.
+        assert_eq!(unescape_php_single_quoted("a\\nb"), "a\\nb");
     }
 
     // ── get_vendor_dir ──────────────────────────────────────────────
