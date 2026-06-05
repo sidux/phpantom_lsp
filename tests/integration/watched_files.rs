@@ -124,15 +124,24 @@ async fn deleted_model_is_no_longer_suggested() {
     );
 }
 
+/// Mark a workspace file as already parsed, mirroring a lazy load via
+/// `find_or_load_class` (which stores the canonical `file://` URI).
+fn mark_loaded(backend: &Backend, path: &std::path::Path) {
+    let uri = Url::from_file_path(path).unwrap().to_string();
+    backend.parsed_uris().write().insert(uri);
+}
+
 #[tokio::test]
-async fn class_removed_from_changed_file_is_no_longer_suggested() {
-    // A file initially declaring two classes.
+async fn class_removed_from_loaded_changed_file_is_no_longer_suggested() {
+    // A file initially declaring two classes, which has been loaded
+    // (parsed) at some point, so its details are cached.
     let both = "<?php\nnamespace App\\Models;\nclass KeepMe {}\nclass RemoveMe {}\n";
     let (backend, dir) = create_psr4_workspace(COMPOSER_JSON, &[("app/Models/Models.php", both)]);
     let path = dir.path().join("app/Models/Models.php");
 
     index_class(&backend, "App\\Models\\KeepMe", &path);
     index_class(&backend, "App\\Models\\RemoveMe", &path);
+    mark_loaded(&backend, &path);
 
     // The file is rewritten on disk to drop one class.
     fs::write(&path, "<?php\nnamespace App\\Models;\nclass KeepMe {}\n").unwrap();
@@ -145,7 +154,36 @@ async fn class_removed_from_changed_file_is_no_longer_suggested() {
     );
     assert!(
         !idx.contains_key("App\\Models\\RemoveMe"),
-        "class removed from a changed file must be purged from the FQN index"
+        "class removed from a loaded, changed file must be purged from the FQN index"
+    );
+}
+
+#[tokio::test]
+async fn change_to_unloaded_file_is_ignored() {
+    // Editors re-report the whole workspace as "changed" when the window
+    // regains focus.  A file we never loaded carries only a discovery-index
+    // pointer; re-reading it from disk on every refocus is wasted work, so a
+    // plain content change to an unloaded file is ignored.  Its existing
+    // index entry is left untouched and is refreshed lazily on next access.
+    let original = "<?php\nnamespace App\\Models;\nclass Untouched {}\n";
+    let (backend, dir) =
+        create_psr4_workspace(COMPOSER_JSON, &[("app/Models/Untouched.php", original)]);
+    let path = dir.path().join("app/Models/Untouched.php");
+
+    index_class(&backend, "App\\Models\\Untouched", &path);
+
+    // The file is rewritten on disk, but it was never loaded.
+    fs::write(&path, "<?php\nnamespace App\\Models;\nclass Renamed {}\n").unwrap();
+    backend.did_change_watched_files(change_event(&path)).await;
+
+    let idx = backend.fqn_uri_index().read();
+    assert!(
+        idx.contains_key("App\\Models\\Untouched"),
+        "an unloaded file's discovery entry is kept and refreshed lazily, not on every refocus"
+    );
+    assert!(
+        !idx.contains_key("App\\Models\\Renamed"),
+        "an unloaded file is not re-scanned from disk on a content-change event"
     );
 }
 
@@ -191,6 +229,83 @@ async fn composer_change_purges_stale_vendor_functions() {
             .read()
             .contains_key("OLD_VENDOR_CONST"),
         "stale vendor constant must be purged after composer change"
+    );
+}
+
+#[tokio::test]
+async fn batch_of_mixed_changes_reindexes_in_one_notification() {
+    // A flood of watched-file events (e.g. a branch switch or `composer
+    // install`) arrives as a single notification carrying many changes of
+    // different kinds.  Every change must be applied: created files indexed,
+    // deleted files purged, and changed files refreshed.
+    let stale = "<?php\nnamespace App\\Models;\nclass Stale {}\n";
+    let edited = "<?php\nnamespace App\\Models;\nclass Edited {}\nclass DropMe {}\n";
+    let (backend, dir) = create_psr4_workspace(
+        COMPOSER_JSON,
+        &[
+            ("app/Models/Stale.php", stale),
+            ("app/Models/Edited.php", edited),
+        ],
+    );
+
+    let stale_path = dir.path().join("app/Models/Stale.php");
+    let edited_path = dir.path().join("app/Models/Edited.php");
+    let created_path = dir.path().join("app/Models/Fresh.php");
+
+    index_class(&backend, "App\\Models\\Stale", &stale_path);
+    index_class(&backend, "App\\Models\\Edited", &edited_path);
+    index_class(&backend, "App\\Models\\DropMe", &edited_path);
+    // The edited file has been loaded, so its content change is acted on.
+    mark_loaded(&backend, &edited_path);
+
+    // Apply the on-disk state the events describe.
+    fs::remove_file(&stale_path).unwrap();
+    fs::write(
+        &edited_path,
+        "<?php\nnamespace App\\Models;\nclass Edited {}\n",
+    )
+    .unwrap();
+    fs::write(
+        &created_path,
+        "<?php\nnamespace App\\Models;\nclass Fresh {}\n",
+    )
+    .unwrap();
+
+    backend
+        .did_change_watched_files(DidChangeWatchedFilesParams {
+            changes: vec![
+                FileEvent {
+                    uri: Url::from_file_path(&stale_path).unwrap(),
+                    typ: FileChangeType::DELETED,
+                },
+                FileEvent {
+                    uri: Url::from_file_path(&edited_path).unwrap(),
+                    typ: FileChangeType::CHANGED,
+                },
+                FileEvent {
+                    uri: Url::from_file_path(&created_path).unwrap(),
+                    typ: FileChangeType::CREATED,
+                },
+            ],
+        })
+        .await;
+
+    let idx = backend.fqn_uri_index().read();
+    assert!(
+        !idx.contains_key("App\\Models\\Stale"),
+        "deleted file's class must be purged"
+    );
+    assert!(
+        idx.contains_key("App\\Models\\Edited"),
+        "surviving class in a changed file must remain"
+    );
+    assert!(
+        !idx.contains_key("App\\Models\\DropMe"),
+        "class removed from a changed file must be purged"
+    );
+    assert!(
+        idx.contains_key("App\\Models\\Fresh"),
+        "newly created class must be indexed"
     );
 }
 

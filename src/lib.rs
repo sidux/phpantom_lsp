@@ -86,7 +86,7 @@ use std::sync::atomic::AtomicU64;
 
 use parking_lot::{Mutex, RwLock};
 use tower_lsp::Client;
-use tower_lsp::lsp_types::CompletionItem;
+use tower_lsp::lsp_types::{CompletionItem, FileChangeType};
 
 /// A single parse error entry: `(message, start_byte_offset, end_byte_offset)`.
 ///
@@ -941,6 +941,12 @@ impl Backend {
         &self.psr4_mappings
     }
 
+    /// Borrow the set of parsed file URIs (used by integration tests to
+    /// mark a workspace file as already loaded, mirroring a lazy parse).
+    pub fn parsed_uris(&self) -> &Arc<RwLock<HashSet<String>>> {
+        &self.parsed_uris
+    }
+
     /// Read the stub constant index (used by integration tests to
     /// verify built-in constants are present).
     pub fn stub_constant_index(
@@ -1089,103 +1095,123 @@ impl Backend {
         gti.retain(|_, v| !v.is_empty());
     }
 
-    /// Remove every index entry that points at a single file.
+    /// Re-scan a batch of files from disk, refreshing their discovery-level
+    /// index entries (FQN→URI, autoload functions/constants, globals).
     ///
-    /// This is the inverse of the indexing performed during the
-    /// workspace scan and `update_ast`.  When a file is deleted or
-    /// changed outside the editor (e.g. a git checkout or `composer`
-    /// run), every index that references it must be purged, or stale
-    /// symbols linger: completion keeps suggesting a class whose file
-    /// was removed, go-to-definition jumps into a deleted file, and so
-    /// on.  Purging only some indexes (e.g. `fqn_uri_index` but not
-    /// `method_store`) leaves the symptom alive in whichever feature
-    /// reads the index that was missed.
+    /// Used when files are created, changed, or deleted outside the editor
+    /// (a git checkout, a `composer install`, an editor session resuming
+    /// after idle).  Every index that references a changed file is purged
+    /// first, or stale symbols linger: completion keeps suggesting a class
+    /// whose file was removed, go-to-definition jumps into a deleted file,
+    /// and so on.  Purging only some indexes (e.g. `fqn_uri_index` but not
+    /// `method_store`) leaves the symptom alive in whichever feature reads
+    /// the index that was missed.
     ///
-    /// `uri_str` is the file's URI as the editor reports it; `file_path`
-    /// is the same file as a filesystem path.  A given FQN→URI entry may
-    /// have been stored under either of two URI conventions depending on
-    /// how it was created — the classmap scan stores
-    /// [`crate::util::path_to_uri`] of the discovered path, while
-    /// `update_ast` stores the editor's URI string — so values are
-    /// matched against both spellings.
-    pub(crate) fn deindex_file(&self, uri_str: &str, file_path: &std::path::Path) {
-        let canonical_uri = crate::util::path_to_uri(file_path);
-        let matches_uri = |v: &str| v == uri_str || v == canonical_uri.as_str();
+    /// The purge of each discovery index is done once for the whole batch
+    /// rather than once per file.  Each of those maps must be scanned in
+    /// full to drop a file's entries, so handling a flood of watched-file
+    /// events one at a time would be O(files × index size); a branch switch
+    /// can emit thousands of events at once.  Batching makes the purge
+    /// O(index size) regardless of how many files changed.
+    ///
+    /// A given FQN→URI entry may have been stored under either of two URI
+    /// conventions depending on how it was created (the classmap scan
+    /// stores [`crate::util::path_to_uri`] of the discovered path, while
+    /// `update_ast` stores the editor's URI string), so values are matched
+    /// against both spellings.  The full
+    /// [`ClassInfo`](crate::types::ClassInfo) is re-parsed lazily on next
+    /// access; this only restores the lightweight discovery indexes.
+    ///
+    /// `changes` is `(editor URI string, file path, change type)`.
+    pub(crate) fn reindex_files_batch(&self, changes: &[(String, PathBuf, FileChangeType)]) {
+        if changes.is_empty() {
+            return;
+        }
 
-        // FQNs whose source is this file, under either URI convention.
-        let fqns_in_file: Vec<String> = {
-            let idx = self.fqn_uri_index.read();
-            idx.iter()
-                .filter(|(_, v)| matches_uri(v.as_str()))
-                .map(|(k, _)| k.clone())
-                .collect()
-        };
+        // Index values are stored under either the editor URI or the
+        // canonical `file://` URI, so match both variants.
+        let mut uri_set: HashSet<String> = HashSet::new();
+        let mut path_set: HashSet<PathBuf> = HashSet::new();
+        for (uri_str, path, _) in changes {
+            uri_set.insert(uri_str.clone());
+            uri_set.insert(crate::util::path_to_uri(path));
+            path_set.insert(path.clone());
+        }
 
-        self.fqn_uri_index
-            .write()
-            .retain(|_, v| !matches_uri(v.as_str()));
-
+        // FQN → URI: drop every entry sourced from a changed file in one
+        // pass, collecting the dropped FQNs so the dependent caches can be
+        // evicted without re-scanning.
+        let mut dropped_fqns: Vec<String> = Vec::new();
+        {
+            let mut idx = self.fqn_uri_index.write();
+            idx.retain(|fqn, v| {
+                if uri_set.contains(v.as_str()) {
+                    dropped_fqns.push(fqn.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+        }
         {
             let mut fci = self.fqn_class_index.write();
-            for fqn in &fqns_in_file {
+            for fqn in &dropped_fqns {
                 fci.remove(fqn);
             }
         }
-        self.evict_methods_for_fqns(&fqns_in_file);
-        self.evict_gti_for_fqns(&fqns_in_file);
+        self.evict_methods_for_fqns(&dropped_fqns);
+        self.evict_gti_for_fqns(&dropped_fqns);
 
         self.autoload_function_index
             .write()
-            .retain(|_, v| v != file_path);
+            .retain(|_, v| !path_set.contains(v));
         self.autoload_constant_index
             .write()
-            .retain(|_, v| v != file_path);
-
-        // `global_functions` / `global_defines` store the editor URI for
-        // workspace files; purge any whose source is this file.
+            .retain(|_, v| !path_set.contains(v));
         self.global_functions
             .write()
-            .retain(|_, (u, _)| !matches_uri(u.as_str()));
+            .retain(|_, (u, _)| !uri_set.contains(u.as_str()));
         self.global_defines
             .write()
-            .retain(|_, d| !matches_uri(d.file_uri.as_str()));
+            .retain(|_, d| !uri_set.contains(d.file_uri.as_str()));
 
-        self.clear_file_maps(uri_str);
-        self.uri_classes_index.write().remove(uri_str);
-        self.parsed_uris.write().remove(uri_str);
-    }
-
-    /// Re-scan a single file from disk and refresh its discovery-level
-    /// index entries (FQN→URI, autoload functions/constants).
-    ///
-    /// Used when a file is created or changed on disk outside the editor.
-    /// All previous entries for the file are purged first via
-    /// [`deindex_file`](Self::deindex_file) so that classes, functions,
-    /// or constants removed from the file do not survive the change.  The
-    /// full [`ClassInfo`](crate::types::ClassInfo) is re-parsed lazily on
-    /// next access; this only restores the lightweight discovery indexes.
-    pub(crate) fn reindex_file(&self, uri_str: &str, file_path: &std::path::Path) {
-        self.deindex_file(uri_str, file_path);
-
-        let classes = crate::classmap_scanner::scan_file(file_path);
-        {
-            let mut idx = self.fqn_uri_index.write();
-            for fqn in classes {
-                idx.insert(fqn, uri_str.to_string());
-            }
+        // Per-URI keyed removals are cheap (no full scan).
+        for (uri_str, _, _) in changes {
+            self.clear_file_maps(uri_str);
+            self.uri_classes_index.write().remove(uri_str);
+            self.parsed_uris.write().remove(uri_str);
         }
 
-        let scan = crate::classmap_scanner::scan_file_full(file_path);
-        {
-            let mut fi = self.autoload_function_index.write();
-            for fqn in scan.functions {
-                fi.entry(fqn).or_insert_with(|| file_path.to_path_buf());
+        // Re-add current symbols for created/changed files.  Deleted files
+        // keep their entries purged.
+        for (uri_str, path, change_type) in changes {
+            if !matches!(
+                *change_type,
+                FileChangeType::CREATED | FileChangeType::CHANGED
+            ) {
+                continue;
             }
-        }
-        {
-            let mut ci = self.autoload_constant_index.write();
-            for name in scan.constants {
-                ci.entry(name).or_insert_with(|| file_path.to_path_buf());
+
+            let classes = crate::classmap_scanner::scan_file(path);
+            {
+                let mut idx = self.fqn_uri_index.write();
+                for fqn in classes {
+                    idx.insert(fqn, uri_str.clone());
+                }
+            }
+
+            let scan = crate::classmap_scanner::scan_file_full(path);
+            {
+                let mut fi = self.autoload_function_index.write();
+                for fqn in scan.functions {
+                    fi.entry(fqn).or_insert_with(|| path.clone());
+                }
+            }
+            {
+                let mut ci = self.autoload_constant_index.write();
+                for name in scan.constants {
+                    ci.entry(name).or_insert_with(|| path.clone());
+                }
             }
         }
     }

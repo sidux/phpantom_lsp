@@ -40,6 +40,32 @@ use crate::config::IndexingStrategy;
 use crate::formatting;
 use crate::phar;
 
+/// Run `f` on a blocking thread in a way that survives `$/cancelRequest`.
+///
+/// tower-lsp 0.20 wedges its serve loop if a request handler future is
+/// dropped (which is how it implements cancellation) while that future is
+/// directly awaiting a `spawn_blocking` JoinHandle: dropping the await
+/// detaches the handle, and when the orphaned blocking task later finishes it
+/// corrupts tower-lsp's internal request/response state.  Once that happens
+/// the server goes completely silent (every worker idle-parked, no responses)
+/// even though nothing is deadlocked.  Editors cancel aggressively (a moving
+/// cursor cancels each in-flight hover/highlight), so any blocking handler
+/// that is not protected this way is a latent total-hang.
+///
+/// Wrapping the blocking call in an inner `tokio::spawn` keeps it owned by a
+/// live task that always runs to completion, so the handle is never orphaned.
+/// Returns `None` only if the blocking task itself panicked.
+async fn run_blocking_cancel_safe<R, F>(f: F) -> Option<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    tokio::spawn(async move { tokio::task::spawn_blocking(f).await })
+        .await
+        .ok()
+        .and_then(|inner| inner.ok())
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -643,136 +669,29 @@ impl LanguageServer for Backend {
             return;
         };
 
-        let mut composer_changed = false;
-        let mut php_created_or_deleted: Vec<(Url, FileChangeType)> = Vec::new();
+        // The whole batch is filtered and reindexed on a blocking thread
+        // (wrapped in `tokio::spawn` so it always runs to completion).  A
+        // refocused editor can deliver hundreds of KiB of events in one
+        // notification; awaiting the blocking task yields to the LSP message
+        // loop, so the server keeps draining hover, completion, and
+        // diagnostic requests instead of freezing until the batch is handled.
+        let backend = self.clone_for_blocking();
+        let did_work = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || backend.apply_watched_file_changes(&params, &root))
+                .await
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false);
 
-        for change in &params.changes {
-            let path_str = change.uri.path();
-            if path_str.ends_with("/composer.json") || path_str.ends_with("/composer.lock") {
-                composer_changed = true;
-            } else if path_str.ends_with(".php") {
-                // Only handle files not currently open in the editor.
-                // Open files are already tracked via did_open/did_change.
-                let uri_str = change.uri.to_string();
-                if !self.open_files.read().contains_key(&uri_str) {
-                    php_created_or_deleted.push((change.uri.clone(), change.typ));
-                }
-            }
-        }
-
-        // Handle individual PHP file changes (targeted single-file rescan).
-        for (uri, change_type) in &php_created_or_deleted {
-            let uri_str = uri.to_string();
-            let Ok(file_path) = uri.to_file_path() else {
-                continue;
-            };
-
-            match *change_type {
-                FileChangeType::CREATED | FileChangeType::CHANGED => {
-                    // Re-scan the file: purge every stale entry (classes,
-                    // functions, or constants removed from the file) and
-                    // re-add its current symbols.
-                    self.reindex_file(&uri_str, &file_path);
-                }
-                FileChangeType::DELETED => {
-                    // Purge every index entry that referenced the file.
-                    self.deindex_file(&uri_str, &file_path);
-                }
-                _ => {}
-            }
-        }
-
-        // Invalidate caches whenever any PHP file is created, changed,
-        // or deleted.  A class that was previously "not found" may now
-        // exist, and resolved class info may be stale.
-        if !php_created_or_deleted.is_empty() {
-            tracing::info!(
-                "PHPantom: {} watched PHP file(s) changed on disk, indexes refreshed",
-                php_created_or_deleted.len()
-            );
-            self.class_not_found_cache.write().clear();
-            self.resolved_class_cache.lock().clear();
-            // Member completion results embed members of the resolved
-            // target class; a class whose file changed may have gained,
-            // lost, or renamed members.
-            self.member_completion_cache.lock().clear();
-
-            // Open files may reference a class that was just added or
-            // removed; ask the editor to re-pull diagnostics so stale
-            // "unknown class" errors (or missing ones) are corrected.
-            if self.supports_pull_diagnostics.load(Ordering::Acquire)
-                && let Some(ref client) = self.client
-            {
-                let _ = client.workspace_diagnostic_refresh().await;
-            }
-        }
-
-        // Handle composer.json/composer.lock changes: full vendor rescan.
-        if composer_changed {
-            tracing::info!("PHPantom: composer files changed, rescanning vendor");
-
-            // Re-read composer.json for updated PSR-4 mappings.
-            if let Some(pkg) = composer::read_composer_package(&root) {
-                let mappings = composer::extract_psr4_mappings_from_package(&pkg);
-                *self.psr4_mappings.write() = mappings;
-
-                let vendor_dir = composer::get_vendor_dir(&pkg);
-                let vendor_path = root.join(&vendor_dir);
-
-                // Rebuild vendor classmap.
-                let vendor_scan = classmap_scanner::scan_vendor_packages(&root, &vendor_dir);
-                {
-                    let vendor_uri_prefix = if let Ok(canonical) = vendor_path.canonicalize() {
-                        format!("{}/", crate::util::path_to_uri(&canonical))
-                    } else {
-                        format!("{}/", crate::util::path_to_uri(&vendor_path))
-                    };
-
-                    // Remove old vendor entries and insert new ones.
-                    let mut idx = self.fqn_uri_index.write();
-                    idx.retain(|_, v| !v.starts_with(&vendor_uri_prefix));
-                    for (fqn, path) in vendor_scan.classmap {
-                        idx.insert(fqn, crate::util::path_to_uri(&path));
-                    }
-                }
-                {
-                    let mut fi = self.autoload_function_index.write();
-                    // Purge functions that pointed into the old vendor tree
-                    // before re-inserting, so symbols removed by a
-                    // `composer update` no longer resolve.
-                    fi.retain(|_, v| !v.starts_with(&vendor_path));
-                    for (fqn, path) in vendor_scan.function_index {
-                        fi.insert(fqn, path);
-                    }
-                }
-                {
-                    let mut ci = self.autoload_constant_index.write();
-                    // Same for constants from the old vendor tree.
-                    ci.retain(|_, v| !v.starts_with(&vendor_path));
-                    for (name, path) in vendor_scan.constant_index {
-                        ci.insert(name, path);
-                    }
-                }
-
-                // Rescan autoload files (they may have changed).
-                self.scan_autoload_files(&root, &vendor_dir);
-            }
-
-            // Clear all cached class info since vendor classes may have
-            // changed versions.
-            self.fqn_class_index.write().clear();
-            self.method_store.write().clear();
-            self.gti_index.write().clear();
-            self.class_not_found_cache.write().clear();
-            self.resolved_class_cache.lock().clear();
-            self.member_completion_cache.lock().clear();
-
-            // Notify the editor to re-pull diagnostics.
-            if self.supports_pull_diagnostics.load(Ordering::Acquire)
-                && let Some(ref client) = self.client
-            {
-                let _ = client.workspace_diagnostic_refresh().await;
-            }
+        // Open files may reference a class that was just added or removed; ask
+        // the editor to re-pull diagnostics so stale "unknown class" errors
+        // (or missing ones) are corrected.
+        if did_work
+            && self.supports_pull_diagnostics.load(Ordering::Acquire)
+            && let Some(ref client) = self.client
+        {
+            let _ = client.workspace_diagnostic_refresh().await;
         }
     }
 
@@ -789,7 +708,7 @@ impl LanguageServer for Backend {
 
         let backend = self.clone_for_blocking();
         let uri_clone = uri.clone();
-        tokio::task::spawn_blocking(move || {
+        run_blocking_cancel_safe(move || {
             backend.handle_with_position("goto_definition", &uri_clone, position, |content, pos| {
                 let locs = backend.resolve_definition(&uri_clone, content, pos);
                 if locs.is_empty() {
@@ -881,7 +800,7 @@ impl LanguageServer for Backend {
 
         let backend = self.clone_for_blocking();
         let uri_clone = uri.clone();
-        tokio::task::spawn_blocking(move || {
+        run_blocking_cancel_safe(move || {
             backend.handle_with_position(
                 "goto_type_definition",
                 &uri_clone,
@@ -912,7 +831,7 @@ impl LanguageServer for Backend {
 
         let backend = self.clone_for_blocking();
         let uri_clone = uri.clone();
-        tokio::task::spawn_blocking(move || {
+        run_blocking_cancel_safe(move || {
             // For Blade files, check if the cursor is on a `{{` or `{!!` echo
             // delimiter. If so, return hover for `e()` (escaped echo) or a
             // raw-echo explanation, rather than falling through to the virtual
@@ -1023,7 +942,7 @@ impl LanguageServer for Backend {
 
         let backend = self.clone_for_blocking();
         let uri_clone = uri.clone();
-        tokio::task::spawn_blocking(move || {
+        run_blocking_cancel_safe(move || {
             backend.handle_with_uri("code_action", &uri_clone, |content| {
                 let actions = backend.handle_code_action(&uri_clone, content, &params);
                 if actions.is_empty() {
@@ -1059,7 +978,7 @@ impl LanguageServer for Backend {
 
         let backend = self.clone_for_blocking();
         let uri_clone = uri.clone();
-        tokio::task::spawn_blocking(move || {
+        run_blocking_cancel_safe(move || {
             backend.handle_with_position("signature_help", &uri_clone, position, |content, pos| {
                 backend.handle_signature_help(&uri_clone, content, pos)
             })
@@ -1081,7 +1000,7 @@ impl LanguageServer for Backend {
 
         let backend = self.clone_for_blocking();
         let uri_clone = uri.clone();
-        tokio::task::spawn_blocking(move || {
+        run_blocking_cancel_safe(move || {
             backend.handle_with_position(
                 "document_highlight",
                 &uri_clone,
@@ -1145,7 +1064,7 @@ impl LanguageServer for Backend {
 
         let backend = self.clone_for_blocking();
         let uri_clone = uri.clone();
-        tokio::task::spawn_blocking(move || {
+        run_blocking_cancel_safe(move || {
             backend.handle_with_position("prepare_rename", &uri_clone, position, |content, pos| {
                 backend
                     .handle_prepare_rename(&uri_clone, content, pos)
@@ -1180,7 +1099,7 @@ impl LanguageServer for Backend {
 
         let backend = self.clone_for_blocking();
         let uri_clone = uri.clone();
-        tokio::task::spawn_blocking(move || {
+        run_blocking_cancel_safe(move || {
             backend.handle_with_position("rename", &uri_clone, position, |content, pos| {
                 backend
                     .handle_rename(&uri_clone, content, pos, &new_name)
@@ -1410,7 +1329,7 @@ impl LanguageServer for Backend {
         // Execute the resolved formatting strategy on a blocking thread
         // to avoid stalling the async runtime while external tools run.
         let formatting_config = config.formatting.clone();
-        let result = tokio::task::spawn_blocking(move || {
+        let result = run_blocking_cancel_safe(move || {
             formatting::execute_strategy(
                 &strategy,
                 &content,
@@ -1422,8 +1341,8 @@ impl LanguageServer for Backend {
         .await;
 
         match result {
-            Ok(Ok(edits)) => Ok(edits),
-            Ok(Err(e)) => {
+            Some(Ok(edits)) => Ok(edits),
+            Some(Err(e)) => {
                 self.log(MessageType::ERROR, format!("Formatting failed: {}", e))
                     .await;
                 Err(tower_lsp::jsonrpc::Error {
@@ -1432,8 +1351,8 @@ impl LanguageServer for Backend {
                     data: None,
                 })
             }
-            Err(join_err) => {
-                let msg = format!("Formatting task panicked: {}", join_err);
+            None => {
+                let msg = "Formatting task panicked".to_string();
                 self.log(MessageType::ERROR, msg.clone()).await;
                 Err(tower_lsp::jsonrpc::Error {
                     code: tower_lsp::jsonrpc::ErrorCode::InternalError,
@@ -2137,6 +2056,164 @@ impl Backend {
             let mut prefixes = self.vendor_uri_prefixes.lock();
             prefixes.push(prefix);
         }
+    }
+
+    /// Apply a `workspace/didChangeWatchedFiles` batch to the indexes.
+    ///
+    /// Returns `true` if any PHP file or composer change was acted on (so the
+    /// caller can ask the editor to re-pull diagnostics).  Runs entirely on a
+    /// blocking thread; it parses no files on the async runtime.
+    ///
+    /// Editors cannot watch the filesystem while the window is unfocused, so
+    /// on refocus they resynchronise by reporting the *entire* workspace as
+    /// "changed" in one notification (hundreds of KiB of events).  Almost
+    /// none of those files actually changed, and most were never parsed:
+    /// PHPantom loads class details lazily, holding only a name→file pointer
+    /// in the discovery index until something resolves the class.  Re-reading
+    /// and re-scanning every reported file from disk would do thousands of
+    /// wasted syscalls on every refocus.
+    ///
+    /// So a plain content change is only acted on for files we have actually
+    /// parsed (whose cached details would otherwise go stale).  Created and
+    /// deleted files are always handled: a creation makes a new class
+    /// discoverable, and a deletion must purge a now-dangling entry, both of
+    /// which matter even for files we never loaded.
+    pub(crate) fn apply_watched_file_changes(
+        &self,
+        params: &DidChangeWatchedFilesParams,
+        root: &std::path::Path,
+    ) -> bool {
+        let mut composer_changed = false;
+        let mut php_changes: Vec<(String, PathBuf, FileChangeType)> = Vec::new();
+        {
+            let open = self.open_files.read();
+            let parsed = self.parsed_uris.read();
+            for change in &params.changes {
+                let path_str = change.uri.path();
+                if path_str.ends_with("/composer.json") || path_str.ends_with("/composer.lock") {
+                    composer_changed = true;
+                    continue;
+                }
+                if !path_str.ends_with(".php") {
+                    continue;
+                }
+
+                // Open files are already tracked via did_open/did_change.
+                let uri_str = change.uri.to_string();
+                if open.contains_key(&uri_str) {
+                    continue;
+                }
+                let Ok(file_path) = change.uri.to_file_path() else {
+                    continue;
+                };
+
+                if change.typ == FileChangeType::CHANGED {
+                    // `parsed_uris` records the editor URI for open files and
+                    // the canonical `file://` URI for lazily loaded ones;
+                    // check both spellings.
+                    let canonical_uri = crate::util::path_to_uri(&file_path);
+                    let loaded =
+                        parsed.contains(&uri_str) || parsed.contains(canonical_uri.as_str());
+                    if !loaded {
+                        continue;
+                    }
+                }
+
+                php_changes.push((uri_str, file_path, change.typ));
+            }
+        }
+
+        if php_changes.is_empty() && !composer_changed {
+            return false;
+        }
+
+        if !php_changes.is_empty() {
+            tracing::info!(
+                "PHPantom: {} watched PHP file(s) changed on disk, refreshing indexes",
+                php_changes.len()
+            );
+            self.reindex_files_batch(&php_changes);
+            // A class that was previously "not found" may now exist, and
+            // resolved class info / member completions may be stale for a
+            // class whose file changed.
+            self.class_not_found_cache.write().clear();
+            self.resolved_class_cache.lock().clear();
+            self.member_completion_cache.lock().clear();
+        }
+
+        if composer_changed {
+            tracing::info!("PHPantom: composer files changed, rescanning vendor");
+            self.rescan_composer_indexes(root);
+        }
+
+        true
+    }
+
+    /// Rebuild the vendor-derived indexes after a `composer.json` /
+    /// `composer.lock` change (e.g. a `composer install` or `update`).
+    ///
+    /// Re-reads PSR-4 mappings, rebuilds the vendor classmap and the
+    /// autoload function/constant indexes, rescans autoload files, and
+    /// clears the resolved-class caches so stale vendor versions do not
+    /// linger.  This is the synchronous body of
+    /// [`did_change_watched_files`](Self::did_change_watched_files)'s
+    /// composer branch, factored out so it can run on a blocking thread.
+    pub(crate) fn rescan_composer_indexes(&self, root: &std::path::Path) {
+        // Re-read composer.json for updated PSR-4 mappings.
+        if let Some(pkg) = composer::read_composer_package(root) {
+            let mappings = composer::extract_psr4_mappings_from_package(&pkg);
+            *self.psr4_mappings.write() = mappings;
+
+            let vendor_dir = composer::get_vendor_dir(&pkg);
+            let vendor_path = root.join(&vendor_dir);
+
+            // Rebuild vendor classmap.
+            let vendor_scan = classmap_scanner::scan_vendor_packages(root, &vendor_dir);
+            {
+                let vendor_uri_prefix = if let Ok(canonical) = vendor_path.canonicalize() {
+                    format!("{}/", crate::util::path_to_uri(&canonical))
+                } else {
+                    format!("{}/", crate::util::path_to_uri(&vendor_path))
+                };
+
+                // Remove old vendor entries and insert new ones.
+                let mut idx = self.fqn_uri_index.write();
+                idx.retain(|_, v| !v.starts_with(&vendor_uri_prefix));
+                for (fqn, path) in vendor_scan.classmap {
+                    idx.insert(fqn, crate::util::path_to_uri(&path));
+                }
+            }
+            {
+                let mut fi = self.autoload_function_index.write();
+                // Purge functions that pointed into the old vendor tree
+                // before re-inserting, so symbols removed by a
+                // `composer update` no longer resolve.
+                fi.retain(|_, v| !v.starts_with(&vendor_path));
+                for (fqn, path) in vendor_scan.function_index {
+                    fi.insert(fqn, path);
+                }
+            }
+            {
+                let mut ci = self.autoload_constant_index.write();
+                // Same for constants from the old vendor tree.
+                ci.retain(|_, v| !v.starts_with(&vendor_path));
+                for (name, path) in vendor_scan.constant_index {
+                    ci.insert(name, path);
+                }
+            }
+
+            // Rescan autoload files (they may have changed).
+            self.scan_autoload_files(root, &vendor_dir);
+        }
+
+        // Clear all cached class info since vendor classes may have
+        // changed versions.
+        self.fqn_class_index.write().clear();
+        self.method_store.write().clear();
+        self.gti_index.write().clear();
+        self.class_not_found_cache.write().clear();
+        self.resolved_class_cache.lock().clear();
+        self.member_completion_cache.lock().clear();
     }
 
     /// Scan autoload files for a single project root and populate the
