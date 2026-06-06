@@ -106,6 +106,7 @@ mod inlay_hints;
 mod laravel_custom_builder;
 mod laravel_references;
 mod linked_editing;
+mod lsp_concurrency;
 mod parser;
 mod php_version;
 mod references;

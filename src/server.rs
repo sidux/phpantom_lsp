@@ -859,7 +859,22 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let started = std::time::Instant::now();
-        let result = self.handle_completion(params).await;
+
+        // Run the (CPU-bound) resolution on a blocking thread so it does not
+        // monopolize an async worker.  Editors fire a large request barrage on
+        // every keystroke (completion, a resolve per item, diagnostics, code
+        // lens, …); keeping completion off the async runtime lets those — and
+        // the cancellations that supersede stale completions — make progress
+        // instead of queueing behind a synchronous resolution.
+        let backend = self.clone_for_blocking();
+        let result = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || backend.handle_completion(params))
+                .await
+                .unwrap_or(Ok(None))
+        })
+        .await
+        .unwrap_or(Ok(None));
+
         let elapsed = started.elapsed();
         let item_count = match &result {
             Ok(Some(CompletionResponse::Array(items))) => items.len(),
@@ -877,7 +892,19 @@ impl LanguageServer for Backend {
     }
 
     async fn completion_resolve(&self, params: CompletionItem) -> Result<CompletionItem> {
-        Ok(self.handle_completion_resolve(params))
+        // Offloaded to a blocking thread for the same reason as `completion`:
+        // an editor resolves every visible item, so a dozen of these land per
+        // keystroke and must not tie up async workers.
+        let backend = self.clone_for_blocking();
+        let fallback = params.clone();
+        let item = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || backend.handle_completion_resolve(params)).await
+        })
+        .await
+        .ok()
+        .and_then(|joined| joined.ok())
+        .unwrap_or(fallback);
+        Ok(item)
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
@@ -1181,9 +1208,20 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri.to_string();
-        self.handle_with_uri("semantic_tokens_full", &uri, |content| {
-            self.handle_semantic_tokens_full(&uri, content)
+        // Highlighting is requested on every keystroke and re-serializes the
+        // whole token array; keep it off the async runtime.
+        let backend = self.clone_for_blocking();
+        tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                backend.handle_with_uri("semantic_tokens_full", &uri, |content| {
+                    backend.handle_semantic_tokens_full(&uri, content)
+                })
+            })
+            .await
+            .unwrap_or(Ok(None))
         })
+        .await
+        .unwrap_or(Ok(None))
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {

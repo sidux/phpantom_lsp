@@ -96,6 +96,21 @@ pub(crate) type ParseErrorEntry = (String, u32, u32);
 
 // ─── Module declarations ────────────────────────────────────────────────────
 
+/// Maximum number of LSP requests the tower-lsp transport processes
+/// concurrently.
+///
+/// tower-lsp defaults to 4, which is far too low for real editors: they fire a
+/// large request barrage on every keystroke (completion, a resolve per visible
+/// item, diagnostics, code lens, semantic tokens, …). With a limit of 4, that
+/// barrage fills tower-lsp's internal task queue, which blocks the message-read
+/// loop so it can no longer even receive `$/cancelRequest` — the server stops
+/// responding to everything until the backlog drains. Raising the limit lets
+/// the barrage (and the cancellations that supersede stale requests) flow, so
+/// cheap requests stay instant while typing. Heavy handlers run on the blocking
+/// thread pool, so real CPU parallelism is bounded there; this only governs how
+/// many requests may be in flight.
+pub const LSP_CONCURRENCY: usize = 128;
+
 pub mod analyse;
 pub mod atom;
 pub mod blade;

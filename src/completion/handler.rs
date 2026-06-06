@@ -257,7 +257,7 @@ impl Backend {
     /// Tries each completion strategy in priority order and returns the
     /// first one that produces results.  Falls back to no completions
     /// when nothing matches.
-    pub(crate) async fn handle_completion(
+    pub(crate) fn handle_completion(
         &self,
         params: CompletionParams,
     ) -> Result<Option<CompletionResponse>> {

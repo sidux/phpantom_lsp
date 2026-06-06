@@ -4,6 +4,7 @@ use clap::Parser;
 use clap::builder::Styles;
 use clap::builder::styling::AnsiColor;
 use phpantom_lsp::Backend;
+use phpantom_lsp::LSP_CONCURRENCY;
 use phpantom_lsp::config;
 use tokio::net::TcpListener;
 use tower_lsp::{LspService, Server};
@@ -282,7 +283,10 @@ async fn main() {
 
                 let (read, write) = tokio::io::split(stream);
                 let (service, socket) = LspService::build(Backend::new).finish();
-                Server::new(read, write, socket).serve(service).await;
+                Server::new(read, write, socket)
+                    .concurrency_level(LSP_CONCURRENCY)
+                    .serve(service)
+                    .await;
                 // The serve loop exited (client disconnected or an
                 // internal error occurred).  Exit the process so the
                 // editor can restart us instead of leaving a zombie
@@ -295,7 +299,10 @@ async fn main() {
                 let stdout = tokio::io::stdout();
 
                 let (service, socket) = LspService::build(Backend::new).finish();
-                Server::new(stdin, stdout, socket).serve(service).await;
+                Server::new(stdin, stdout, socket)
+                    .concurrency_level(LSP_CONCURRENCY)
+                    .serve(service)
+                    .await;
                 // Same as above: the serve loop exited.  Without this
                 // explicit exit, the process hangs because the tokio
                 // blocking stdin reader thread keeps the runtime alive

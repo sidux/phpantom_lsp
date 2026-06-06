@@ -759,6 +759,58 @@ diagnostic layer.
 
 ---
 
+## P22. Shared-resolution-lock contention under a sustained keystroke barrage
+
+**Impact: Medium · Effort: Medium**
+
+The hard wedge — where the server stopped responding to *everything* under
+the editor's per-keystroke request barrage — has been fixed (the tower-lsp
+request-concurrency limit was raised from its default of 4, which had been
+blocking the transport's message-read loop, and the heavy interactive
+handlers now run on the blocking thread pool). The server now stays
+responsive and recovers as soon as typing pauses.
+
+A residual remains: under a *sustained* full barrage (a fast typist firing
+completion + a resolve per item + both diagnostic kinds + semantic tokens on
+every keystroke), completion latency still climbs while the burst continues,
+because the resolution work funnels through coarse shared locks.
+
+- Completion's resolver and every `completionItem/resolve`, diagnostic, and
+  semantic-token pass read `class_not_found_cache` (`resolution.rs:99`),
+  `fqn_uri_index` (`resolution.rs:120`), and `uri_classes_index` /
+  `fqn_class_index`, and lock the single `resolved_class_cache` mutex per
+  lookup. With many of these in flight at once the mutex becomes a hot
+  serialization point.
+- The per-keystroke re-parse holds `resolved_class_cache.lock()` while
+  iterating the file's classes (`ast_update.rs:587`), and — when a signature
+  actually changed — runs `evict_fqn` per class under that lock, which is
+  O(cache_size) each (see **P6**). Concurrent diagnostics also lazily parse
+  vendor/PSR-4/stub classes mid-run, taking `.write()` on the FQN indices
+  (`resolution.rs:451-452`).
+
+**Fix (in priority order):**
+
+1. Let concurrent resolution proceed without serializing on one mutex:
+   make `resolved_class_cache` a sharded / `RwLock` / lock-free map so
+   lookups don't contend (it is read-mostly during resolution). This is the
+   same cache **P6**/**P9** address algorithmically; here the concern is the
+   lock granularity.
+2. Stop holding `resolved_class_cache.lock()` across `evict_fqn`
+   (`ast_update.rs:587`, `resolution.rs:511`): collect keys under a short
+   lock, or keep a reverse dependency index so eviction is O(dependents).
+3. Build new `fqn_uri_index` / `fqn_class_index` entries outside the lock,
+   then extend under a brief `.write()`.
+
+**Reproduction:** drive the server over stdio against a warm-cache large
+file; per "keystroke" send a full-document `didChange` plus the whole
+request barrage (completion + ~13 resolves + both diagnostic kinds +
+semantic tokens) without waiting for responses, cancelling the superseded
+ones, at ~80 ms cadence. The server stays responsive (cheap requests remain
+instant), but completion latency grows for as long as the burst continues
+instead of staying flat.
+
+---
+
 # Remaining anti-pattern fixes
 
 Most remaining depth-cap issues are addressed by ER5 (class
