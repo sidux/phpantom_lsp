@@ -156,7 +156,6 @@ unlikely to move the needle for most users.
 | P5  | `memmap2` for file reads during scanning                                                                                                                                    | Low         | Low         |
 | P6  | O(n²) transitive eviction in `evict_fqn`                                                                                                                                    | Low         | Low         |
 | P8  | `find_class_in_uri_classes_index` linear fallback scan                                                                                                                       | Low         | Low         |
-| P12 | [`find_or_load_function` Phase 1.75 serial bottleneck](todo/performance.md#p12-find_or_load_function-phase-175-serial-bottleneck)                                           | Low         | Low         |
 | P17 | [`mago-names` resolution on the parse hot path](todo/performance.md#p17-mago-names-resolution-on-the-parse-hot-path)                                                        | Medium      | Low         |
 | P18 | [Subtype result caching](todo/performance.md#p18-subtype-result-caching) (per-request HashMap for hierarchy walks)                                                          | Medium      | Low         |
 | P20 | [Content-hash gated resolution cache persistence](todo/performance.md#p20-content-hash-gated-resolution-cache-persistence)                                                  | Medium      | Medium      |

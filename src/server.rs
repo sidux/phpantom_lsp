@@ -2411,14 +2411,86 @@ impl Backend {
             }
         }
 
-        // Store the visited autoload file paths for last-resort lazy
-        // parsing of guarded functions.
+        // Record the visited autoload file paths and eagerly parse them.
+        //
+        // The byte-level scan above only discovers symbols at brace
+        // depth 0.  Functions guarded by `if (! function_exists(...))`
+        // (common in Laravel and similar helper files) live at brace
+        // depth > 0 and are missed.  Without a full parse they would only
+        // be found by the last-resort fallback in `find_or_load_function`,
+        // which blocks the first interactive request that needs such a
+        // function while it serially parses every unparsed autoload file.
+        //
+        // Parsing them here in parallel moves that one-time cost to
+        // startup.  The paths are still recorded so the fallback (which
+        // skips already-parsed files) remains correct for anything that
+        // slips through.
+        let visited: Vec<PathBuf> = visited.into_iter().collect();
         {
             let mut paths = self.autoload_file_paths.write();
-            paths.extend(visited);
+            paths.extend(visited.iter().cloned());
         }
+        self.preload_autoload_files(&visited);
 
         autoload_count
+    }
+
+    /// Eagerly full-parse the given autoload helper files in parallel.
+    ///
+    /// [`scan_autoload_files`](Self::scan_autoload_files) only byte-scans
+    /// these files, which misses functions defined inside
+    /// `function_exists` guards.  A full parse populates `global_functions`
+    /// with those guarded helpers so that
+    /// [`find_or_load_function`](Self::find_or_load_function) resolves them
+    /// via its fast path instead of falling back to a serial parse of
+    /// every autoload file on the first interactive lookup.
+    ///
+    /// Files already present in `parsed_uris` are skipped.
+    pub fn preload_autoload_files(&self, paths: &[PathBuf]) {
+        // Skip files that have already been parsed (e.g. opened in the
+        // editor before indexing reached them).
+        let pending: Vec<&PathBuf> = paths
+            .iter()
+            .filter(|p| {
+                let uri = crate::util::path_to_uri(p);
+                !self.parsed_uris.read().contains(&uri)
+            })
+            .collect();
+
+        let file_count = pending.len();
+        if file_count == 0 {
+            return;
+        }
+
+        let n_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(file_count);
+        let next_idx = std::sync::atomic::AtomicUsize::new(0);
+        let pending = &pending;
+        let next_idx = &next_idx;
+
+        std::thread::scope(|s| {
+            for _ in 0..n_threads {
+                std::thread::Builder::new()
+                    .name("autoload-preload".into())
+                    .stack_size(32 * 1024 * 1024)
+                    .spawn_scoped(s, move || {
+                        loop {
+                            let i = next_idx.fetch_add(1, Ordering::Relaxed);
+                            if i >= file_count {
+                                break;
+                            }
+                            let path = pending[i];
+                            if let Ok(content) = std::fs::read_to_string(path) {
+                                let uri = crate::util::path_to_uri(path);
+                                self.update_ast(&uri, &content);
+                            }
+                        }
+                    })
+                    .expect("failed to spawn autoload-preload thread");
+            }
+        });
     }
 
     /// Parse a `.phar` archive and register its PHP classes in the

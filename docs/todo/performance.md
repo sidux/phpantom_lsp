@@ -165,26 +165,6 @@ have it from the resolved-class cache).
 
 ---
 
-## P12. `find_or_load_function` Phase 1.75 serial bottleneck
-
-**Impact: Low · Effort: Low**
-
-For the first unknown function that misses both `global_functions`
-and `autoload_function_index`, Phase 1.75 iterates all known
-autoload file paths and calls `update_ast` on each unparsed one
-until the function is found. With ~50 autoload files this is a
-one-time cost per thread, but it blocks the thread while it
-happens.
-
-### Fix
-
-Pre-load all autoload files during initialisation (in the
-`initialized` handler, after the byte-level scan). This moves the
-cost to startup, where it can run in parallel with other init work,
-and eliminates the blocking fallback during interactive use.
-
----
-
 ## P14. Eager docblock parsing into structured fields
 
 **Impact: Medium · Effort: Medium**
