@@ -51,31 +51,6 @@ threshold (e.g. 8 files).
 
 ---
 
-## P4. `memmem` for block comment terminator search
-
-**Impact: Low-Medium · Effort: Low**
-
-The current block comment skip in `find_classes` and `find_symbols`
-uses `memchr(b'*', ...)` and then checks the next byte for `/`.
-This is effective but can false-match on `*` characters inside
-docblock annotations (e.g. `@param`, `@return`, starred lines).
-Each false match falls through to a single-byte advance, which is
-correct but suboptimal for large docblocks.
-
-### Fix
-
-Replace `memchr(b'*', ...)` with `memmem::find(content[i..], b"*/")`.
-This searches for the two-byte sequence `*/` directly, skipping all
-intermediate `*` characters in a single SIMD pass. The `memmem`
-searcher is already imported and used for keyword pre-screening.
-
-For typical PHP files this is a marginal improvement. For files with
-very large docblocks (e.g. generated API documentation classes with
-hundreds of `@method` tags), it avoids O(n) false `*` matches inside
-the comment body.
-
----
-
 ## P5. `memmap2` for file reads during scanning
 
 **Impact: Low-Medium · Effort: Low**
