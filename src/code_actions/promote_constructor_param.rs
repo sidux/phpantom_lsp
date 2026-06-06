@@ -12,6 +12,7 @@
 //! to the parameter.  This is a single-file edit — call sites are
 //! unaffected because constructor promotion is transparent to callers.
 
+#[cfg(test)]
 use bumpalo::Bump;
 use mago_span::HasSpan;
 use mago_syntax::ast::class_like::member::ClassLikeMember;
@@ -69,13 +70,16 @@ impl Backend {
 
         let cursor_offset = crate::util::position_to_offset(content, params.range.start);
 
-        let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new(b"input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
+        let candidate = crate::parser::with_parsed_program(
+            content,
+            "promote_constructor_param",
+            |program, content| {
+                let ctx = find_cursor_context(&program.statements, cursor_offset);
+                find_promotion_candidate(&ctx, content, cursor_offset)
+            },
+        );
 
-        let ctx = find_cursor_context(&program.statements, cursor_offset);
-
-        let candidate = match find_promotion_candidate(&ctx, content, cursor_offset) {
+        let candidate = match candidate {
             Some(c) => c,
             None => return,
         };

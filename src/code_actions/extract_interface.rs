@@ -17,8 +17,6 @@ use crate::atom::atom;
 use crate::types::{ClassInfo, ClassLikeKind, MethodInfo, Visibility};
 use crate::util::offset_to_position;
 
-use bumpalo::Bump;
-
 impl Backend {
     /// Collect "Extract interface" code actions.
     ///
@@ -33,19 +31,20 @@ impl Backend {
     ) {
         let cursor_offset = crate::util::position_to_offset(content, params.range.start);
 
-        let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new(b"input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
-
-        let ctx = find_cursor_context(&program.statements, cursor_offset);
-
         // Only offer on concrete class declarations.
-        match &ctx {
-            CursorContext::InClassLike {
-                kind: ClassLikeContextKind::Class,
-                ..
-            } => {}
-            _ => return,
+        let in_class_context =
+            crate::parser::with_parsed_program(content, "extract_interface", |program, _| {
+                let ctx = find_cursor_context(&program.statements, cursor_offset);
+                matches!(
+                    &ctx,
+                    CursorContext::InClassLike {
+                        kind: ClassLikeContextKind::Class,
+                        ..
+                    }
+                )
+            });
+        if !in_class_context {
+            return;
         }
 
         // Look up the ClassInfo for the class the cursor is in.

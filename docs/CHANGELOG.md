@@ -58,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Improved LSP responsiveness.** File parsing (`update_ast`) and diagnostics now run in background tasks, preventing interactive requests (completion, hover) from being blocked by full-file parses during typing. Contributed by @MingJen in https://github.com/AJenbo/phpantom_lsp/pull/118.
 - **Member completion caching.** Unfiltered member lists are cached per-target to speed up subsequent completions during keyword entry. Contributed by @MingJen in https://github.com/AJenbo/phpantom_lsp/pull/118.
 - **Laravel startup performance.** Common Laravel builder classes are warmed in the background at startup to eliminate the first-access penalty on Eloquent completions. Contributed by @MingJen in https://github.com/AJenbo/phpantom_lsp/pull/118.
+- **Faster code actions.** Requesting code actions (the lightbulb menu) now parses the file once and shares the result across every refactoring, instead of re-parsing it for each one.
 
 ## [0.8.0] - 2026-05-14
 

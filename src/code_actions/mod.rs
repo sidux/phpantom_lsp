@@ -175,6 +175,12 @@ impl Backend {
     ) -> Vec<CodeActionOrCommand> {
         let mut actions = Vec::new();
 
+        // Parse the file once and share the result across every collector
+        // below.  Each collector resolves cursor context by walking the
+        // AST via `with_parsed_program(content, …)`; without this guard
+        // they would each re-parse the same file from scratch.
+        let _parse_guard = crate::parser::with_parse_cache(content);
+
         // ── Import class ────────────────────────────────────────────────
         self.collect_import_class_actions(uri, content, params, &mut actions);
 
@@ -272,6 +278,12 @@ impl Backend {
             Some(c) => c,
             None => return (action, None),
         };
+
+        // Parse the file once and share it across the resolve handler below.
+        // Resolving an extract action, for example, walks the AST several
+        // times (scope map, return analysis, parameter order, return type);
+        // without this guard each walk would re-parse the same file.
+        let _parse_guard = crate::parser::with_parse_cache(&content);
 
         let result = match data.action_kind.as_str() {
             // ── PHPStan quickfixes ──────────────────────────────────

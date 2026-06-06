@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(test)]
 use bumpalo::Bump;
 use mago_docblock::document::TagKind;
 use mago_span::HasSpan;
@@ -142,20 +143,21 @@ impl Backend {
 
         let cursor_offset = crate::util::position_to_offset(content, params.range.start);
 
-        let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new(b"input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
-
-        let ctx = find_cursor_context(&program.statements, cursor_offset);
-        let trivia = program.trivia.as_slice();
-
-        let info = match find_function_with_docblock_from_context(
-            &ctx,
-            &program.statements,
-            trivia,
-            content,
-            cursor_offset,
-        ) {
+        // Resolve the function/method (and its docblock) under the cursor.
+        // The returned info is owned, so the borrowed AST does not escape.
+        let info =
+            crate::parser::with_parsed_program(content, "update_docblock", |program, content| {
+                let ctx = find_cursor_context(&program.statements, cursor_offset);
+                let trivia = program.trivia.as_slice();
+                find_function_with_docblock_from_context(
+                    &ctx,
+                    &program.statements,
+                    trivia,
+                    content,
+                    cursor_offset,
+                )
+            });
+        let info = match info {
             Some(info) => info,
             None => return,
         };

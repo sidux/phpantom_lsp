@@ -40,15 +40,17 @@ impl Backend {
 
         let cursor_offset = position_to_byte_offset(content, params.range.start) as u32;
 
-        let arena = bumpalo::Bump::new();
-        let file_id = mago_database::file::FileId::new(b"input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
-
-        let mut best: Option<(u32, u32, String)> = None;
-
-        for stmt in program.statements.iter() {
-            find_switch_in_statement(stmt, cursor_offset, content, &mut best);
-        }
+        let best = crate::parser::with_parsed_program(
+            content,
+            "convert_switch_to_match",
+            |program, content| {
+                let mut best: Option<(u32, u32, String)> = None;
+                for stmt in program.statements.iter() {
+                    find_switch_in_statement(stmt, cursor_offset, content, &mut best);
+                }
+                best
+            },
+        );
 
         let (switch_start, switch_end, replacement) = match best {
             Some(b) => b,

@@ -549,27 +549,6 @@ like:
 
 ---
 
-## P19. Arena reuse in code action helpers
-
-**Impact: Low · Effort: Low**
-
-The parse hot path (`update_ast_inner`, called on every keystroke)
-now reuses a thread-local `Bump` that is `reset()` rather than
-dropped, avoiding per-keystroke `mmap`/`munmap` syscalls. The same
-fresh-`Bump::new()`-per-call pattern remains at 12+ code action helper
-sites (`extract_function.rs`, `extract_constant.rs`,
-`change_visibility.rs`, `generate_constructor.rs`,
-`extract_variable.rs`, etc.).
-
-These are invoked only on explicit refactors (not on every keystroke),
-so the allocation cost is far less impactful than on the parse path.
-The same `with_reusable_arena` helper (in `parser/ast_update.rs`,
-which already tolerates re-entrant nested parses by falling back to a
-throwaway `Bump`) can be reused at each site. Each call site extracts
-owned data before returning, so the arena's lifetime does not escape.
-
----
-
 ## P20. Content-hash gated resolution cache persistence
 
 **Impact: Medium · Effort: Medium**

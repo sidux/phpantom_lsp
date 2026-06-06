@@ -57,19 +57,18 @@ impl Backend {
 
         let cursor_offset = position_to_byte_offset(content, params.range.start) as u32;
 
-        let arena = bumpalo::Bump::new();
-        let file_id = mago_database::file::FileId::new(b"input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
-
         let php_version = self.php_version();
 
         // Walk the entire AST looking for ternary expressions that
         // contain the cursor. We collect the innermost match.
-        let mut best: Option<(Simplification, u32, u32)> = None;
-
-        for stmt in program.statements.iter() {
-            find_in_statement(stmt, cursor_offset, content, php_version, &mut best);
-        }
+        let best =
+            crate::parser::with_parsed_program(content, "simplify_null", |program, content| {
+                let mut best: Option<(Simplification, u32, u32)> = None;
+                for stmt in program.statements.iter() {
+                    find_in_statement(stmt, cursor_offset, content, php_version, &mut best);
+                }
+                best
+            });
 
         let (simplification, ternary_start, ternary_end) = match best {
             Some(b) => b,

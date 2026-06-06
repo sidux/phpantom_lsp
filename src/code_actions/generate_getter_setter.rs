@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 
+#[cfg(test)]
 use bumpalo::Bump;
 use mago_span::HasSpan;
 use mago_syntax::ast::class_like::member::ClassLikeMember;
@@ -86,77 +87,85 @@ impl Backend {
 
         let cursor_offset = crate::util::position_to_offset(content, params.range.start);
 
-        let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new(b"input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
+        // Resolve the cursor context and gather the (owned) accessor data.
+        // The borrowed AST does not escape the closure.
+        let Some((available, indent, insert_offset)) = crate::parser::with_parsed_program(
+            content,
+            "generate_getter_setter",
+            |program, content| {
+                let ctx = find_cursor_context(&program.statements, cursor_offset);
 
-        let ctx = find_cursor_context(&program.statements, cursor_offset);
+                let (property, all_members) = match &ctx {
+                    CursorContext::InClassLike {
+                        member: MemberContext::Property(prop),
+                        all_members,
+                        ..
+                    } => (*prop, *all_members),
+                    _ => return None,
+                };
 
-        let (property, all_members) = match &ctx {
-            CursorContext::InClassLike {
-                member: MemberContext::Property(prop),
-                all_members,
-                ..
-            } => (*prop, *all_members),
-            _ => return,
+                let trivia = program.trivia.as_slice();
+
+                // Collect properties from the declaration under the cursor.
+                let props = collect_accessor_properties(property, content, trivia);
+                if props.is_empty() {
+                    return None;
+                }
+
+                // Check which methods already exist.
+                let existing_methods = collect_existing_method_names(all_members);
+
+                // Determine available accessors for each property.
+                let mut available: Vec<AvailableAccessors> = Vec::new();
+                for prop in props {
+                    let getter_name = getter_method_name(&prop.name, prop.type_hint.as_ref());
+                    let setter_name = setter_method_name(&prop.name);
+
+                    let has_getter = existing_methods
+                        .iter()
+                        .any(|m| m.eq_ignore_ascii_case(&getter_name));
+                    let has_setter = existing_methods
+                        .iter()
+                        .any(|m| m.eq_ignore_ascii_case(&setter_name));
+
+                    // For bool properties, also check the `isX` variant.
+                    let has_is = if is_bool_type(prop.type_hint.as_ref()) {
+                        let is_name = is_method_name(&prop.name);
+                        existing_methods
+                            .iter()
+                            .any(|m| m.eq_ignore_ascii_case(&is_name))
+                    } else {
+                        false
+                    };
+
+                    let can_getter = !has_getter && !has_is;
+                    let can_setter = !has_setter && !prop.is_readonly;
+
+                    if can_getter || can_setter {
+                        available.push(AvailableAccessors {
+                            prop,
+                            can_getter,
+                            can_setter,
+                        });
+                    }
+                }
+
+                if available.is_empty() {
+                    return None;
+                }
+
+                // Detect indentation from existing class members.
+                let indent = detect_indent_from_members(all_members, content);
+
+                // Insertion point: after the last method, or after the
+                // last member if there are no methods.
+                let insert_offset = find_accessor_insertion_offset(all_members, content);
+                Some((available, indent, insert_offset))
+            },
+        ) else {
+            return;
         };
 
-        let trivia = program.trivia.as_slice();
-
-        // Collect properties from the declaration under the cursor.
-        let props = collect_accessor_properties(property, content, trivia);
-        if props.is_empty() {
-            return;
-        }
-
-        // Check which methods already exist.
-        let existing_methods = collect_existing_method_names(all_members);
-
-        // Determine available accessors for each property.
-        let mut available: Vec<AvailableAccessors> = Vec::new();
-        for prop in props {
-            let getter_name = getter_method_name(&prop.name, prop.type_hint.as_ref());
-            let setter_name = setter_method_name(&prop.name);
-
-            let has_getter = existing_methods
-                .iter()
-                .any(|m| m.eq_ignore_ascii_case(&getter_name));
-            let has_setter = existing_methods
-                .iter()
-                .any(|m| m.eq_ignore_ascii_case(&setter_name));
-
-            // For bool properties, also check the `isX` variant.
-            let has_is = if is_bool_type(prop.type_hint.as_ref()) {
-                let is_name = is_method_name(&prop.name);
-                existing_methods
-                    .iter()
-                    .any(|m| m.eq_ignore_ascii_case(&is_name))
-            } else {
-                false
-            };
-
-            let can_getter = !has_getter && !has_is;
-            let can_setter = !has_setter && !prop.is_readonly;
-
-            if can_getter || can_setter {
-                available.push(AvailableAccessors {
-                    prop,
-                    can_getter,
-                    can_setter,
-                });
-            }
-        }
-
-        if available.is_empty() {
-            return;
-        }
-
-        // Detect indentation from existing class members.
-        let indent = detect_indent_from_members(all_members, content);
-
-        // Find the insertion point: after the last method, or after the
-        // last member if there are no methods.
-        let insert_offset = find_accessor_insertion_offset(all_members, content);
         let insert_pos = offset_to_position(content, insert_offset);
 
         let any_can_getter = available.iter().any(|a| a.can_getter);

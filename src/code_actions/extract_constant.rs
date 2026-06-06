@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 
-use bumpalo::Bump;
 use mago_span::HasSpan;
 use mago_syntax::ast::class_like::member::ClassLikeMember;
 use mago_syntax::ast::*;
@@ -385,16 +384,14 @@ struct ClassBodyInfo {
 
 /// Walk the AST to find class body info at the given cursor offset.
 fn find_class_body_info(content: &str, cursor: u32) -> Option<ClassBodyInfo> {
-    let arena = Bump::new();
-    let file_id = mago_database::file::FileId::new(b"input.php");
-    let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
-
-    for stmt in program.statements.iter() {
-        if let Some(info) = find_class_info_in_statement(stmt, content, cursor) {
-            return Some(info);
+    crate::parser::with_parsed_program(content, "extract_constant", |program, content| {
+        for stmt in program.statements.iter() {
+            if let Some(info) = find_class_info_in_statement(stmt, content, cursor) {
+                return Some(info);
+            }
         }
-    }
-    None
+        None
+    })
 }
 
 /// Recursively search a statement for a class-like declaration
@@ -634,41 +631,28 @@ impl Backend {
             return;
         }
 
-        // Verify the cursor is inside a class-like body.
+        // Verify the cursor is inside a class-like body.  A method body
+        // (interfaces can't have concrete methods, but the parser still
+        // produces them, so we allow it) or a property default value is a
+        // valid extraction site.  A constant value or a non-class context
+        // is not.
         let cursor = start_offset as u32;
-        let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new(b"input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
-
-        let ctx = find_cursor_context(&program.statements, cursor);
-        match &ctx {
-            CursorContext::InClassLike {
-                kind,
-                member: MemberContext::Method(_, true),
-                ..
-            } => {
-                // Inside a method body — valid extraction site.
-                // Interfaces can't have concrete methods with bodies,
-                // but the parser still produces them, so we just allow it.
-                let _ = kind;
-            }
-            CursorContext::InClassLike {
-                member: MemberContext::Property(_),
-                ..
-            } => {
-                // Property default value — valid extraction site.
-            }
-            CursorContext::InClassLike {
-                member: MemberContext::Constant(_),
-                ..
-            } => {
-                // Already a constant value — don't offer extraction.
-                return;
-            }
-            _ => {
-                // Not inside a class body, or on a non-extractable member.
-                return;
-            }
+        let is_valid_site =
+            crate::parser::with_parsed_program(content, "extract_constant", |program, _| {
+                let ctx = find_cursor_context(&program.statements, cursor);
+                matches!(
+                    &ctx,
+                    CursorContext::InClassLike {
+                        member: MemberContext::Method(_, true),
+                        ..
+                    } | CursorContext::InClassLike {
+                        member: MemberContext::Property(_),
+                        ..
+                    }
+                )
+            });
+        if !is_valid_site {
+            return;
         }
 
         // Cheap text search: does the literal appear more than once

@@ -159,7 +159,6 @@ unlikely to move the needle for most users.
 | P12 | [`find_or_load_function` Phase 1.75 serial bottleneck](todo/performance.md#p12-find_or_load_function-phase-175-serial-bottleneck)                                           | Low         | Low         |
 | P17 | [`mago-names` resolution on the parse hot path](todo/performance.md#p17-mago-names-resolution-on-the-parse-hot-path)                                                        | Medium      | Low         |
 | P18 | [Subtype result caching](todo/performance.md#p18-subtype-result-caching) (per-request HashMap for hierarchy walks)                                                          | Medium      | Low         |
-| P19 | [Arena reuse in code action helpers](todo/performance.md#p19-arena-reuse-in-code-action-helpers) (reuse `with_reusable_arena` at the 12+ `Bump::new()` refactor sites)      | Low         | Low         |
 | P20 | [Content-hash gated resolution cache persistence](todo/performance.md#p20-content-hash-gated-resolution-cache-persistence)                                                  | Medium      | Medium      |
 | P21 | [Offset-shifting for cached diagnostics on partial edits](todo/performance.md#p21-offset-shifting-for-cached-diagnostics-on-partial-edits)                                  | Medium      | Medium      |
 |     | **[Indexing](todo/indexing.md)**                                                                                                                                            |             |             |

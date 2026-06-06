@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 
+#[cfg(test)]
 use bumpalo::Bump;
 use mago_span::HasSpan;
 use mago_syntax::ast::class_like::member::ClassLikeMember;
@@ -74,48 +75,55 @@ impl Backend {
 
         let cursor_offset = crate::util::position_to_offset(content, params.range.start);
 
-        let arena = Bump::new();
-        let file_id = mago_database::file::FileId::new(b"input.php");
-        let program = mago_syntax::parser::parse_file_content(&arena, file_id, content.as_bytes());
+        // Resolve the cursor context and gather the (owned) data needed to
+        // build the edits.  The borrowed AST does not escape the closure.
+        let Some((props, indent, insert_offset)) = crate::parser::with_parsed_program(
+            content,
+            "generate_constructor",
+            |program, content| {
+                let ctx = find_cursor_context(&program.statements, cursor_offset);
 
-        let ctx = find_cursor_context(&program.statements, cursor_offset);
+                let all_members = match &ctx {
+                    CursorContext::InClassLike {
+                        member: MemberContext::Property(prop),
+                        all_members,
+                        ..
+                    } => {
+                        // Only offer on non-static properties — static
+                        // properties won't be included in the constructor.
+                        if prop.modifiers().iter().any(|m| m.is_static()) {
+                            return None;
+                        }
+                        *all_members
+                    }
+                    _ => return None,
+                };
 
-        let all_members = match &ctx {
-            CursorContext::InClassLike {
-                member: MemberContext::Property(prop),
-                all_members,
-                ..
-            } => {
-                // Only offer on non-static properties — static properties
-                // won't be included in the generated constructor.
-                if prop.modifiers().iter().any(|m| m.is_static()) {
-                    return;
+                // If a __construct already exists, do not offer the action.
+                if has_constructor(all_members) {
+                    return None;
                 }
-                *all_members
-            }
-            _ => return,
+
+                let trivia = program.trivia.as_slice();
+
+                // Collect qualifying properties (non-static).
+                let props = collect_qualifying_properties(all_members, content, trivia);
+                if props.is_empty() {
+                    return None;
+                }
+
+                // Detect indentation from existing class members.
+                let indent = detect_indent_from_members(all_members, content);
+
+                // Insertion point: after the last property declaration,
+                // before any methods or other members.
+                let insert_offset = find_insertion_offset(all_members, content);
+                Some((props, indent, insert_offset))
+            },
+        ) else {
+            return;
         };
 
-        // If a __construct already exists, do not offer the action.
-        if has_constructor(all_members) {
-            return;
-        }
-
-        let trivia = program.trivia.as_slice();
-
-        // Collect qualifying properties (non-static).
-        let props = collect_qualifying_properties(all_members, content, trivia);
-
-        if props.is_empty() {
-            return;
-        }
-
-        // Detect indentation from existing class members.
-        let indent = detect_indent_from_members(all_members, content);
-
-        // Find the insertion point: after the last property declaration,
-        // before any methods or other members.
-        let insert_offset = find_insertion_offset(all_members, content);
         let insert_pos = offset_to_position(content, insert_offset);
 
         // ── Traditional constructor ─────────────────────────────────────
