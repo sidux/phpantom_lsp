@@ -1044,7 +1044,7 @@ fn resolve_class_fully_with_type_args_caches_specialisation() {
         Some("User".to_string())
     );
 
-    let map = cache.lock();
+    let map = cache.read();
     assert!(
         map.contains_key(&(atom("Collection"), Vec::new())),
         "base resolved class should be cached separately"

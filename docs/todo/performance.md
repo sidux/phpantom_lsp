@@ -765,25 +765,21 @@ Two residuals remain:
    completion latency still climbs while the burst continues, because the
    resolution work funnels through coarse shared locks.
 
+- The `resolved_class_cache` is now an `RwLock`, so the read-mostly lookups
+  no longer contend (concurrent lookups take `.read()`; only inserts and
+  eviction take `.write()`). The remaining serialization is on the FQN
+  indices.
 - Completion's resolver and every `completionItem/resolve`, diagnostic, and
   semantic-token pass read `class_not_found_cache` (`resolution.rs:99`),
   `fqn_uri_index` (`resolution.rs:120`), and `uri_classes_index` /
-  `fqn_class_index`, and lock the single `resolved_class_cache` mutex per
-  lookup. With many of these in flight at once the mutex becomes a hot
-  serialization point.
-- The per-keystroke re-parse holds `resolved_class_cache.lock()` while
-  iterating the file's classes (`ast_update.rs:587`). Concurrent diagnostics
-  also lazily parse vendor/PSR-4/stub classes mid-run, taking `.write()` on
-  the FQN indices (`resolution.rs:451-452`).
+  `fqn_class_index`.
+- Concurrent diagnostics lazily parse vendor/PSR-4/stub classes mid-run,
+  taking `.write()` on the FQN indices (`resolution.rs:451-452`), which
+  blocks readers for the duration of the index extension.
 
 **Fix (in priority order):**
 
-1. Let concurrent resolution proceed without serializing on one mutex:
-   make `resolved_class_cache` a sharded / `RwLock` / lock-free map so
-   lookups don't contend (it is read-mostly during resolution). This is the
-   same cache **P9** addresses algorithmically; here the concern is the
-   lock granularity.
-2. Build new `fqn_uri_index` / `fqn_class_index` entries outside the lock,
+1. Build new `fqn_uri_index` / `fqn_class_index` entries outside the lock,
    then extend under a brief `.write()`.
 
 **Reproduction:** drive the server over stdio against a warm-cache large

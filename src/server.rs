@@ -457,7 +457,7 @@ impl LanguageServer for Backend {
         // hover — which walks the parent chain live rather than reading
         // the merged cache — resolves them correctly.  Clearing here lets
         // the now-complete index rebuild every merge correctly.
-        self.resolved_class_cache.lock().clear();
+        self.resolved_class_cache.write().clear();
 
         // Mark initialization as complete so that diagnostic workers
         // and pull handlers know the project is fully indexed.
@@ -2252,7 +2252,7 @@ impl Backend {
             // resolved class info / member completions may be stale for a
             // class whose file changed.
             self.class_not_found_cache.write().clear();
-            self.resolved_class_cache.lock().clear();
+            self.resolved_class_cache.write().clear();
             self.member_completion_cache.lock().clear();
         }
 
@@ -2327,7 +2327,7 @@ impl Backend {
         self.method_store.write().clear();
         self.gti_index.write().clear();
         self.class_not_found_cache.write().clear();
-        self.resolved_class_cache.lock().clear();
+        self.resolved_class_cache.write().clear();
         self.member_completion_cache.lock().clear();
     }
 

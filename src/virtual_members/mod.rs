@@ -55,7 +55,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 
 use crate::atom::{Atom, atom};
 use crate::inheritance::{
@@ -198,11 +198,16 @@ impl ResolvedCacheInner {
 /// Within a single request cycle (completion, hover, etc.) the cache
 /// eliminates redundant calls to [`resolve_class_fully`] for the same
 /// class at the same generic instantiation.
-pub type ResolvedClassCache = Arc<Mutex<ResolvedCacheInner>>;
+///
+/// Uses an [`RwLock`] rather than a mutex because the cache is read-mostly
+/// during resolution (lookups vastly outnumber inserts), so concurrent
+/// requests under a sustained keystroke barrage can read in parallel
+/// instead of serializing on a single lock.
+pub type ResolvedClassCache = Arc<RwLock<ResolvedCacheInner>>;
 
 /// Create a new, empty [`ResolvedClassCache`].
 pub fn new_resolved_class_cache() -> ResolvedClassCache {
-    Arc::new(Mutex::new(ResolvedCacheInner::default()))
+    Arc::new(RwLock::new(ResolvedCacheInner::default()))
 }
 
 // ─── Thread-local resolved-class cache access ───────────────────────────────
@@ -698,7 +703,7 @@ pub fn populate_from_sorted(
         // incremental population run).
         let cache_key: ResolvedClassCacheKey = (atom(fqn), Vec::new());
         {
-            let map = cache.lock();
+            let map = cache.read();
             if map.contains_key(&cache_key) {
                 continue;
             }
@@ -832,7 +837,7 @@ pub fn resolve_class_fully_with_generics(
     let cache_key: ResolvedClassCacheKey = (fqn, generic_arg_strings.to_vec());
 
     if let Some(c) = cache {
-        let map = c.lock();
+        let map = c.read();
         if let Some(cached) = map.get(&cache_key) {
             return Arc::clone(cached);
         }
@@ -851,7 +856,7 @@ pub fn resolve_class_fully_with_generics(
 
     // Store the substituted result.
     if let Some(c) = cache {
-        c.lock().insert(cache_key, Arc::clone(&result));
+        c.write().insert(cache_key, Arc::clone(&result));
     }
 
     let elapsed = started.elapsed();
@@ -928,7 +933,7 @@ fn resolve_class_fully_inner(
 
     // ── Cache lookup ────────────────────────────────────────────────
     if let Some(cache) = cache {
-        let map = cache.lock();
+        let map = cache.read();
         if let Some(cached) = map.get(&cache_key) {
             return Arc::clone(cached);
         }
@@ -1166,7 +1171,7 @@ fn resolve_class_fully_inner(
             if iface_subs.is_empty() {
                 let iface_key: ResolvedClassCacheKey = (iface.fqn(), Vec::new());
                 if let Some(c) = cache {
-                    let map = c.lock();
+                    let map = c.read();
                     if let Some(cached) = map.get(&iface_key) {
                         let resolved_iface = ClassInfo::clone(cached);
                         drop(map);
@@ -1217,7 +1222,7 @@ fn resolve_class_fully_inner(
     merged.rebuild_method_index();
     let result = Arc::new(merged);
     if let Some(cache) = cache {
-        cache.lock().insert(cache_key, Arc::clone(&result));
+        cache.write().insert(cache_key, Arc::clone(&result));
     }
 
     result

@@ -584,7 +584,7 @@ impl Backend {
         let mut evicted_fqns: Vec<String> = Vec::new();
 
         if !old_fqns.is_empty() {
-            let mut cache = self.resolved_class_cache.lock();
+            let mut cache = self.resolved_class_cache.write();
             // Collect new FQNs from the classes we just parsed.
             let new_fqns: Vec<String> = classes_with_ns
                 .iter()

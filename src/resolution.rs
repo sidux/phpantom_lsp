@@ -508,7 +508,7 @@ impl Backend {
         // can happen in the LSP editing path).  For first-time loads
         // the cost/benefit is strongly negative.
         if was_already_parsed {
-            let mut cache = self.resolved_class_cache.lock();
+            let mut cache = self.resolved_class_cache.write();
             for cls in &arc_classes {
                 let fqn = cls.fqn();
                 let _ = crate::virtual_members::evict_fqn(&mut cache, &fqn);
