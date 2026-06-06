@@ -549,58 +549,24 @@ like:
 
 ---
 
-## P19. Arena reuse on the parse hot path
+## P19. Arena reuse in code action helpers
 
-**Impact: Medium · Effort: Low**
+**Impact: Low · Effort: Low**
 
-`update_ast_inner` creates a fresh `Bump::new()` on every call —
-every keystroke allocates new backing pages from the OS and every drop
-returns them via `mmap`/`munmap` syscalls. There are 12+ additional
-`Bump::new()` sites across code action helpers (`extract_function.rs`,
-`extract_constant.rs`, `change_visibility.rs`, `generate_constructor.rs`,
-`extract_variable.rs`, etc.). No call site reuses an arena.
+The parse hot path (`update_ast_inner`, called on every keystroke)
+now reuses a thread-local `Bump` that is `reset()` rather than
+dropped, avoiding per-keystroke `mmap`/`munmap` syscalls. The same
+fresh-`Bump::new()`-per-call pattern remains at 12+ code action helper
+sites (`extract_function.rs`, `extract_constant.rs`,
+`change_visibility.rs`, `generate_constructor.rs`,
+`extract_variable.rs`, etc.).
 
-php-lsp's `ParserContext::reparse()` calls `arena.reset()` — an O(1)
-operation that keeps backing memory allocated and just resets the bump
-pointer. After the arena grows to fit the largest file, subsequent
-re-parses are allocation-free from the system allocator's perspective.
-
-### Fix
-
-Add a `thread_local!` arena that is reset (not dropped) after each
-use:
-
-```rust
-thread_local! {
-    static ARENA: RefCell<Bump> = RefCell::new(Bump::with_capacity(512 * 1024));
-}
-
-fn with_arena<R>(f: impl FnOnce(&Bump) -> R) -> R {
-    ARENA.with(|cell| {
-        let result = f(&cell.borrow());
-        cell.borrow_mut().reset(); // O(1) — keeps pages allocated
-        result
-    })
-}
-```
-
-`update_ast_inner` is the hot path — called on every keystroke. A
-512 KB arena that resets instead of reallocating avoids thousands of
-`mmap`/`munmap` syscalls per minute during active editing.
-
-### Safety
-
-The arena's lifetime must not escape the closure. Currently
-`update_ast_inner` extracts owned `ClassInfo` and `SymbolMap` from
-the AST before the arena is dropped, so this works. The code action
-helpers also extract owned data before returning.
-
-### When to implement
-
-Independent of all other items. Pure performance win with no
-behavioural change. Can land any time.
-
----
+These are invoked only on explicit refactors (not on every keystroke),
+so the allocation cost is far less impactful than on the parse path.
+The same `with_reusable_arena` helper (in `parser/ast_update.rs`,
+which already tolerates re-entrant nested parses by falling back to a
+throwaway `Bump`) can be reused at each site. Each call site extracts
+owned data before returning, so the arena's lifetime does not escape.
 
 ---
 
