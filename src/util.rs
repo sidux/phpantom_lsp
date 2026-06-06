@@ -343,6 +343,60 @@ pub(crate) fn offset_to_position(content: &str, offset: usize) -> Position {
     }
 }
 
+/// Precomputed line-start byte offsets for fast repeated offset→[`Position`]
+/// lookups within a single piece of content.
+///
+/// [`offset_to_position`] rescans `content` from the start on every call, so
+/// it is O(offset). Converting many offsets in a loop (e.g. one per semantic
+/// token, of which a large file has thousands) is therefore O(n²) in the file
+/// size. `LineIndex` builds the line table once and answers each query with a
+/// binary search for the line plus a short within-line UTF-16 scan, turning the
+/// loop into O(n log n).
+pub(crate) struct LineIndex<'a> {
+    content: &'a str,
+    /// Byte offset of the first character of each line. Always starts with `0`.
+    line_starts: Vec<usize>,
+}
+
+impl<'a> LineIndex<'a> {
+    /// Build the line table for `content` in a single pass.
+    pub(crate) fn new(content: &'a str) -> Self {
+        let mut line_starts = Vec::with_capacity(content.len() / 24 + 1);
+        line_starts.push(0usize);
+        for (i, b) in content.bytes().enumerate() {
+            if b == b'\n' {
+                line_starts.push(i + 1);
+            }
+        }
+        Self {
+            content,
+            line_starts,
+        }
+    }
+
+    /// Convert a byte `offset` to an LSP [`Position`] (0-based line, UTF-16
+    /// column). Offsets past the end of the content clamp to the content
+    /// length, matching [`offset_to_position`].
+    pub(crate) fn position(&self, offset: usize) -> Position {
+        let offset = offset.min(self.content.len());
+        // Greatest line start that is <= offset. `line_starts[0] == 0`, so the
+        // `Err(0)` case (offset before the first line start) cannot happen.
+        let line = match self.line_starts.binary_search(&offset) {
+            Ok(idx) => idx,
+            Err(idx) => idx - 1,
+        };
+        let line_start = self.line_starts[line];
+        let character = self.content[line_start..offset]
+            .chars()
+            .map(|c| c.len_utf16() as u32)
+            .sum();
+        Position {
+            line: line as u32,
+            character,
+        }
+    }
+}
+
 /// Return the byte offset of the start of the line at `line_idx`
 /// (0-based) within `content`.
 ///
@@ -2262,6 +2316,35 @@ pub fn run_command_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_index_matches_offset_to_position() {
+        // Include multi-byte (é = 2 bytes / 1 UTF-16 unit) and an emoji
+        // (🎉 = 4 bytes / 2 UTF-16 units) to exercise the column math.
+        let content = "<?php\n$x = 'é';\n// 🎉 comment\nfinal;\n";
+        let index = LineIndex::new(content);
+        // Every char boundary must agree with the scanning implementation.
+        for (offset, _) in content
+            .char_indices()
+            .chain(std::iter::once((content.len(), ' ')))
+        {
+            assert_eq!(
+                index.position(offset),
+                offset_to_position(content, offset),
+                "mismatch at offset {offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn line_index_clamps_past_end() {
+        let content = "ab\ncd";
+        let index = LineIndex::new(content);
+        assert_eq!(
+            index.position(999),
+            offset_to_position(content, content.len())
+        );
+    }
 
     #[test]
     fn line_start_byte_offset_lf() {
