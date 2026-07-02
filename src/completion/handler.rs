@@ -178,7 +178,7 @@ fn filter_current_file_functions(
         let fmap = backend.global_functions().read();
         fmap.iter()
             .filter(|(_, (uri, _))| uri == current_uri)
-            .map(|(key, _)| key.clone())
+            .map(|(key, _)| key.to_owned())
             .collect()
     };
     if current_funcs.is_empty() {

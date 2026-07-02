@@ -1744,13 +1744,13 @@ impl Backend {
                         .map(normalize_fqn)
                     {
                         if builder_roots.contains(normalized.as_str()) {
-                            model_seeds.push(class_fqn.clone());
+                            model_seeds.push(class_fqn.to_owned());
                         }
                     } else if builder_roots
                         .contains(crate::virtual_members::laravel::ELOQUENT_BUILDER_FQN)
                     {
                         // All models use the base Eloquent Builder by default.
-                        model_seeds.push(class_fqn.clone());
+                        model_seeds.push(class_fqn.to_owned());
                     }
                 }
             }

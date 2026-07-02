@@ -64,7 +64,9 @@ pub(crate) struct TraitContext<'a> {
 /// (including recursive calls) so that every addition is checked in O(1)
 /// instead of scanning the full member vectors.
 pub(crate) struct MergeDedup {
-    /// Method names already merged.
+    /// Method names already merged, lowercased (PHP method names are
+    /// case-insensitive, so a child `getvalue()` overrides a parent
+    /// `getValue()`).
     pub methods: AtomSet,
     /// Property names already merged.
     pub properties: AtomSet,
@@ -89,7 +91,9 @@ fn reserve_method_tag_names(docblock: Option<&str>, dedup: &mut MergeDedup) {
         return;
     }
     for m in crate::docblock::extract_method_tags(doc) {
-        dedup.methods.insert(m.name);
+        dedup
+            .methods
+            .insert(crate::atom::ascii_lowercase_atom(&m.name));
     }
 }
 
@@ -97,7 +101,11 @@ impl MergeDedup {
     /// Build from the members already present on a `ClassInfo`.
     fn from_class(class: &ClassInfo) -> Self {
         Self {
-            methods: class.methods.iter().map(|m| m.name).collect(),
+            methods: class
+                .methods
+                .iter()
+                .map(|m| crate::atom::ascii_lowercase_atom(&m.name))
+                .collect(),
             properties: class.properties.iter().map(|p| p.name).collect(),
             constants: class.constants.iter().map(|c| c.name).collect(),
         }
@@ -523,7 +531,10 @@ pub(crate) fn resolve_class_with_inheritance(
             if method.visibility == Visibility::Private {
                 continue;
             }
-            if !dedup.methods.insert(method.name) {
+            if !dedup
+                .methods
+                .insert(crate::atom::ascii_lowercase_atom(&method.name))
+            {
                 // Child already has this method — enrich it from parent.
                 let mut ancestor_method = (**method).clone();
                 if !level_subs.is_empty() {
@@ -533,7 +544,7 @@ pub(crate) fn resolve_class_with_inheritance(
                     .methods
                     .make_mut()
                     .iter_mut()
-                    .find(|m| m.name == method.name)
+                    .find(|m| m.name.eq_ignore_ascii_case(&method.name))
                 {
                     enrich_method_from_ancestor(Arc::make_mut(existing), &ancestor_method);
                 }
@@ -631,7 +642,7 @@ pub(crate) fn resolve_class_with_inheritance(
                 .methods
                 .make_mut()
                 .iter_mut()
-                .find(|m| m.name == method.name)
+                .find(|m| m.name.eq_ignore_ascii_case(&method.name))
             {
                 let mut ancestor_method = (**method).clone();
                 if !iface_subs.is_empty() {
@@ -957,7 +968,10 @@ fn merge_traits_into(
                 if method.visibility == Visibility::Private {
                     continue;
                 }
-                if !dedup.methods.insert(method.name) {
+                if !dedup
+                    .methods
+                    .insert(crate::atom::ascii_lowercase_atom(&method.name))
+                {
                     continue;
                 }
                 merged.methods.push(Arc::clone(method));
@@ -997,7 +1011,7 @@ fn merge_traits_into(
             // `TraitA::method insteadof TraitB`, then when merging
             // TraitB's methods, `method` should be skipped.
             let excluded = ctx.precedences.iter().any(|p| {
-                p.method_name == method.name
+                p.method_name.eq_ignore_ascii_case(&method.name)
                     && p.insteadof
                         .iter()
                         .any(|excluded_trait| excluded_trait == trait_name)
@@ -1006,7 +1020,10 @@ fn merge_traits_into(
                 continue;
             }
 
-            if !dedup.methods.insert(method.name) {
+            if !dedup
+                .methods
+                .insert(crate::atom::ascii_lowercase_atom(&method.name))
+            {
                 continue;
             }
             let mut method = (**method).clone();
@@ -1015,7 +1032,7 @@ fn merge_traits_into(
             // For example, `TraitA::method as protected` changes the
             // visibility of `method` without creating an alias.
             for alias in ctx.aliases {
-                if alias.method_name == method.name
+                if alias.method_name.eq_ignore_ascii_case(&method.name)
                     && alias.alias.is_none()
                     && let Some(vis) = alias.visibility
                 {
@@ -1080,7 +1097,7 @@ fn merge_traits_into(
             let source_method = trait_info
                 .methods
                 .iter()
-                .find(|m| m.name == alias.method_name);
+                .find(|m| m.name.eq_ignore_ascii_case(&alias.method_name));
             let source_method = match source_method {
                 Some(m) => m,
                 None => continue,
@@ -1088,7 +1105,10 @@ fn merge_traits_into(
 
             // Skip if an alias with this name already exists.
             let alias_atom = atom(alias_name);
-            if !dedup.methods.insert(alias_atom) {
+            if !dedup
+                .methods
+                .insert(crate::atom::ascii_lowercase_atom(alias_name))
+            {
                 continue;
             }
 

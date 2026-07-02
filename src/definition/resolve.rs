@@ -828,7 +828,7 @@ impl Backend {
         {
             let candidates = [fqn.as_str(), parent_name.as_str()];
             for candidate in &candidates {
-                if let Some(file_uri) = self.fqn_uri_index.read().get(*candidate).cloned()
+                if let Some(file_uri) = self.fqn_uri_index.read().get(candidate).cloned()
                     && let Some(file_path) = Url::parse(&file_uri)
                         .ok()
                         .and_then(|u| u.to_file_path().ok())

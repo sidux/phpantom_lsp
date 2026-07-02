@@ -345,7 +345,7 @@ impl Backend {
             let idx = self.fqn_uri_index.read();
             for fqn in idx.keys() {
                 if short_name(fqn).to_lowercase() == name_lower {
-                    candidates.push(fqn.clone());
+                    candidates.push(fqn.to_owned());
                 }
             }
         }
@@ -359,7 +359,7 @@ impl Backend {
                         .iter()
                         .any(|c: &String| c.eq_ignore_ascii_case(fqn))
                 {
-                    candidates.push(fqn.clone());
+                    candidates.push(fqn.to_owned());
                 }
             }
         }
@@ -389,7 +389,7 @@ impl Backend {
         // Stubs are global-namespace classes, so the FQN is the short name.
         // Only add if the file has a namespace (otherwise no import needed).
         let stub_idx = self.stub_index.read();
-        for &stub_name in stub_idx.keys() {
+        for stub_name in stub_idx.keys() {
             if short_name(stub_name).to_lowercase() == name_lower
                 && !candidates
                     .iter()

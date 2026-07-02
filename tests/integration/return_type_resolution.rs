@@ -482,8 +482,7 @@ async fn test_goto_definition_class_from_autoload_files() {
                     };
                     fmap.insert(fqn.clone(), (uri.clone(), func.clone()));
                     if func.namespace.is_some() {
-                        fmap.entry(func.name.to_string())
-                            .or_insert_with(|| (uri.clone(), func.clone()));
+                        fmap.or_insert_with(func.name.to_string(), || (uri.clone(), func.clone()));
                     }
                 }
             }
@@ -954,8 +953,7 @@ async fn test_goto_definition_function_return_type_cross_file() {
                     };
                     fmap.insert(fqn.clone(), (uri.clone(), func.clone()));
                     if func.namespace.is_some() {
-                        fmap.entry(func.name.to_string())
-                            .or_insert_with(|| (uri.clone(), func.clone()));
+                        fmap.or_insert_with(func.name.to_string(), || (uri.clone(), func.clone()));
                     }
                 }
             }

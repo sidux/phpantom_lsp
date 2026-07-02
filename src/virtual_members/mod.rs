@@ -485,15 +485,17 @@ pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMemb
     // Build an index of (name, is_static) → position for O(1) dedup
     // instead of a linear scan per virtual method.  With hundreds of
     // methods on Eloquent models this turns O(N×M) memcmp into O(M).
+    // Keys are lowercased: PHP method names are case-insensitive, so a
+    // `@method getvalue` tag matches a declared `getValue()`.
     let mut method_index: HashMap<(String, bool), usize> = class
         .methods
         .iter()
         .enumerate()
-        .map(|(i, m)| ((m.name.to_string(), m.is_static), i))
+        .map(|(i, m)| ((m.name.to_ascii_lowercase(), m.is_static), i))
         .collect();
 
     for method in virtual_members.methods {
-        let key = (method.name.to_string(), method.is_static);
+        let key = (method.name.to_ascii_lowercase(), method.is_static);
         if let Some(&idx) = method_index.get(&key) {
             if class.methods[idx].has_scope_attribute
                 || matches!(method.name.as_str(), "query" | "newQuery" | "newModelQuery")

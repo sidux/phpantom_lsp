@@ -604,6 +604,111 @@ diagnostic layer.
 
 ---
 
+## P22. Signature change re-queues slow diagnostics for every open file
+
+**Impact: Medium-High · Effort: Medium**
+
+When `update_ast` detects that a class signature changed,
+`schedule_diagnostics_for_open_files` (`src/diagnostics/mod.rs:935`,
+called from `src/server.rs:589` and `:626`) queues **all** open
+files (minus the edited one) for a full slow-diagnostic pass —
+unknown classes, unknown members, argument checks. The per-file
+cost of that pass is the most expensive thing the server does (see
+the Appendix: tens of seconds on pathological files, hundreds of
+ms on ordinary ones).
+
+A user with 20 tabs open who adds a method to a class therefore
+pays 20 full-file analysis passes per signature-changing edit
+burst. Debouncing coalesces keystrokes, but the work is still
+O(open files) regardless of whether those files reference the
+edited class at all. During the burst the diagnostic worker
+saturates blocking threads that completion/hover also need.
+
+### Fix
+
+Queue only files that can observe the change. The resolved-class
+cache already maintains a dependency index for transitive
+eviction (`evict_fqn`), and ER4 tracks which members changed.
+Build a reverse map (FQN → open files that reference it) — either
+from each file's `resolved_names` (which byte-offset FQN lookups
+already exist for) or by recording, during each diagnostic pass,
+which FQNs the pass touched. On signature change, queue only the
+dependent files. Falls back to all-open-files when the dependency
+data is missing (e.g. right after startup).
+
+Synergy: P21 (offset-shifting) reduces the cost of re-diagnosing
+the *edited* file; this item reduces the *count* of other files
+re-diagnosed. Together they make the slow pass proportional to
+the blast radius of an edit.
+
+---
+
+## P23. `workspace/symbol` allocates a lowercase copy of every symbol name per request
+
+**Impact: Low-Medium · Effort: Low**
+
+`match_tier` (`src/workspace_symbols.rs:64-72`) calls
+`name.to_lowercase()` on every candidate symbol, and each symbol
+is tested against up to two or three name forms (FQN, short name,
+display name — call sites at lines 144, 232, 318, 401, 471). A
+`workspace/symbol` request walks every class, method, property,
+constant, and function in `uri_classes_index` and
+`global_functions`, so each keystroke in the editor's symbol
+picker performs O(total symbols × name length) heap allocations
+just for case folding, then throws them away.
+
+### Fix
+
+Match case-insensitively without allocating: a byte-wise
+`eq_ignore_ascii_case`-style prefix/substring scan (PHP
+identifiers are ASCII; a non-ASCII fallback can keep the old
+path), or store a pre-lowercased name alongside each symbol if
+the tiering logic needs real substring search. Note B25
+(case-insensitive index keys) will make lowercased names
+available on the index side anyway — implementing that first
+makes this nearly free.
+
+Related: X4 (full background indexing) plans a dedicated
+workspace-symbol index; this fix is independent and worth taking
+early since it is a few lines.
+
+---
+
+## P24. Per-file maps that survive `did_close` grow for the whole session
+
+**Impact: Low · Effort: Low**
+
+Two session-lifetime leaks found while auditing map hygiene:
+
+1. **`parse_errors` is never pruned.** `clear_file_maps`
+   (`src/util.rs:1757-1772`) removes `uri_classes_index`,
+   `symbol_maps`, `file_imports`, `resolved_names`, and
+   `file_namespaces`, but not `parse_errors`, and no other path
+   removes entries either (`did_close` and `reindex_files_batch`
+   both delegate to `clear_file_maps`). Every file ever opened
+   (or deleted from disk) keeps its last parse-error vector in
+   memory until restart.
+
+2. **`member_completion_cache` has no size bound.** It is cleared
+   wholesale on signature-changing edits
+   (`src/parser/ast_update.rs:735`) and on watched-file changes,
+   but during read-heavy browsing (no edits) it accumulates one
+   `Vec<CompletionItem>` per distinct completion target — for
+   Eloquent models those vectors contain hundreds of fully-built
+   items each.
+
+### Fix
+
+Add `self.parse_errors.write().remove(uri)` to `clear_file_maps`.
+For the completion cache, a simple cap (e.g. clear when the map
+exceeds N entries) is enough — the cache exists to serve
+keystroke bursts on one target, so losing cold entries is free.
+While in there, audit the `diag_last_*` / `diag_result_ids` /
+external-tool diagnostic caches for the same keep-after-close
+pattern (they hold per-file diagnostic vectors).
+
+---
+
 # Remaining anti-pattern fixes
 
 Most remaining depth-cap issues are addressed by ER5 (class

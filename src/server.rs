@@ -1893,8 +1893,7 @@ impl Backend {
         {
             let mut idx = self.fqn_uri_index.write();
             for (fqn, path) in classmap {
-                idx.entry(fqn)
-                    .or_insert_with(|| crate::util::path_to_uri(&path));
+                idx.or_insert_with(fqn, || crate::util::path_to_uri(&path));
             }
         }
 
@@ -1914,14 +1913,13 @@ impl Backend {
             {
                 let mut idx = self.fqn_uri_index.write();
                 for (fqn, path) in drupal_result.classmap {
-                    idx.entry(fqn)
-                        .or_insert_with(|| crate::util::path_to_uri(&path));
+                    idx.or_insert_with(fqn, || crate::util::path_to_uri(&path));
                 }
             }
             {
                 let mut fi = self.autoload_function_index.write();
                 for (fqn, path) in drupal_result.function_index {
-                    fi.entry(fqn).or_insert(path);
+                    fi.or_insert_with(fqn, || path);
                 }
             }
             {
@@ -1947,8 +1945,7 @@ impl Backend {
             let count = psr0_cm.len();
             let mut idx = self.fqn_uri_index.write();
             for (fqn, path) in psr0_cm {
-                idx.entry(fqn)
-                    .or_insert_with(|| crate::util::path_to_uri(&path));
+                idx.or_insert_with(fqn, || crate::util::path_to_uri(&path));
             }
             tracing::info!("PSR-0: {} classes from autoload_namespaces.php", count);
         }
@@ -2083,12 +2080,10 @@ impl Backend {
             {
                 let mut idx = self.fqn_uri_index.write();
                 for (fqcn, path) in sub_cm {
-                    idx.entry(fqcn)
-                        .or_insert_with(|| crate::util::path_to_uri(&path));
+                    idx.or_insert_with(fqcn, || crate::util::path_to_uri(&path));
                 }
                 for (fqcn, path) in scan.classmap {
-                    idx.entry(fqcn)
-                        .or_insert_with(|| crate::util::path_to_uri(&path));
+                    idx.or_insert_with(fqcn, || crate::util::path_to_uri(&path));
                 }
             }
         }
@@ -2113,8 +2108,7 @@ impl Backend {
         {
             let mut idx = self.fqn_uri_index.write();
             for (fqcn, path) in scan.classmap {
-                idx.entry(fqcn)
-                    .or_insert_with(|| crate::util::path_to_uri(&path));
+                idx.or_insert_with(fqcn, || crate::util::path_to_uri(&path));
             }
         }
 
@@ -2167,8 +2161,7 @@ impl Backend {
         {
             let mut idx = self.fqn_uri_index.write();
             for (fqn, path) in scan.classmap {
-                idx.entry(fqn)
-                    .or_insert_with(|| crate::util::path_to_uri(&path));
+                idx.or_insert_with(fqn, || crate::util::path_to_uri(&path));
             }
         }
 
@@ -2411,7 +2404,7 @@ impl Backend {
                 {
                     let mut idx = self.autoload_function_index.write();
                     for fqn in &scan.functions {
-                        idx.entry(fqn.clone()).or_insert_with(|| canonical.clone());
+                        idx.or_insert_with(fqn.as_str(), || canonical.clone());
                     }
                 }
 
@@ -2428,7 +2421,7 @@ impl Backend {
                 {
                     let mut idx = self.fqn_uri_index.write();
                     for fqn in &scan.classes {
-                        idx.entry(fqn.clone()).or_insert_with(|| uri.clone());
+                        idx.or_insert_with(fqn.as_str(), || uri.clone());
                     }
                 }
 
@@ -2604,11 +2597,10 @@ impl Backend {
         {
             let mut idx = self.fqn_uri_index.write();
             for (fqn, path) in classmap_entries {
-                idx.entry(fqn)
-                    .or_insert_with(|| crate::util::path_to_uri(&path));
+                idx.or_insert_with(fqn, || crate::util::path_to_uri(&path));
             }
             for (fqn, uri) in fqn_uri_entries {
-                idx.entry(fqn).or_insert(uri);
+                idx.or_insert_with(fqn, || uri);
             }
         }
 
@@ -2730,7 +2722,7 @@ impl Backend {
         if !scan.function_index.is_empty() {
             let mut idx = self.autoload_function_index.write();
             for (fqn, path) in &scan.function_index {
-                idx.entry(fqn.clone()).or_insert_with(|| path.clone());
+                idx.or_insert_with(fqn.as_str(), || path.clone());
             }
         }
         if !scan.constant_index.is_empty() {

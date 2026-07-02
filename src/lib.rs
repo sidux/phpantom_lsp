@@ -88,6 +88,8 @@ use parking_lot::{Mutex, RwLock};
 use tower_lsp::Client;
 use tower_lsp::lsp_types::{CompletionItem, FileChangeType};
 
+use ci_map::{CiMap, CiSet};
+
 /// A single parse error entry: `(message, start_byte_offset, end_byte_offset)`.
 ///
 /// Stored per file in [`Backend::parse_errors`] during `update_ast` and
@@ -115,6 +117,7 @@ pub mod analyse;
 pub mod atom;
 pub mod blade;
 pub(crate) mod call_args;
+pub mod ci_map;
 pub mod classmap_scanner;
 mod code_actions;
 mod code_lens;
@@ -270,7 +273,9 @@ pub struct Backend {
     /// Populated from files listed in Composer's `autoload_files.php` at init
     /// time, and also from any opened/changed files that contain standalone
     /// function declarations.
-    pub(crate) global_functions: Arc<RwLock<HashMap<String, (String, FunctionInfo)>>>,
+    /// Function names are case-insensitive in PHP, so the map folds
+    /// keys to lowercase while preserving the declared spelling.
+    pub(crate) global_functions: Arc<RwLock<CiMap<(String, FunctionInfo)>>>,
     /// Global constants defined via `define('NAME', value)` calls or
     /// top-level `const NAME = value;` statements.
     ///
@@ -292,7 +297,7 @@ pub struct Backend {
     /// defines them so that [`find_or_load_function`] can lazily call
     /// `update_ast` on first access instead of eagerly parsing every
     /// file at startup.
-    pub(crate) autoload_function_index: Arc<RwLock<HashMap<String, PathBuf>>>,
+    pub(crate) autoload_function_index: Arc<RwLock<CiMap<PathBuf>>>,
     /// Autoload constant index: constant name → file path on disk.
     ///
     /// Populated alongside `autoload_function_index` by the
@@ -332,7 +337,7 @@ pub struct Backend {
     /// - The workspace full-scan for non-Composer projects.
     /// - Entries from Composer's `autoload_classmap.php` (merged during
     ///   server initialization).
-    pub(crate) fqn_uri_index: Arc<RwLock<HashMap<String, String>>>,
+    pub(crate) fqn_uri_index: Arc<RwLock<CiMap<String>>>,
     /// Secondary index mapping fully-qualified class names directly to
     /// their parsed `ClassInfo`.
     ///
@@ -340,7 +345,7 @@ pub struct Backend {
     /// O(1) hash lookup instead of scanning all files in `uri_classes_index`.
     /// Maintained alongside `fqn_uri_index` in `update_ast_inner` and
     /// `parse_and_cache_content_versioned`.
-    pub(crate) fqn_class_index: Arc<RwLock<HashMap<String, Arc<ClassInfo>>>>,
+    pub(crate) fqn_class_index: Arc<RwLock<CiMap<Arc<ClassInfo>>>>,
     /// Negative-result cache for [`find_or_load_class`].
     ///
     /// Stores fully-qualified class names that have been looked up and
@@ -353,7 +358,7 @@ pub struct Backend {
     /// `update_ast_inner` and `parse_and_cache_content_versioned`) so
     /// that a class which becomes available after lazy loading is not
     /// permanently suppressed.
-    pub(crate) class_not_found_cache: Arc<RwLock<HashSet<String>>>,
+    pub(crate) class_not_found_cache: Arc<RwLock<CiSet>>,
     /// Parsed phar archives keyed by the phar file's absolute path.
     ///
     /// Populated during Composer autoload scanning when a bootstrap file
@@ -388,7 +393,7 @@ pub struct Backend {
     /// Consulted by `find_or_load_class` as a final fallback after the
     /// `uri_classes_index` and PSR-4 resolution.  Stub files are parsed lazily on
     /// first access and cached in `uri_classes_index` under `phpantom-stub://` URIs.
-    pub(crate) stub_index: RwLock<HashMap<&'static str, &'static str>>,
+    pub(crate) stub_index: RwLock<CiMap<&'static str>>,
     /// Cache of fully-resolved classes (inheritance + virtual members).
     ///
     /// Keyed by fully-qualified class name.  Populated lazily by
@@ -428,7 +433,7 @@ pub struct Backend {
     /// Filtered at startup via [`set_php_version`](Self::set_php_version) to
     /// remove stubs that do not exist in the target PHP version.
     /// Can be consulted to resolve return types of built-in function calls.
-    pub(crate) stub_function_index: RwLock<HashMap<&'static str, &'static str>>,
+    pub(crate) stub_function_index: RwLock<CiMap<&'static str>>,
     /// Embedded PHP stubs for built-in constants (e.g. `PHP_EOL`,
     /// `SORT_ASC`, …).  Maps constant name → raw PHP source code.
     ///
@@ -756,19 +761,19 @@ impl Backend {
             file_imports: Arc::new(RwLock::new(HashMap::new())),
             resolved_names: Arc::new(RwLock::new(HashMap::new())),
             file_namespaces: Arc::new(RwLock::new(HashMap::new())),
-            global_functions: Arc::new(RwLock::new(HashMap::new())),
+            global_functions: Arc::new(RwLock::new(CiMap::new())),
             global_defines: Arc::new(RwLock::new(HashMap::new())),
-            autoload_function_index: Arc::new(RwLock::new(HashMap::new())),
+            autoload_function_index: Arc::new(RwLock::new(CiMap::new())),
             autoload_constant_index: Arc::new(RwLock::new(HashMap::new())),
             autoload_file_paths: Arc::new(RwLock::new(Vec::new())),
-            fqn_uri_index: Arc::new(RwLock::new(HashMap::new())),
-            fqn_class_index: Arc::new(RwLock::new(HashMap::new())),
-            class_not_found_cache: Arc::new(RwLock::new(HashSet::new())),
+            fqn_uri_index: Arc::new(RwLock::new(CiMap::new())),
+            fqn_class_index: Arc::new(RwLock::new(CiMap::new())),
+            class_not_found_cache: Arc::new(RwLock::new(CiSet::new())),
             phar_archives: Arc::new(RwLock::new(HashMap::new())),
             parsed_uris: Arc::new(RwLock::new(HashSet::new())),
             parse_inflight: Arc::new(Mutex::new(HashSet::new())),
-            stub_index: RwLock::new(stubs::build_stub_class_index()),
-            stub_function_index: RwLock::new(stubs::build_stub_function_index()),
+            stub_index: RwLock::new(CiMap::from(stubs::build_stub_class_index())),
+            stub_function_index: RwLock::new(CiMap::from(stubs::build_stub_function_index())),
             stub_constant_index: RwLock::new(stubs::build_stub_constant_index()),
             resolved_class_cache: virtual_members::new_resolved_class_cache(),
             member_completion_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -838,19 +843,19 @@ impl Backend {
             file_imports: Arc::new(RwLock::new(HashMap::new())),
             resolved_names: Arc::new(RwLock::new(HashMap::new())),
             file_namespaces: Arc::new(RwLock::new(HashMap::new())),
-            global_functions: Arc::new(RwLock::new(HashMap::new())),
+            global_functions: Arc::new(RwLock::new(CiMap::new())),
             global_defines: Arc::new(RwLock::new(HashMap::new())),
-            autoload_function_index: Arc::new(RwLock::new(HashMap::new())),
+            autoload_function_index: Arc::new(RwLock::new(CiMap::new())),
             autoload_constant_index: Arc::new(RwLock::new(HashMap::new())),
             autoload_file_paths: Arc::new(RwLock::new(Vec::new())),
-            fqn_uri_index: Arc::new(RwLock::new(HashMap::new())),
-            fqn_class_index: Arc::new(RwLock::new(HashMap::new())),
-            class_not_found_cache: Arc::new(RwLock::new(HashSet::new())),
+            fqn_uri_index: Arc::new(RwLock::new(CiMap::new())),
+            fqn_class_index: Arc::new(RwLock::new(CiMap::new())),
+            class_not_found_cache: Arc::new(RwLock::new(CiSet::new())),
             phar_archives: Arc::new(RwLock::new(HashMap::new())),
             parsed_uris: Arc::new(RwLock::new(HashSet::new())),
             parse_inflight: Arc::new(Mutex::new(HashSet::new())),
-            stub_index: RwLock::new(HashMap::new()),
-            stub_function_index: RwLock::new(HashMap::new()),
+            stub_index: RwLock::new(CiMap::new()),
+            stub_function_index: RwLock::new(CiMap::new()),
             stub_constant_index: RwLock::new(HashMap::new()),
             resolved_class_cache: virtual_members::new_resolved_class_cache(),
             member_completion_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -944,7 +949,7 @@ impl Backend {
     pub fn new_test_with_stubs(stub_index: HashMap<&'static str, &'static str>) -> Self {
         virtual_members::phpdoc::clear_mixin_cache();
         let backend = Self {
-            stub_index: RwLock::new(stub_index),
+            stub_index: RwLock::new(CiMap::from(stub_index)),
             ..Self::test_defaults()
         };
         backend.set_php_version(backend.php_version());
@@ -963,8 +968,8 @@ impl Backend {
     ) -> Self {
         virtual_members::phpdoc::clear_mixin_cache();
         let backend = Self {
-            stub_index: RwLock::new(stub_index),
-            stub_function_index: RwLock::new(stub_function_index),
+            stub_index: RwLock::new(CiMap::from(stub_index)),
+            stub_function_index: RwLock::new(CiMap::from(stub_function_index)),
             stub_constant_index: RwLock::new(stub_constant_index),
             ..Self::test_defaults()
         };
@@ -996,7 +1001,7 @@ impl Backend {
 
     /// Borrow the global functions mutex (used by integration tests to
     /// inject user-defined functions or inspect the cache).
-    pub fn global_functions(&self) -> &Arc<RwLock<HashMap<String, (String, FunctionInfo)>>> {
+    pub fn global_functions(&self) -> &Arc<RwLock<CiMap<(String, FunctionInfo)>>> {
         &self.global_functions
     }
 
@@ -1008,13 +1013,13 @@ impl Backend {
 
     /// Borrow the class index mutex (used by integration tests to
     /// populate discovered class entries).
-    pub fn fqn_uri_index(&self) -> &Arc<RwLock<HashMap<String, String>>> {
+    pub fn fqn_uri_index(&self) -> &Arc<RwLock<CiMap<String>>> {
         &self.fqn_uri_index
     }
 
     /// Borrow the FQN → ClassInfo index mutex (used by integration tests
     /// to populate class metadata for context-aware completion filtering).
-    pub fn fqn_class_index(&self) -> &Arc<RwLock<HashMap<String, Arc<ClassInfo>>>> {
+    pub fn fqn_class_index(&self) -> &Arc<RwLock<CiMap<Arc<ClassInfo>>>> {
         &self.fqn_class_index
     }
 
@@ -1048,7 +1053,7 @@ impl Backend {
 
     /// Borrow the autoload function index (used by integration tests to
     /// populate discovered function entries for non-Composer projects).
-    pub fn autoload_function_index(&self) -> &Arc<RwLock<HashMap<String, PathBuf>>> {
+    pub fn autoload_function_index(&self) -> &Arc<RwLock<CiMap<PathBuf>>> {
         &self.autoload_function_index
     }
 
@@ -1229,7 +1234,7 @@ impl Backend {
             let mut idx = self.fqn_uri_index.write();
             idx.retain(|fqn, v| {
                 if uri_set.contains(v.as_str()) {
-                    dropped_fqns.push(fqn.clone());
+                    dropped_fqns.push(fqn.to_owned());
                     false
                 } else {
                     true
@@ -1287,7 +1292,7 @@ impl Backend {
             {
                 let mut fi = self.autoload_function_index.write();
                 for fqn in scan.functions {
-                    fi.entry(fqn).or_insert_with(|| path.clone());
+                    fi.or_insert_with(fqn, || path.clone());
                 }
             }
             {

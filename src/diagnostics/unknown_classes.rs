@@ -282,6 +282,29 @@ mod tests {
         out
     }
 
+    /// PHP class names are case-insensitive (B25): `new stdclass()` and
+    /// `extends \pdo` refer to the built-in classes and must not be
+    /// flagged as unknown.
+    #[test]
+    fn no_false_positive_for_differently_cased_class() {
+        let mut stubs = std::collections::HashMap::new();
+        stubs.insert("stdClass", "<?php class stdClass {}");
+        let backend = Backend::new_test_with_stubs(stubs);
+
+        let uri = "file:///test.php";
+        let content = r#"<?php
+$a = new stdclass();
+$b = new STDCLASS();
+"#;
+
+        let diags = collect(&backend, uri, content);
+        assert!(
+            diags.is_empty(),
+            "Expected no unknown-class diagnostics for differently-cased stdClass, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
     /// When a vendor class exists in the classmap,
     /// `collect_unknown_class_diagnostics` must NOT flag it as unknown.
     /// This simulates the IDE scenario where the classmap is loaded

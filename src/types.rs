@@ -1449,7 +1449,8 @@ pub struct ClassInfo {
     /// The outer [`SharedVec`] makes cloning the entire `ClassInfo`
     /// O(1) (Arc refcount bump on the Vec itself).
     pub methods: SharedVec<Arc<MethodInfo>>,
-    /// O(1) index from method name → position in `methods`.
+    /// O(1) index from lowercased method name → position in `methods`
+    /// (PHP method names are case-insensitive).
     ///
     /// Rebuilt by [`rebuild_method_index`] after bulk mutations
     /// (inheritance merge, parsing). The `get_method*` and `has_method`
@@ -1684,6 +1685,9 @@ impl ClassInfo {
     /// parsing, virtual member injection). Individual `push` calls in
     /// test code can skip this — the lookup helpers fall back to linear
     /// scan when the index is empty or stale.
+    ///
+    /// Keys are lowercased because PHP method names are
+    /// case-insensitive; `methods` keeps the declared spelling.
     pub fn rebuild_method_index(&mut self) {
         self.method_index.clear();
         self.method_index.reserve(self.methods.len());
@@ -1691,7 +1695,9 @@ impl ClassInfo {
             // First-writer-wins: matches the semantics of
             // `.iter().find(|m| m.name == name)` which returns the
             // first match when duplicate names exist.
-            self.method_index.entry(method.name).or_insert(i as u32);
+            self.method_index
+                .entry(crate::atom::ascii_lowercase_atom(&method.name))
+                .or_insert(i as u32);
         }
         self.indexed_method_count = self.methods.len() as u32;
     }
@@ -1703,14 +1709,15 @@ impl ClassInfo {
         !self.method_index.is_empty() && self.methods.len() as u32 == self.indexed_method_count
     }
 
-    /// Look up a method by exact name (case-sensitive).
+    /// Look up a method by name, ignoring ASCII case (PHP method names
+    /// are case-insensitive).
     ///
     /// Uses the `method_index` for O(1) lookup when available,
     /// falling back to linear scan otherwise.
     #[inline]
     pub fn get_method(&self, name: &str) -> Option<&MethodInfo> {
         if self.method_index_valid() {
-            let atom = crate::atom::atom(name);
+            let atom = crate::atom::ascii_lowercase_atom(name);
             return self
                 .method_index
                 .get(&atom)
@@ -1719,34 +1726,32 @@ impl ClassInfo {
         }
         self.methods
             .iter()
-            .find(|m| m.name == name)
-            .map(|arc| arc.as_ref())
-    }
-
-    /// Look up a method by name, ignoring ASCII case.
-    ///
-    /// Used for PHP magic methods like `__construct` where the casing
-    /// in source may vary. Always uses linear scan since the index is
-    /// keyed by exact name.
-    #[inline]
-    pub fn get_method_ci(&self, name: &str) -> Option<&MethodInfo> {
-        self.methods
-            .iter()
             .find(|m| m.name.eq_ignore_ascii_case(name))
             .map(|arc| arc.as_ref())
     }
 
-    /// Check whether a method with the given exact name exists.
+    /// Alias of [`get_method`](Self::get_method), kept for call sites
+    /// written when the primary lookup was still case-sensitive.
+    #[inline]
+    pub fn get_method_ci(&self, name: &str) -> Option<&MethodInfo> {
+        self.get_method(name)
+    }
+
+    /// Check whether a method with the given name exists (ignoring
+    /// ASCII case, per PHP semantics).
     #[inline]
     pub fn has_method(&self, name: &str) -> bool {
         if self.method_index_valid() {
-            let atom = crate::atom::atom(name);
+            let atom = crate::atom::ascii_lowercase_atom(name);
             return self.method_index.contains_key(&atom);
         }
-        self.methods.iter().any(|m| m.name == name)
+        self.methods
+            .iter()
+            .any(|m| m.name.eq_ignore_ascii_case(name))
     }
 
-    /// Look up a method by exact name and return a clone of the `Arc`.
+    /// Look up a method by name (ignoring ASCII case) and return a
+    /// clone of the `Arc`.
     ///
     /// Useful when the caller needs to hold onto the method beyond the
     /// borrow of `self`, or when it will be inserted into another
@@ -1754,14 +1759,17 @@ impl ClassInfo {
     #[inline]
     pub fn get_method_arc(&self, name: &str) -> Option<Arc<MethodInfo>> {
         if self.method_index_valid() {
-            let atom = crate::atom::atom(name);
+            let atom = crate::atom::ascii_lowercase_atom(name);
             return self
                 .method_index
                 .get(&atom)
                 .and_then(|&idx| self.methods.get(idx as usize))
                 .map(Arc::clone);
         }
-        self.methods.iter().find(|m| m.name == name).map(Arc::clone)
+        self.methods
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(name))
+            .map(Arc::clone)
     }
 
     /// Compare two `ClassInfo` values by signature-relevant fields only.
