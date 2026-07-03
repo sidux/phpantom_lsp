@@ -144,6 +144,7 @@ pub(crate) mod phar;
 pub mod php_type;
 mod phpcs;
 mod phpstan;
+mod reference_index;
 mod references;
 mod rename;
 mod resolution;
@@ -222,6 +223,13 @@ pub struct Backend {
     /// variables, function calls, etc.).  Consulted by `resolve_definition`
     /// to replace character-level backward-walking with a binary search.
     pub(crate) symbol_maps: Arc<RwLock<HashMap<String, Arc<symbol_map::SymbolMap>>>>,
+    /// Cross-file candidate index for find-references.
+    ///
+    /// Maintained from each file's [`symbol_maps`] entry during parsing.
+    /// It is deliberately coarse: reference scanners use it only to narrow
+    /// candidate files, then run their existing semantic checks for aliases,
+    /// inheritance, Laravel declarations, and `self/static/parent`.
+    pub(crate) reference_index: reference_index::ReferenceIndex,
     /// Per-file parse errors from the Mago parser.
     ///
     /// Each entry is `(message, start_byte_offset, end_byte_offset)`.
@@ -666,6 +674,12 @@ pub struct Backend {
     /// files, but the flag lets us log the difference between initial and
     /// refresh scans.
     pub(crate) workspace_indexed: Arc<std::sync::atomic::AtomicBool>,
+    /// Serializes whole-workspace indexing so a foreground request does not
+    /// duplicate the background full-index parse.
+    pub(crate) workspace_index_lock: Arc<Mutex<()>>,
+    /// Prevents duplicate background full-index tasks when initialization and
+    /// a request both race to parse the whole workspace.
+    pub(crate) full_index_in_progress: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Request-coalescing state for expensive whole-file requests (semantic
@@ -750,6 +764,7 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             uri_classes_index: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
+            reference_index: reference_index::new_reference_index(),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             did_change_parse_locks: Arc::new(Mutex::new(HashMap::new())),
             whole_file_coalesce: Arc::new(WholeFileCoalesce::default()),
@@ -814,6 +829,8 @@ impl Backend {
             blade_source_maps: Arc::new(RwLock::new(HashMap::new())),
             blade_uris: Arc::new(RwLock::new(std::collections::HashSet::new())),
             workspace_indexed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            workspace_index_lock: Arc::new(Mutex::new(())),
+            full_index_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             sync_ast_updates: false,
         }
     }
@@ -832,6 +849,7 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             uri_classes_index: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
+            reference_index: reference_index::new_reference_index(),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             did_change_parse_locks: Arc::new(Mutex::new(HashMap::new())),
             whole_file_coalesce: Arc::new(WholeFileCoalesce::default()),
@@ -895,6 +913,8 @@ impl Backend {
             blade_source_maps: Arc::new(RwLock::new(HashMap::new())),
             blade_uris: Arc::new(RwLock::new(std::collections::HashSet::new())),
             workspace_indexed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            workspace_index_lock: Arc::new(Mutex::new(())),
+            full_index_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             sync_ast_updates: true,
         }
     }
@@ -1327,6 +1347,7 @@ impl Backend {
             open_files: Arc::clone(&self.open_files),
             uri_classes_index: Arc::clone(&self.uri_classes_index),
             symbol_maps: Arc::clone(&self.symbol_maps),
+            reference_index: Arc::clone(&self.reference_index),
             parse_errors: Arc::clone(&self.parse_errors),
             did_change_parse_locks: Arc::clone(&self.did_change_parse_locks),
             whole_file_coalesce: Arc::clone(&self.whole_file_coalesce),
@@ -1393,6 +1414,8 @@ impl Backend {
             blade_source_maps: Arc::clone(&self.blade_source_maps),
             blade_uris: Arc::clone(&self.blade_uris),
             workspace_indexed: Arc::clone(&self.workspace_indexed),
+            workspace_index_lock: Arc::clone(&self.workspace_index_lock),
+            full_index_in_progress: Arc::clone(&self.full_index_in_progress),
             sync_ast_updates: self.sync_ast_updates,
         }
     }
