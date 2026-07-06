@@ -101,6 +101,7 @@ mod document_highlight;
 mod document_links;
 mod document_symbols;
 mod folding_ranges;
+mod framework_resources;
 mod hover;
 mod implementation;
 mod inlay_hints;

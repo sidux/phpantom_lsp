@@ -331,6 +331,14 @@ impl LanguageServer for Backend {
                 tracing::info!("PHPantom: warmed {} Laravel completion classes", warmed);
             }
 
+            let framework_count = self.index_framework_workspace();
+            if framework_count > 0 {
+                tracing::info!(
+                    "PHPantom: indexed {} Symfony/Doctrine resource file(s)",
+                    framework_count
+                );
+            }
+
             if let Some(ref tok) = progress_token {
                 let classmap_count = self.fqn_uri_index.read().len();
                 self.progress_end(tok, Some(format!("Indexed {} classes", classmap_count)))
@@ -413,6 +421,18 @@ impl LanguageServer for Backend {
                     watchers: vec![
                         FileSystemWatcher {
                             glob_pattern: GlobPattern::String("**/*.php".to_string()),
+                            kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+                        },
+                        FileSystemWatcher {
+                            glob_pattern: GlobPattern::String("**/*.yaml".to_string()),
+                            kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+                        },
+                        FileSystemWatcher {
+                            glob_pattern: GlobPattern::String("**/*.yml".to_string()),
+                            kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+                        },
+                        FileSystemWatcher {
+                            glob_pattern: GlobPattern::String("**/*.xml".to_string()),
                             kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
                         },
                         FileSystemWatcher {
@@ -528,6 +548,13 @@ impl LanguageServer for Backend {
             .write()
             .insert(uri.clone(), Arc::clone(&text));
 
+        if crate::framework::is_framework_resource_uri(&uri) {
+            self.index_framework_uri_content(&uri, &text);
+            self.log(MessageType::INFO, format!("Opened framework resource: {}", uri))
+                .await;
+            return;
+        }
+
         // Parse and update AST map, use map, and namespace map
         self.update_ast(&uri, &text);
 
@@ -576,6 +603,11 @@ impl LanguageServer for Backend {
         self.open_files
             .write()
             .insert(uri.clone(), Arc::clone(&text));
+
+        if crate::framework::is_framework_resource_uri(&uri) {
+            self.index_framework_uri_content(&uri, &text);
+            return;
+        }
 
         // Re-parse in a blocking background task so typing does not
         // monopolize the LSP service loop and delay completion requests.
@@ -660,6 +692,13 @@ impl LanguageServer for Backend {
             self.blade_virtual_content.write().remove(&uri);
             self.blade_source_maps.write().remove(&uri);
             self.blade_uris.write().remove(&uri);
+        }
+
+        if crate::framework::is_framework_resource_uri(&uri) {
+            self.reindex_framework_uri_from_disk(&uri);
+            self.log(MessageType::INFO, format!("Closed framework resource: {}", uri))
+                .await;
+            return;
         }
 
         self.clear_file_maps(&uri);
@@ -2324,6 +2363,7 @@ impl Backend {
     ) -> bool {
         let mut composer_changed = false;
         let mut php_changes: Vec<(String, PathBuf, FileChangeType)> = Vec::new();
+        let mut framework_changes: Vec<(String, PathBuf, FileChangeType)> = Vec::new();
         {
             let open = self.open_files.read();
             let parsed = self.parsed_uris.read();
@@ -2334,6 +2374,16 @@ impl Backend {
                     continue;
                 }
                 if !path_str.ends_with(".php") {
+                    if crate::framework::is_framework_resource_uri(&change.uri.to_string()) {
+                        let uri_str = change.uri.to_string();
+                        if open.contains_key(&uri_str) {
+                            continue;
+                        }
+                        let Ok(file_path) = change.uri.to_file_path() else {
+                            continue;
+                        };
+                        framework_changes.push((uri_str, file_path, change.typ));
+                    }
                     continue;
                 }
 
@@ -2363,7 +2413,9 @@ impl Backend {
         }
 
         if php_changes.is_empty() && !composer_changed {
-            return false;
+            if framework_changes.is_empty() {
+                return false;
+            }
         }
 
         if !php_changes.is_empty() {
@@ -2383,6 +2435,16 @@ impl Backend {
         if composer_changed {
             tracing::info!("PHPantom: composer files changed, rescanning vendor");
             self.rescan_composer_indexes(root);
+        }
+
+        if !framework_changes.is_empty() {
+            tracing::info!(
+                "PHPantom: {} Symfony/Doctrine resource file(s) changed on disk",
+                framework_changes.len()
+            );
+            for (uri, path, typ) in &framework_changes {
+                self.apply_framework_file_change(uri, path, *typ);
+            }
         }
 
         true

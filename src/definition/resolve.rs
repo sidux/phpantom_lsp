@@ -19,9 +19,11 @@ use crate::symbol_map::VarDefKind;
 use tower_lsp::lsp_types::*;
 
 use super::member::{MemberAccessHint, MemberDefinitionCtx};
+use super::member::MemberKind;
 use super::point_location;
 use crate::Backend;
 use crate::composer;
+use crate::framework::FrameworkReferenceKind;
 use crate::symbol_map::{SelfStaticParentKind, SymbolKind};
 use crate::types::{AccessKind, ClassInfo};
 use crate::util::{find_class_at_offset, position_to_offset, short_name};
@@ -56,10 +58,62 @@ impl Backend {
             return vec![loc];
         }
 
+        if let Some(loc) = self.resolve_framework_resource_definition(uri, content, position) {
+            return vec![loc];
+        }
+
         // env() fallback: not yet indexed in the symbol map.
         laravel::resolve_env_definition(self, content, position)
             .into_iter()
             .collect()
+    }
+
+    fn resolve_framework_resource_definition(
+        &self,
+        uri: &str,
+        content: &str,
+        position: Position,
+    ) -> Option<Location> {
+        let reference = self.framework_reference_at_position(uri, content, position)?;
+        match reference.kind {
+            FrameworkReferenceKind::Class { fqn } => {
+                self.resolve_class_reference(uri, content, &fqn, true, reference.start)
+            }
+            FrameworkReferenceKind::Method {
+                class_fqn,
+                member_name,
+            } => self.resolve_framework_member_definition(uri, content, &class_fqn, &member_name),
+            FrameworkReferenceKind::Namespace { .. } | FrameworkReferenceKind::Path { .. } => None,
+        }
+    }
+
+    fn resolve_framework_member_definition(
+        &self,
+        uri: &str,
+        content: &str,
+        class_fqn: &str,
+        member_name: &str,
+    ) -> Option<Location> {
+        let ctx = self.file_context(uri);
+        let class_loader = self.class_loader(&ctx);
+        let raw_class = class_loader(class_fqn)?;
+        let resolved = crate::virtual_members::resolve_class_fully_maybe_cached(
+            &raw_class,
+            &class_loader,
+            Some(&self.resolved_class_cache),
+        );
+        let (declaring_class, declaring_fqn) =
+            Self::find_declaring_class(&resolved, member_name, &class_loader)
+                .unwrap_or_else(|| (resolved.as_ref().clone(), class_fqn.to_string()));
+        let (class_uri, class_content) =
+            self.find_class_file_content(&declaring_fqn, uri, content)?;
+        let position = Self::find_member_position(
+            &class_content,
+            member_name,
+            MemberKind::Method,
+            declaring_class.member_name_offset(member_name, "method"),
+        )?;
+        Some(point_location(Url::parse(&class_uri).ok()?, position))
     }
 
     /// Look up the symbol at the given byte offset in the precomputed

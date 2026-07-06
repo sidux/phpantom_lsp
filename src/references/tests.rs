@@ -1389,10 +1389,11 @@ async fn test_overridden_find_excludes_base_repository_and_unresolved_calls() {
         "    $notifications->find(1);\n", // L11
         "    $base->find(2);\n",          // L12
         "    $users->find(3);\n",         // L13
-        "    $notificationRepository = $managerRegistry->getManager()->getRepository(NotificationImpl::class);\n", // L14
-        "    $notificationRepository->find(4);\n", // L15
-        "    $unknown->find(5);\n",                // L16
-        "}\n",                                     // L17
+        "    $repo = $managerRegistry->getManager()->getRepository(NotificationImpl::class);\n", // L14
+        "    $repo->find(4);\n", // L15
+        "    $managerRegistry->getManager()->getRepository(NotificationImpl::class)->find(6);\n", // L16
+        "    $unknown->find(5);\n", // L17
+        "}\n",                      // L18
     );
 
     open_file(&backend, &uri, text).await;
@@ -1412,7 +1413,12 @@ async fn test_overridden_find_excludes_base_repository_and_unresolved_calls() {
     );
     assert!(
         lines.contains(&15),
-        "Should include unresolved but clearly named $notificationRepository->find() on L15; got lines: {:?}",
+        "Should include $repo->find() typed from getRepository(NotificationImpl::class) on L15; got lines: {:?}",
+        lines
+    );
+    assert!(
+        lines.contains(&16),
+        "Should include inline getRepository(NotificationImpl::class)->find() on L16; got lines: {:?}",
         lines
     );
     assert!(
@@ -1436,8 +1442,8 @@ async fn test_overridden_find_excludes_base_repository_and_unresolved_calls() {
         lines
     );
     assert!(
-        !lines.contains(&16),
-        "Should NOT include unresolved $unknown->find() on L16; got lines: {:?}",
+        !lines.contains(&17),
+        "Should NOT include unresolved $unknown->find() on L17; got lines: {:?}",
         lines
     );
 }
