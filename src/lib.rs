@@ -239,6 +239,7 @@ mod document_symbols;
 pub mod fix;
 mod folding;
 mod formatting;
+mod framework;
 mod highlight;
 mod hover;
 mod indexing;
@@ -563,6 +564,13 @@ pub struct Backend {
     /// variables, function calls, etc.).  Consulted by `resolve_definition`
     /// to replace character-level backward-walking with a binary search.
     pub(crate) symbol_maps: Arc<RwLock<HashMap<String, Arc<symbol_map::SymbolMap>>>>,
+    /// Per-file Symfony/Doctrine YAML/XML references.
+    ///
+    /// PHP files are represented by [`symbol_maps`]. Framework resource files
+    /// are not PHP ASTs, so class names, namespace-prefix service keys,
+    /// controller method strings, and path-like resource imports are indexed
+    /// here and queried by definition, references, rename, and highlights.
+    pub(crate) framework_references: framework::FrameworkReferenceIndex,
     /// Cross-file candidate index for find-references.
     ///
     /// Maintained from each file's [`symbol_maps`] entry during parsing.
@@ -1092,6 +1100,7 @@ impl Backend {
             client_name: Mutex::new(String::new()),
             open_files: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
+            framework_references: framework::new_framework_reference_index(),
             reference_index: reference_index::new_reference_index(),
             proxy_index: Arc::new(RwLock::new(proxy_metadata::ProxyIndex::default())),
             symfony_events: Arc::new(RwLock::new(symfony::SymfonyEventIndex::default())),
@@ -1205,6 +1214,7 @@ impl Backend {
             client_name: Mutex::new(String::new()),
             open_files: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
+            framework_references: framework::new_framework_reference_index(),
             reference_index: reference_index::new_reference_index(),
             proxy_index: Arc::new(RwLock::new(proxy_metadata::ProxyIndex::default())),
             symfony_events: Arc::new(RwLock::new(symfony::SymfonyEventIndex::default())),
@@ -1861,6 +1871,7 @@ impl Backend {
             client_name: Mutex::new(self.client_name.lock().clone()),
             open_files: Arc::clone(&self.open_files),
             symbol_maps: Arc::clone(&self.symbol_maps),
+            framework_references: Arc::clone(&self.framework_references),
             reference_index: Arc::clone(&self.reference_index),
             proxy_index: Arc::clone(&self.proxy_index),
             symfony_events: Arc::clone(&self.symfony_events),
