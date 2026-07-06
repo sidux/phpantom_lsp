@@ -422,6 +422,14 @@ impl LanguageServer for Backend {
                 }
             }
 
+            let framework_count = self.index_framework_workspace();
+            if framework_count > 0 {
+                tracing::info!(
+                    "PHPantom: indexed {} Symfony/Doctrine resource file(s)",
+                    framework_count
+                );
+            }
+
             if let Some(poller) = poller {
                 poller.finish().await;
             }
@@ -529,6 +537,20 @@ impl LanguageServer for Backend {
                 },
             ]);
         }
+        watchers.extend([
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/*.yaml".to_string()),
+                kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+            },
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/*.yml".to_string()),
+                kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+            },
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/*.xml".to_string()),
+                kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+            },
+        ]);
 
         registrations.push(Registration {
             id: "workspace/didChangeWatchedFiles".to_string(),
@@ -656,6 +678,16 @@ impl LanguageServer for Backend {
             .write()
             .insert(uri.clone(), Arc::clone(&text));
 
+        if crate::framework::is_framework_resource_uri(&uri) {
+            self.index_framework_uri_content(&uri, &text);
+            self.log(
+                MessageType::INFO,
+                format!("Opened framework resource: {}", uri),
+            )
+            .await;
+            return;
+        }
+
         // Parse and update AST map, use map, and namespace map
         self.update_ast(&uri, &text);
 
@@ -734,6 +766,11 @@ impl LanguageServer for Backend {
         self.open_files
             .write()
             .insert(uri.clone(), Arc::clone(&text));
+
+        if crate::framework::is_framework_resource_uri(&uri) {
+            self.index_framework_uri_content(&uri, &text);
+            return;
+        }
 
         // Re-parse in a blocking background task so typing does not
         // monopolize the LSP service loop and delay completion requests.
@@ -838,6 +875,16 @@ impl LanguageServer for Backend {
             self.blade_source_maps.write().remove(&uri);
             self.blade_uris.write().remove(&uri);
             self.blade_injected_vars.write().remove(&uri);
+        }
+
+        if crate::framework::is_framework_resource_uri(&uri) {
+            self.reindex_framework_uri_from_disk(&uri);
+            self.log(
+                MessageType::INFO,
+                format!("Closed framework resource: {}", uri),
+            )
+            .await;
+            return;
         }
 
         self.clear_file_maps(&uri);

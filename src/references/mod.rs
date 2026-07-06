@@ -43,6 +43,7 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::Backend;
+use crate::framework::FrameworkReferenceKind;
 use crate::reference_index::ReferenceIndexKey;
 use crate::symbol_map::SymbolMap;
 use crate::util::strip_fqn_prefix;
@@ -204,6 +205,17 @@ pub(super) fn is_laravel_builder_static_entrypoint(method_name: &str) -> bool {
 /// PHP method names are case-insensitive, so `__CONSTRUCT` matches too.
 pub(super) fn is_constructor_name(name: &str) -> bool {
     name.eq_ignore_ascii_case("__construct")
+}
+
+fn sort_locations_for_references(locations: &mut Vec<Location>) {
+    locations.sort_by(|a, b| {
+        a.uri
+            .as_str()
+            .cmp(b.uri.as_str())
+            .then(a.range.start.line.cmp(&b.range.start.line))
+            .then(a.range.start.character.cmp(&b.range.start.character))
+    });
+    locations.dedup();
 }
 
 /// Check whether a resolved class name matches the target FQN.
