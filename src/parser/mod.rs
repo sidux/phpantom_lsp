@@ -873,39 +873,63 @@ pub(crate) fn with_parsed_program<T: Default>(
         }
     });
 
-    // Lazily parse on first access and populate the cache entry.
-    if cache_state == 1 {
-        PARSE_CACHE.with(|cell| {
-            let mut borrow = cell.borrow_mut();
-            let entry = borrow.as_mut().unwrap();
-            let arena = bumpalo::Bump::new();
-            let file_id = mago_database::file::FileId::new(b"input.php");
-            // SAFETY: `program` borrows from `arena` and `entry.content`.
-            // The arena is moved into `entry.arena` immediately after
-            // extracting the raw pointer — the heap-allocated chunks do
-            // not move, so the pointer stays valid.  `entry.content` lives
-            // inside the `RefCell` until the guard is dropped.
-            let program =
-                mago_syntax::parser::parse_file_content(&arena, file_id, entry.content.as_bytes());
-            let program_ptr: *const () = (program as *const Program<'_>).cast();
-            entry.program_ptr = Some(program_ptr);
-            entry.arena = Some(arena);
-        });
-    }
-
     if cache_state >= 1 {
-        return PARSE_CACHE.with(|cell| {
-            let borrow = cell.borrow();
-            let entry = borrow.as_ref().unwrap();
-            // SAFETY: `program_ptr` was created from a valid `&Program`
-            // whose backing arena and content string are still alive
-            // inside `entry`.  We hold a `Ref` borrow on the `RefCell`,
-            // so the entry cannot be mutated or dropped while we use
-            // the reference.
-            let program: &Program<'_> =
-                unsafe { &*(entry.program_ptr.unwrap().cast::<Program<'_>>()) };
-            f(program, &entry.content)
-        });
+        // The fast path runs both the lazy mago parse and the extraction
+        // closure `f`.  Wrap them in `catch_unwind` — like the slow path
+        // below — so a parser or extraction panic doesn't escape and
+        // violate this function's "a parser panic doesn't crash the LSP
+        // server" contract.  On panic the poisoned cache entry is evicted
+        // so the next call re-parses from scratch.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Lazily parse on first access and populate the cache entry.
+            if cache_state == 1 {
+                PARSE_CACHE.with(|cell| {
+                    let mut borrow = cell.borrow_mut();
+                    let entry = borrow.as_mut().unwrap();
+                    let arena = bumpalo::Bump::new();
+                    let file_id = mago_database::file::FileId::new(b"input.php");
+                    // SAFETY: `program` borrows from `arena` and
+                    // `entry.content`.  The arena is moved into
+                    // `entry.arena` immediately after extracting the raw
+                    // pointer — the heap-allocated chunks do not move, so
+                    // the pointer stays valid.  `entry.content` lives
+                    // inside the `RefCell` until the guard is dropped.
+                    let program = mago_syntax::parser::parse_file_content(
+                        &arena,
+                        file_id,
+                        entry.content.as_bytes(),
+                    );
+                    let program_ptr: *const () = (program as *const Program<'_>).cast();
+                    entry.program_ptr = Some(program_ptr);
+                    entry.arena = Some(arena);
+                });
+            }
+
+            PARSE_CACHE.with(|cell| {
+                let borrow = cell.borrow();
+                let entry = borrow.as_ref().unwrap();
+                // SAFETY: `program_ptr` was created from a valid `&Program`
+                // whose backing arena and content string are still alive
+                // inside `entry`.  We hold a `Ref` borrow on the `RefCell`,
+                // so the entry cannot be mutated or dropped while we use
+                // the reference.
+                let program: &Program<'_> =
+                    unsafe { &*(entry.program_ptr.unwrap().cast::<Program<'_>>()) };
+                f(program, &entry.content)
+            })
+        }));
+
+        match outcome {
+            Ok(value) => return value,
+            Err(_) => {
+                // Evict the poisoned cache entry so the next call re-parses.
+                PARSE_CACHE.with(|cell| {
+                    *cell.borrow_mut() = None;
+                });
+                tracing::error!("PHPantom: parser panicked in {}", method_name);
+                return T::default();
+            }
+        }
     }
 
     // ── Slow path: parse from scratch ───────────────────────────
@@ -1351,5 +1375,56 @@ impl Backend {
         with_parsed_program(content, "parse_namespace", |program, _content| {
             Self::extract_namespace_from_statements(program.statements.iter())
         })
+    }
+}
+
+#[cfg(test)]
+mod with_parsed_program_tests {
+    //! A panic in the parser or extraction closure must be caught on the
+    //! thread-local-cache fast path too (not just the slow path), and the
+    //! poisoned cache entry must be evicted so the next call re-parses.
+
+    use super::{with_parse_cache, with_parsed_program};
+
+    #[test]
+    fn fast_path_lazy_parse_recovers_from_panic() {
+        let content = "<?php class Foo {}";
+        let _guard = with_parse_cache(content);
+
+        // First matching call lazily parses, then the closure panics.
+        // The fast path must catch it and return the default.
+        let caught: bool =
+            with_parsed_program(content, "test", |_program, _content| panic!("boom"));
+        assert!(
+            !caught,
+            "fast-path panic should be caught and default returned"
+        );
+
+        // The poisoned entry was evicted, so a later call re-parses and
+        // runs the closure normally.
+        let ok: bool = with_parsed_program(content, "test", |_program, _content| true);
+        assert!(ok, "after eviction the next call must re-parse and succeed");
+    }
+
+    #[test]
+    fn fast_path_ready_cache_recovers_from_panic() {
+        let content = "<?php class Bar {}";
+        let _guard = with_parse_cache(content);
+
+        // Prime the cache so the program is already parsed (ready state).
+        let primed: bool = with_parsed_program(content, "test", |_program, _content| true);
+        assert!(primed);
+
+        // A panic on the ready fast path is also caught.
+        let caught: bool =
+            with_parsed_program(content, "test", |_program, _content| panic!("boom"));
+        assert!(
+            !caught,
+            "ready-cache panic should be caught and default returned"
+        );
+
+        // And the entry is evicted so subsequent calls still work.
+        let ok: bool = with_parsed_program(content, "test", |_program, _content| true);
+        assert!(ok, "after eviction the next call must re-parse and succeed");
     }
 }

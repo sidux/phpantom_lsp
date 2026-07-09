@@ -7,40 +7,6 @@ pipeline so it produces correct data. Downstream consumers
 (diagnostics, hover, completion, definition) should never need
 to second-guess upstream output.
 
-## B26. A panic during parse/extraction permanently poisons the URI via `parse_inflight`
-
-**Severity: Medium (file never resolvable again + 200 ms stall per lookup) · Confirmed paths, low-probability trigger**
-
-`parse_and_cache_file` (`src/resolution.rs:259-294`) inserts the
-URI into `parse_inflight`, does the work, then removes it — with
-no drop guard. If the work unwinds, the `remove` at line 280/293
-never runs. From then on, **every** `parse_and_cache_file` call
-for that URI takes the `wait_for_cached_result` path
-(`resolution.rs:299-310`): a 200 × 1 ms spin that then returns
-stale-or-`None` — the file can never be (re)parsed until server
-restart, and each attempt burns 200 ms on a blocking thread.
-
-The panic surface is real: `with_parsed_program`
-(`src/parser/mod.rs:855-919`) wraps only the **slow path** in
-`catch_unwind` (line 913). The thread-local parse-cache fast path
-runs both the mago parse (lines 877-894) and the extraction
-closure (lines 896-909) **outside** any `catch_unwind` — so with
-a warm parse cache, a parser or extraction panic escapes,
-contradicting the function's own "a parser panic doesn't crash
-the LSP server" contract. Outer layers like the completion
-handler's `catch_unwind` (`src/completion/handler.rs:1010`) then
-swallow the panic, so the server keeps running with the URI stuck
-in `parse_inflight` and nothing in the log but one panic line.
-
-**Fix:** two independent hardenings, both worth doing:
-
-1. Hold the `parse_inflight` entry in an RAII guard whose `Drop`
-   removes the URI, so unwinding cleans up.
-2. Wrap the fast path of `with_parsed_program` in `catch_unwind`
-   like the slow path (evicting the poisoned parse-cache entry on
-   panic so the next call re-parses).
-
-
 ## B27. String literal type comparison is quote-style sensitive
 
 **Severity: Low (false-positive argument diagnostic) · Confirmed**

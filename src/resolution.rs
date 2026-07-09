@@ -32,6 +32,7 @@
 ///   - Unqualified names resolved via the import table or current namespace
 ///   - Qualified names with alias expansion and namespace prefixing
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use std::path::Path;
@@ -43,6 +44,26 @@ use crate::composer;
 use crate::php_type::{PhpType, is_builtin_non_class_type};
 use crate::types::{ClassInfo, FileContext, FunctionInfo, PhpVersion};
 use crate::util::short_name;
+
+/// RAII guard that removes a URI from `parse_inflight` on drop.
+///
+/// Holding the inflight entry in a guard ensures that if parsing or
+/// extraction unwinds (panics), the URI is still removed from the
+/// inflight set. Without this, a panic would leave the URI stuck in
+/// `parse_inflight` forever, forcing every subsequent lookup down the
+/// slow `wait_for_cached_result` spin path that can never succeed.
+struct InflightGuard<'a> {
+    /// The shared inflight set the URI was inserted into.
+    inflight: &'a parking_lot::Mutex<HashSet<String>>,
+    /// The URI to remove on drop.
+    uri: String,
+}
+
+impl Drop for InflightGuard<'_> {
+    fn drop(&mut self) {
+        self.inflight.lock().remove(&self.uri);
+    }
+}
 
 impl Backend {
     /// Try to find a class by name across all cached files in the uri_classes_index,
@@ -272,15 +293,18 @@ impl Backend {
             if !self.parse_inflight.lock().insert(uri.clone()) {
                 return self.wait_for_cached_result(&uri);
             }
-            let result = (|| {
+            // Remove the inflight entry even if the work below unwinds.
+            let _guard = InflightGuard {
+                inflight: &self.parse_inflight,
+                uri: uri.clone(),
+            };
+            return (|| {
                 let archives = self.phar_archives.read();
                 let archive = archives.get(phar_path)?;
                 let bytes = archive.read_file(internal_path)?;
                 let content = std::str::from_utf8(bytes).ok()?;
                 self.parse_and_cache_content(content, &uri)
             })();
-            self.parse_inflight.lock().remove(&uri);
-            return result;
         }
 
         // ── Regular file path ───────────────────────────────────
@@ -290,10 +314,13 @@ impl Backend {
         if !self.parse_inflight.lock().insert(uri.clone()) {
             return self.wait_for_cached_result(&uri);
         }
+        // Remove the inflight entry even if the work below unwinds.
+        let _guard = InflightGuard {
+            inflight: &self.parse_inflight,
+            uri: uri.clone(),
+        };
         let content = std::fs::read_to_string(file_path).ok();
-        let result = content.and_then(|c| self.parse_and_cache_content(&c, &uri));
-        self.parse_inflight.lock().remove(&uri);
-        result
+        content.and_then(|c| self.parse_and_cache_content(&c, &uri))
     }
 
     /// Spin-wait for another thread to finish parsing a file and return
@@ -1191,6 +1218,56 @@ mod tests {
         assert!(
             backend.fqn_uri_index.read().get("Lib\\NewName").is_some(),
             "new name must be indexed after rename"
+        );
+    }
+}
+
+#[cfg(test)]
+mod inflight_guard_tests {
+    //! The inflight guard must remove its URI from `parse_inflight` even
+    //! when the parse/extraction work unwinds, so a panic can never
+    //! permanently poison a URI (leaving it stuck on the slow spin path).
+
+    use super::InflightGuard;
+    use parking_lot::Mutex;
+    use std::collections::HashSet;
+
+    #[test]
+    fn guard_removes_uri_on_panic() {
+        let inflight: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+        inflight.lock().insert("file:///a.php".to_string());
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = InflightGuard {
+                inflight: &inflight,
+                uri: "file:///a.php".to_string(),
+            };
+            panic!("boom");
+        }));
+
+        assert!(
+            result.is_err(),
+            "the panic should propagate to catch_unwind"
+        );
+        assert!(
+            !inflight.lock().contains("file:///a.php"),
+            "guard must remove the URI even when the scope unwinds"
+        );
+    }
+
+    #[test]
+    fn guard_removes_uri_on_normal_drop() {
+        let inflight: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+        inflight.lock().insert("file:///b.php".to_string());
+        {
+            let _guard = InflightGuard {
+                inflight: &inflight,
+                uri: "file:///b.php".to_string(),
+            };
+        }
+        assert!(
+            !inflight.lock().contains("file:///b.php"),
+            "guard must remove the URI when it drops normally"
         );
     }
 }
