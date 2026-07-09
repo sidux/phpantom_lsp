@@ -7,43 +7,6 @@ pipeline so it produces correct data. Downstream consumers
 (diagnostics, hover, completion, definition) should never need
 to second-guess upstream output.
 
-
-## B24. `parse_and_cache_content_versioned` leaves stale index entries on re-parse
-
-**Severity: Medium (ghost classes in resolution and hierarchy) · Confirmed**
-
-The lazy-load parse path (`src/resolution.rs:428-524`) — used for
-vendor files, stubs, and any file re-loaded after `did_close` —
-does not evict the previous version's state when it re-parses a
-URI:
-
-- `fqn_class_index`: only inserts new FQNs (line 463). A class
-  deleted or renamed in the file keeps resolving from the stale
-  `ClassInfo`.
-- `fqn_uri_index`: uses `.entry(fqn).or_insert_with(...)` (line
-  464) — never even repoints, let alone removes.
-- `gti_index`: `populate_gti_index` (line 478) only adds edges;
-  there is **no** `evict_gti_for_fqns` call, so
-  `find_implementors` / type hierarchy keep serving children that
-  no longer extend the parent.
-- `evict_methods_for_fqns` (line 475) is called with the **new**
-  FQN set, so `method_store` entries of removed classes linger.
-
-Contrast with `update_ast_inner`, which computes `old_fqns` and
-evicts all four correctly (`src/parser/ast_update.rs:526-531,
-583-584`). The watched-file path (`reindex_files_batch`) also
-evicts correctly — but only fires for files that produce watcher
-events; a re-parse through this code path (e.g. re-opening after
-`did_close` cleared `uri_classes_index`, phar refresh, or a
-vendor change the client doesn't watch) leaves ghosts.
-
-**Fix:** when `was_already_parsed` is true, diff against the
-previous `uri_classes_index` entry (it is still available at line
-436 before the overwrite) and evict removed FQNs from
-`fqn_class_index`, `fqn_uri_index`, `gti_index`, and
-`method_store`, mirroring `update_ast_inner`.
-
-
 ## B26. A panic during parse/extraction permanently poisons the URI via `parse_inflight`
 
 **Severity: Medium (file never resolvable again + 200 ms stall per lookup) · Confirmed paths, low-probability trigger**

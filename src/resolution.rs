@@ -429,6 +429,30 @@ impl Backend {
         // is needed (only on re-parse, not first load).
         let was_already_parsed = self.parsed_uris.read().contains(uri);
 
+        // When re-parsing a previously loaded URI, capture the prior FQN
+        // set (still available in uri_classes_index before the overwrite
+        // below) so stale entries for renamed or removed classes can be
+        // evicted.  Mirrors `update_ast_inner`, which computes `old_fqns`
+        // and evicts fqn_class_index, fqn_uri_index, gti_index, and
+        // method_store.  Without this, a class deleted or renamed on
+        // re-parse (vendor change, phar refresh, re-open after did_close)
+        // leaves ghost entries that keep resolving from stale state and
+        // pollute find_implementors / type hierarchy.
+        let old_fqns: Vec<String> = if was_already_parsed {
+            self.uri_classes_index
+                .read()
+                .get(uri)
+                .map(|v| {
+                    v.iter()
+                        .filter(|c| !c.name.starts_with("__anonymous@"))
+                        .map(|c| c.fqn().to_string())
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         // Record that this URI has been parsed.
         self.parsed_uris.write().insert(uri.to_owned());
 
@@ -461,21 +485,31 @@ impl Backend {
 
             let mut class_idx = self.fqn_uri_index.write();
             let mut fqn_idx = self.fqn_class_index.write();
+            // On re-parse, drop entries for classes that this file no
+            // longer defines before re-inserting the current set.  This
+            // repoints/removes the FQN → URI and FQN → ClassInfo mappings
+            // so a renamed or deleted class stops resolving from the old
+            // ClassInfo.
+            for old_fqn in &old_fqns {
+                class_idx.remove(old_fqn);
+                fqn_idx.remove(old_fqn);
+            }
             for (fqn, cls) in new_entries {
                 class_idx.or_insert_with(fqn.as_str(), || uri.to_owned());
                 fqn_idx.insert(fqn, cls);
             }
         }
 
-        // Populate the method store from the freshly parsed classes.
-        {
-            let fqns: Vec<String> = arc_classes
-                .iter()
-                .filter(|c| !c.name.starts_with("__anonymous@"))
-                .map(|c| c.fqn().to_string())
-                .collect();
-            self.evict_methods_for_fqns(&fqns);
-        }
+        // On re-parse, evict the method_store and gti_index entries for
+        // the classes this file previously defined before re-populating.
+        // Evicting the *old* FQN set (rather than the new one) removes
+        // methods of classes that were deleted or renamed, and clears
+        // stale reverse-inheritance edges so find_implementors / type
+        // hierarchy stop serving children that no longer extend a parent.
+        // For a first-time load `old_fqns` is empty and both calls
+        // early-return.
+        self.evict_methods_for_fqns(&old_fqns);
+        self.evict_gti_for_fqns(&old_fqns);
         self.populate_method_store(&arc_classes);
         self.populate_gti_index(&arc_classes);
 
@@ -516,9 +550,20 @@ impl Backend {
         // the cost/benefit is strongly negative.
         if was_already_parsed {
             let mut cache = self.resolved_class_cache.write();
+            let mut new_fqns: std::collections::HashSet<String> =
+                std::collections::HashSet::with_capacity(arc_classes.len());
             for cls in &arc_classes {
                 let fqn = cls.fqn();
+                new_fqns.insert(fqn.to_string());
                 let _ = crate::virtual_members::evict_fqn(&mut cache, &fqn);
+            }
+            // Also evict classes this file previously defined but no longer
+            // does (renames / removals) so they stop resolving from a stale
+            // resolved-class cache entry.
+            for old_fqn in &old_fqns {
+                if !new_fqns.contains(old_fqn) {
+                    let _ = crate::virtual_members::evict_fqn(&mut cache, old_fqn);
+                }
             }
         }
 
@@ -1045,6 +1090,107 @@ mod tests {
         assert_eq!(
             indexed.get_method("getvalue").expect("indexed").name,
             "getValue"
+        );
+    }
+
+    /// Re-parsing a lazily-loaded file through `parse_and_cache_content`
+    /// (the vendor / stub / re-open-after-close path) must evict index
+    /// entries for classes the file no longer defines.  Previously this
+    /// path only inserted new FQNs, so a renamed or deleted class kept
+    /// ghost entries in the FQN indexes, the GTI reverse-inheritance edges
+    /// (find_implementors / type hierarchy), and the method store.
+    #[test]
+    fn versioned_reparse_evicts_removed_classes() {
+        let backend = Backend::new_test();
+        let uri = "file:///lib.php";
+
+        backend.parse_and_cache_content(
+            "<?php namespace Lib; class Base {} \
+             class Child extends Base { public function ghost() {} }",
+            uri,
+        );
+
+        // First parse populated every index.
+        assert!(
+            backend.fqn_class_index.read().get("Lib\\Child").is_some(),
+            "Child should be in fqn_class_index after first parse"
+        );
+        assert!(
+            backend.fqn_uri_index.read().get("Lib\\Child").is_some(),
+            "Child should be in fqn_uri_index after first parse"
+        );
+        assert!(
+            backend
+                .gti_index
+                .read()
+                .values()
+                .any(|kids| kids.iter().any(|k| k == "Lib\\Child")),
+            "some parent should list Child as an implementor after first parse"
+        );
+        assert!(
+            backend
+                .method_store
+                .read()
+                .contains_key(&("Lib\\Child".to_string(), "ghost".to_string())),
+            "Child::ghost should be in the method store after first parse"
+        );
+
+        // Re-parse the same URI with Child (and its method) removed.
+        backend.parse_and_cache_content("<?php namespace Lib; class Base {}", uri);
+
+        assert!(
+            backend.fqn_class_index.read().get("Lib\\Child").is_none(),
+            "Child must be evicted from fqn_class_index on re-parse"
+        );
+        assert!(
+            backend.fqn_uri_index.read().get("Lib\\Child").is_none(),
+            "Child must be evicted from fqn_uri_index on re-parse"
+        );
+        assert!(
+            !backend
+                .gti_index
+                .read()
+                .values()
+                .any(|kids| kids.iter().any(|k| k == "Lib\\Child")),
+            "no parent should still list the removed Child as an implementor"
+        );
+        assert!(
+            !backend
+                .method_store
+                .read()
+                .contains_key(&("Lib\\Child".to_string(), "ghost".to_string())),
+            "Child::ghost must be evicted from the method store on re-parse"
+        );
+
+        // Base, which the file still defines, must survive the re-parse.
+        assert!(
+            backend.fqn_class_index.read().get("Lib\\Base").is_some(),
+            "Base should survive the re-parse"
+        );
+    }
+
+    /// Renaming a class on re-parse repoints the FQN → URI mapping to the
+    /// new name and drops the old, rather than leaving both.
+    #[test]
+    fn versioned_reparse_repoints_renamed_class() {
+        let backend = Backend::new_test();
+        let uri = "file:///renamed.php";
+
+        backend.parse_and_cache_content("<?php namespace Lib; class OldName {}", uri);
+        assert!(backend.fqn_uri_index.read().get("Lib\\OldName").is_some());
+
+        backend.parse_and_cache_content("<?php namespace Lib; class NewName {}", uri);
+        assert!(
+            backend.fqn_uri_index.read().get("Lib\\OldName").is_none(),
+            "old name must be evicted after rename"
+        );
+        assert!(
+            backend.fqn_class_index.read().get("Lib\\OldName").is_none(),
+            "old ClassInfo must be evicted after rename"
+        );
+        assert!(
+            backend.fqn_uri_index.read().get("Lib\\NewName").is_some(),
+            "new name must be indexed after rename"
         );
     }
 }
