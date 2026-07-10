@@ -4810,3 +4810,34 @@ function test(string $input): void
         type_error_messages(&diags)
     );
 }
+
+// ─── Narrower intersection passed to broader intersection — no diagnostic ───
+
+#[test]
+fn no_diagnostic_for_narrower_intersection_argument() {
+    // A value typed with *more* intersection members satisfies a
+    // parameter typed with a subset of those members. This is the
+    // common Mockery pattern where `Mockery::mock()` returns
+    // `TheClass&MockInterface&LegacyMockInterface` and is passed to a
+    // parameter typed `TheClass&MockInterface`.
+    let php = r#"<?php
+interface AA {}
+interface BB {}
+interface CC {}
+
+function takes(AA&BB $value): void {}
+
+/**
+ * @param AA&BB&CC $value
+ */
+function test(mixed $value): void {
+    takes($value);
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "A narrower intersection (AA&BB&CC) must satisfy a broader one (AA&BB): {:?}",
+        type_error_messages(&diags)
+    );
+}

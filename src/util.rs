@@ -1164,18 +1164,24 @@ pub(crate) fn is_subtype_of_typed(
         return is_subtype_of_typed(subtype, &as_union, class_loader);
     }
 
+    // ── Intersection supertype: all members required ────────────
+    // Checked before the subtype-intersection branch so that the
+    // both-intersections case (e.g. `A&B&C` <: `A&B`) decomposes the
+    // supertype first: every supertype member must be satisfied by
+    // *some* subtype member.  Handling the subtype first would instead
+    // demand that a single member satisfy the whole supertype, wrongly
+    // rejecting a narrower intersection that carries extra constraints.
+    if let PhpType::Intersection(members) = supertype {
+        return members
+            .iter()
+            .all(|m| is_subtype_of_typed(subtype, m, class_loader));
+    }
+
     // ── Intersection subtype: at least one member suffices ──────
     if let PhpType::Intersection(members) = subtype {
         return members
             .iter()
             .any(|m| is_subtype_of_typed(m, supertype, class_loader));
-    }
-
-    // ── Intersection supertype: all members required ────────────
-    if let PhpType::Intersection(members) = supertype {
-        return members
-            .iter()
-            .all(|m| is_subtype_of_typed(subtype, m, class_loader));
     }
 
     // ── Generic covariance with class-loader awareness ──────────
