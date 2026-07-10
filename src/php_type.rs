@@ -3215,6 +3215,15 @@ fn is_named_subtype(sub: &str, sup: &str) -> bool {
         return false;
     }
 
+    // `number` is a PHPDoc pseudo-type (int|float) only in its exact lowercase
+    // spelling. A differently-cased bare `Number` (e.g. `BcMath\Number`) is a
+    // real class; the identical-string case was handled above, and nominal
+    // class relationships are resolved by the caller's hierarchy check, so
+    // here it has no scalar sub/supertype relationship.
+    if (sub_l == "number" && sub_raw != "number") || (sup_l == "number" && sup_raw != "number") {
+        return false;
+    }
+
     match sup_n {
         // ── bool supertypes ─────────────────────────────────────
         "bool" => matches!(sub_n, "true" | "false"),
@@ -3420,6 +3429,12 @@ fn literal_is_subtype_of(lit: &LiteralValue, supertype: &PhpType) -> bool {
             .is_some_and(|value| int_literal_is_within_range(value, min, max)),
         PhpType::Named(sup) => {
             let sup_l = sup.to_ascii_lowercase();
+            // A differently-cased bare `Number` (e.g. `BcMath\Number`) is a
+            // real class, not the lowercase `number` pseudo-type; a scalar
+            // literal is never a subtype of it.
+            if sup_l == "number" && sup != "number" {
+                return false;
+            }
             // Integer literal → int (and its supertypes).
             if matches!(lit, LiteralValue::Int(_)) {
                 return matches!(
@@ -3846,7 +3861,6 @@ pub(crate) fn is_keyword_type(name: &str) -> bool {
             | "empty-scalar"
             | "non-empty-scalar"
             | "non-empty-mixed"
-            | "number"
             | "empty"
             // ── Object / callable variants ──────────────────────────
             | "callable-object"
@@ -3966,6 +3980,13 @@ pub fn is_scalar_name_pub(name: &str) -> bool {
 }
 
 fn is_scalar_name(name: &str) -> bool {
+    // `number` is a PHPDoc-only pseudo-type (int|float) and only in its exact
+    // lowercase spelling. PHP has no native `number` type and allows a class
+    // named `Number` (e.g. PHP 8.4's `BcMath\Number`), so any other casing is
+    // a real class reference and must not be classified as a scalar.
+    if name == "number" {
+        return true;
+    }
     matches!(
         name.to_ascii_lowercase().as_str(),
         "int"
@@ -4019,7 +4040,6 @@ fn is_scalar_name(name: &str) -> bool {
             | "callable-object"
             | "literal-string"
             | "non-empty-literal-string"
-            | "number"
             | "open-resource"
             | "closed-resource"
     )
@@ -4094,7 +4114,9 @@ fn normalize_keyword_casing(name: &str) -> String {
         | "non-empty-array" | "non-empty-list" | "non-empty-mixed" | "associative-array"
         | "closed-resource" | "open-resource" | "callable-object" | "callable-array"
         | "stringable-object"
-        | "array-key" | "scalar" | "numeric" | "number" => lower,
+        | "array-key" | "scalar" | "numeric" => lower,
+        // `number` is a pseudo-type only in lowercase; fall through so a
+        // `Number` class keeps its casing and lowercase `number` stays as-is.
         // Not a keyword — return the original name unchanged
         // (preserving class name casing).
         _ => name.to_string(),
@@ -4148,8 +4170,11 @@ fn native_scalar_name(name: &str) -> Option<&str> {
         | "non-empty-literal-string" => Some("string"),
 
         // Types with no single native equivalent.
-        "scalar" | "numeric" | "number" | "array-key" | "empty-scalar" | "non-empty-scalar"
-        | "empty" => None,
+        "scalar" | "numeric" | "array-key" | "empty-scalar" | "non-empty-scalar" | "empty" => None,
+
+        // `number` (int|float) has no single native equivalent, but only in
+        // its lowercase pseudo-type spelling; a `Number` class passes through.
+        "number" if name == "number" => None,
 
         // Anything else is a class name — pass it through.
         _ => Some(name),

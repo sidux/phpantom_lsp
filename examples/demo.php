@@ -86,6 +86,25 @@ class MixedAccessorDemo
     }
 }
 
+// ── Pseudo-Type Class-Name Collision ────────────────────────────────────────
+// A class may be named after a PHPDoc pseudo-type such as `number` (PHP 8.4
+// ships `BcMath\Number`). The class must not be shadowed by the pseudo-type.
+
+class PseudoTypeCollisionDemo
+{
+    public function demo(): void
+    {
+        $n = new Number('42');
+
+        $n->value;          // own property resolves (not treated as int|float)
+        $n->scaled(2);      // own method resolves
+
+        // A `Number` parameter type resolves to the class, so passing a
+        // `Number` instance is accepted (no false type-mismatch diagnostic).
+        scaleNumber($n);
+    }
+}
+
 // ── Method & Property Chaining ──────────────────────────────────────────────
 
 class ChainingDemo
@@ -3650,6 +3669,19 @@ abstract class ScaffoldingAbstractAstNode {
  */
 class ScaffoldingConcreteAstNode extends ScaffoldingAbstractAstNode {}
 
+// ── Pseudo-type class-name collision scaffolding ─────────────────────────────
+// `Number` collides with the `number` PHPDoc pseudo-type but is a real class.
+class Number {
+    public function __construct(public string $value) {}
+    public function scaled(int $factor): Number {
+        return new Number((string) ((int) $this->value * $factor));
+    }
+}
+
+function scaleNumber(Number $n): Number {
+    return $n->scaled(10);
+}
+
 // ── class-string<T> instantiation scaffolding ───────────────────────────────
 class ScaffoldingClassStringFactory {
     /**
@@ -5312,6 +5344,11 @@ function runDemoAssertions(): void
     assert($pen instanceof Pen, 'createPen() must return Pen (inferred from body)');
     $tool = $factory->createTool(true);
     assert($tool instanceof Pen || $tool instanceof Pencil, 'createTool() must return Pen|Pencil');
+
+    // ── Pseudo-type class-name collision ────────────────────────────────
+    $num = new Number('42');
+    assert($num->scaled(2) instanceof Number, 'Number::scaled() must return Number (class, not pseudo-type)');
+    assert(scaleNumber($num) instanceof Number, 'scaleNumber() must accept and return a Number');
 
     // ── Return Type: static ─────────────────────────────────────────────
     $pen = Pen::make();

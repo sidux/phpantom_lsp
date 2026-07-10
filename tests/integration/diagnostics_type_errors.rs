@@ -397,6 +397,56 @@ function test(): void {
     );
 }
 
+// ─── No diagnostic: class named `Number` is not the `number` pseudo-type ─────
+
+#[test]
+fn no_diagnostic_for_class_named_number() {
+    // `number` is a PHPDoc-only pseudo-type, but PHP allows a real class named
+    // `Number` (e.g. PHP 8.4's `BcMath\Number`). The class must not be shadowed
+    // by the pseudo-type, otherwise a valid argument is wrongly flagged.
+    let php = r#"<?php
+namespace App;
+
+class Number {
+    public function __construct(public string $value) {}
+}
+
+function scale(Number $n): void {}
+
+function test(string $v): void {
+    scale(new Number($v));
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "A `Number` argument passed to a `Number` param must not be flagged, got: {diags:?}"
+    );
+}
+
+#[test]
+fn flags_wrong_type_to_number_class_param() {
+    // The `Number` class must still participate in genuine mismatch detection:
+    // passing an unrelated class where a `Number` is expected is an error.
+    let php = r#"<?php
+namespace App;
+
+class Number {}
+class Money {}
+
+function scale(Number $n): void {}
+
+function test(): void {
+    scale(new Money());
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        has_type_error(&diags),
+        "Passing Money to a Number param should be flagged, got: {diags:?}"
+    );
+}
+
 // ─── No diagnostic: interface implementation ────────────────────────────────
 
 #[test]
