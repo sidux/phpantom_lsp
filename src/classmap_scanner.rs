@@ -281,6 +281,27 @@ pub fn scan_vendor_packages(workspace_root: &Path, vendor_dir: &str) -> Workspac
     scan_vendor_packages_with_skip(workspace_root, vendor_dir, &HashSet::new(), &HashSet::new())
 }
 
+/// Classify a Composer package name into its completion origin.
+///
+/// Symfony polyfill packages (`symfony/polyfill-*`) backport PHP core
+/// classes and extension functions (e.g. `symfony/polyfill-php83`
+/// ships `\Override`), so they are treated as core stubs and sort and
+/// display like built-in PHP symbols. Everything else is an explicit
+/// dependency when it appears in the root `composer.json`, or a
+/// transitive dependency otherwise.
+pub(crate) fn classify_package_origin(
+    pkg_name: &str,
+    explicit_deps: &HashSet<String>,
+) -> crate::ClassCompletionOrigin {
+    if pkg_name.starts_with("symfony/polyfill-") {
+        crate::ClassCompletionOrigin::CoreStub
+    } else if explicit_deps.contains(pkg_name) {
+        crate::ClassCompletionOrigin::VendorExplicit
+    } else {
+        crate::ClassCompletionOrigin::VendorTransitive
+    }
+}
+
 pub(crate) fn vendor_package_roots(
     workspace_root: &Path,
     vendor_dir: &str,
@@ -308,17 +329,7 @@ pub(crate) fn vendor_package_roots(
             .get("name")
             .and_then(|n| n.as_str())
             .unwrap_or("unknown/unknown");
-        // Symfony polyfill packages provide backports of PHP core
-        // classes and extension functions (e.g. `symfony/polyfill-php83`
-        // ships `\Override`).  Classify them as core stubs so they
-        // sort and display like built-in PHP symbols, not vendor deps.
-        let origin = if pkg_name.starts_with("symfony/polyfill-") {
-            crate::ClassCompletionOrigin::CoreStub
-        } else if explicit_deps.contains(pkg_name) {
-            crate::ClassCompletionOrigin::VendorExplicit
-        } else {
-            crate::ClassCompletionOrigin::VendorTransitive
-        };
+        let origin = classify_package_origin(pkg_name, explicit_deps);
         let pkg_path =
             if let Some(install_path) = package.get("install-path").and_then(|p| p.as_str()) {
                 composer_dir.join(install_path)
@@ -380,13 +391,7 @@ pub fn scan_vendor_packages_with_skip(
         let origin = package
             .get("name")
             .and_then(|n| n.as_str())
-            .map(|name| {
-                if explicit_deps.contains(name) {
-                    crate::ClassCompletionOrigin::VendorExplicit
-                } else {
-                    crate::ClassCompletionOrigin::VendorTransitive
-                }
-            })
+            .map(|name| classify_package_origin(name, explicit_deps))
             .unwrap_or(crate::ClassCompletionOrigin::VendorTransitive);
         // Locate the package on disk.  Composer 2's installed.json
         // includes an `install-path` field that is relative to the
