@@ -1259,11 +1259,29 @@ impl Backend {
 
                     let ExtractedMembers {
                         methods,
-                        properties,
+                        mut properties,
                         constants,
                         mut used_traits,
                         ..
                     } = Self::extract_class_like_members(enum_def.members.iter(), doc_ctx, &[]);
+
+                    // Every enum case exposes a readonly `name` property, and
+                    // backed enums additionally expose a `value` property whose
+                    // type is the backing type.  These are real instance
+                    // properties in PHP (declared on the UnitEnum/BackedEnum
+                    // interfaces via stubs, but interface properties are not
+                    // merged into implementors), so synthesize them here.
+                    properties.push(crate::types::PropertyInfo::virtual_property_typed(
+                        "name",
+                        Some(&PhpType::Named("string".to_string())),
+                    ));
+                    if let Some(hint) = enum_def.backing_type_hint.as_ref() {
+                        let value_type = crate::parser::extract_hint_type(&hint.hint);
+                        properties.push(crate::types::PropertyInfo::virtual_property_typed(
+                            "value",
+                            Some(&value_type),
+                        ));
+                    }
 
                     // Enums implicitly implement UnitEnum or BackedEnum.
                     // We add the interface with a leading backslash so that

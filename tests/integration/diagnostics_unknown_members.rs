@@ -5098,3 +5098,36 @@ function test(HasFormat $value, bool $flag): string {
         diags
     );
 }
+
+#[test]
+fn enum_name_and_value_properties_are_known() {
+    // Every enum exposes a readonly `name` property, and backed enums also
+    // expose a `value` property. Neither should be flagged as unknown.
+    let backend = create_test_backend();
+    let uri = "file:///enum_props.php";
+    let php = r#"<?php
+enum Suit: string {
+    case Hearts = 'H';
+    case Spades = 'S';
+}
+
+enum Direction {
+    case North;
+    case South;
+}
+
+function backed(Suit $s): string {
+    return $s->value . $s->name;
+}
+
+function pure(Direction $d): string {
+    return $d->name;
+}
+"#;
+    let diags = unknown_member_diagnostics(&backend, uri, php);
+    assert!(
+        diags.is_empty(),
+        "enum ->name and backed enum ->value must not be flagged unknown: {:?}",
+        diags
+    );
+}

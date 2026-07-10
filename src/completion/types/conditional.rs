@@ -1267,6 +1267,41 @@ fn try_resolve_with_template_default(
     Some(branch.clone())
 }
 
+/// Collapse a conditional return type using known template-parameter values.
+///
+/// When the conditional's subject is a template parameter (not a method
+/// `$parameter`) whose value is known from `values` — for example
+/// `@template TAsync of bool = false` supplying `TAsync => false`, or an
+/// explicit `@mixin Foo<false>` generic argument — the condition can be
+/// evaluated and the conditional replaced by the winning branch.
+///
+/// Returns `None` when the conditional's subject is a runtime parameter,
+/// is absent from `values`, or the winning branch is uninformative.
+pub fn resolve_conditional_from_values(
+    conditional: &PhpType,
+    values: &HashMap<String, PhpType>,
+) -> Option<PhpType> {
+    if let PhpType::Conditional {
+        param,
+        negated,
+        condition,
+        then_type,
+        else_type,
+    } = conditional
+        && !param.starts_with('$')
+    {
+        return try_resolve_with_template_default(
+            param,
+            *negated,
+            condition,
+            then_type,
+            else_type,
+            Some(values),
+        );
+    }
+    None
+}
+
 /// Extract the class name from an `X::class` expression.
 ///
 /// Matches `Expression::Access(Access::ClassConstant(cca))` where the

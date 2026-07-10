@@ -188,7 +188,7 @@ fn is_type_compatible(
         && (arg_type.is_callable()
             || arg_type.is_closure()
             || arg_type.is_array_like()
-            || arg_type.is_string_type()
+            || arg_type.is_string_subtype()
             || arg_type.is_object_like())
     {
         return true;

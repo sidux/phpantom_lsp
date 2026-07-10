@@ -4948,3 +4948,75 @@ function test(mixed $value): void {
         type_error_messages(&diags)
     );
 }
+
+// ─── String literal naming a function is a valid callable ───────────────────
+
+#[test]
+fn no_false_positive_string_literal_passed_to_callable_param() {
+    // A string literal that names a function (e.g. 'trim', 'intval') is a
+    // valid PHP callable and must not be flagged when passed to a
+    // `callable` / `?callable` parameter.
+    let php = r#"<?php
+function apply(?callable $callback, array $items): array
+{
+    return $callback === null ? $items : array_map($callback, $items);
+}
+
+function test(array $items): void
+{
+    apply('intval', $items);
+    apply('trim', $items);
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "A string literal naming a function must satisfy a ?callable parameter: {:?}",
+        type_error_messages(&diags)
+    );
+}
+
+// ─── Conditional return through @mixin uses the mixin's template default ─────
+
+#[test]
+fn conditional_return_via_mixin_uses_template_default() {
+    // `@mixin Req` where `Req` is `@template TAsync of bool = false` behaves
+    // like `@mixin Req<false>`, so a conditional return keyed on `TAsync`
+    // collapses to the then-branch. Without the default the merged method
+    // loses the mixin origin and resolution falls to the else-branch,
+    // producing a false argument type mismatch.
+    let php = r#"<?php
+/**
+ * @template TAsync of bool = false
+ */
+class Req
+{
+    /**
+     * @phpstan-return (TAsync is false ? \DateTime : \Exception)
+     */
+    public function get()
+    {
+        return new \DateTime();
+    }
+}
+
+/**
+ * @mixin Req
+ */
+class Fac {}
+
+function takesDate(\DateTime $d): void {}
+
+function test(Fac $f): void
+{
+    $response = $f->get();
+    takesDate($response);
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "Conditional return through @mixin must resolve TAsync to its default (false): {:?}",
+        type_error_messages(&diags)
+    );
+}

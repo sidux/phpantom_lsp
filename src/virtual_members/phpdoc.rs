@@ -677,6 +677,20 @@ fn collect_mixin_members(
             HashMap::new()
         };
 
+        // Known values for the mixin class's template parameters: explicit
+        // `@mixin Foo<...>` generic args, falling back to each param's
+        // declared default (`@template T of bool = false`).  A bare
+        // `@mixin Foo` therefore behaves like `@mixin Foo<default>`, which
+        // lets conditional return types keyed on those params (e.g.
+        // `(TAsync is false ? Response : PromiseInterface)`) collapse to a
+        // concrete branch instead of defaulting to the else type.
+        let mut template_values = subs.clone();
+        for (name, default) in mixin_class.template_param_defaults.iter() {
+            template_values
+                .entry(name.to_string())
+                .or_insert_with(|| default.clone());
+        }
+
         // Only merge public members — mixins proxy via magic methods
         // which only expose public API.
         for method in &resolved_mixin.methods {
@@ -691,6 +705,23 @@ fn collect_mixin_members(
             let mut method = (**method).clone();
             if !subs.is_empty() {
                 inheritance::apply_substitution_to_method(&mut method, &subs);
+            }
+            // Collapse a conditional return type keyed on one of the mixin
+            // class's template params now that their values are known (from
+            // generic args or defaults).  Without this, the conditional's
+            // subject template is unresolvable at the call site — the mixin
+            // origin is lost once the method is merged into the consumer —
+            // and resolution falls back to the else branch.
+            if !template_values.is_empty()
+                && let Some(cond) = method.conditional_return.as_ref()
+                && let Some(resolved) =
+                    crate::completion::conditional_resolution::resolve_conditional_from_values(
+                        cond,
+                        &template_values,
+                    )
+            {
+                method.return_type = Some(resolved);
+                method.conditional_return = None;
             }
             // `@return $this` / `self` / `static` in mixin methods are
             // left as-is.  When the method is later called on the
