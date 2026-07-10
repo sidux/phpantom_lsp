@@ -11936,3 +11936,138 @@ function test(): void {
         "$closure should expose Generator<int, string, mixed, int>-like type, got: {hover}"
     );
 }
+
+// ─── Package provenance badges ──────────────────────────────────────────────
+
+#[test]
+fn hover_core_class_and_member_show_php_provenance() {
+    let backend = create_test_backend_with_full_stubs();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+$e = new RuntimeException("boom");
+$e->getMessage();
+"#;
+
+    let class_hover =
+        hover_text(&hover_at(&backend, uri, content, 1, 13).expect("hover on class")).to_string();
+    assert!(
+        class_hover.contains("🟣 `PHP`"),
+        "core class hover should show the PHP provenance badge, got: {class_hover}"
+    );
+
+    let method_hover =
+        hover_text(&hover_at(&backend, uri, content, 2, 6).expect("hover on method")).to_string();
+    assert!(
+        method_hover.contains("🟣 `PHP`"),
+        "core method hover should show the PHP provenance badge, got: {method_hover}"
+    );
+}
+
+#[test]
+fn hover_core_function_shows_php_provenance() {
+    let backend = create_test_backend_with_full_stubs();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+$len = strlen("hello");
+"#;
+
+    let hover =
+        hover_text(&hover_at(&backend, uri, content, 1, 9).expect("hover on strlen")).to_string();
+    assert!(
+        hover.contains("🟣 `PHP`"),
+        "built-in function hover should show the PHP provenance badge, got: {hover}"
+    );
+}
+
+#[test]
+fn hover_project_symbols_show_no_provenance_badge() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class LocalThing {
+    public function spin(): void {}
+}
+function local_helper(): int { return 1; }
+$t = new LocalThing();
+$t->spin();
+local_helper();
+"#;
+
+    for (line, character, what) in [(5, 12, "class"), (6, 6, "method"), (7, 3, "function")] {
+        let hover = hover_text(
+            &hover_at(&backend, uri, content, line, character)
+                .unwrap_or_else(|| panic!("hover on project {what}")),
+        )
+        .to_string();
+        assert!(
+            !hover.contains('🟣') && !hover.contains('🟢') && !hover.contains('🟠'),
+            "project {what} hover should have no provenance badge, got: {hover}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn hover_vendor_class_shows_package_provenance() {
+    use tower_lsp::LanguageServer;
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    std::fs::write(
+        dir.path().join("composer.json"),
+        r#"{ "name": "demo/project", "require": { "acme/lib": "*" } }"#,
+    )
+    .expect("write composer.json");
+
+    for (pkg, ns, class) in [
+        ("acme/lib", "Acme\\Lib", "Widget"),
+        ("other/dep", "Other\\Dep", "Gadget"),
+    ] {
+        let file = dir.path().join(format!("vendor/{pkg}/src/{class}.php"));
+        std::fs::create_dir_all(file.parent().unwrap()).expect("mkdir pkg");
+        std::fs::write(
+            &file,
+            format!("<?php\nnamespace {ns};\nclass {class} {{}}\n"),
+        )
+        .expect("write vendor class");
+    }
+
+    let composer_dir = dir.path().join("vendor/composer");
+    std::fs::create_dir_all(&composer_dir).expect("mkdir vendor/composer");
+    std::fs::write(
+        composer_dir.join("installed.json"),
+        r#"{
+            "packages": [
+                { "name": "acme/lib", "install-path": "../acme/lib",
+                  "autoload": { "psr-4": { "Acme\\Lib\\": ["src/"] } } },
+                { "name": "other/dep", "install-path": "../other/dep",
+                  "autoload": { "psr-4": { "Other\\Dep\\": ["src/"] } } }
+            ]
+        }"#,
+    )
+    .expect("write installed.json");
+
+    let backend = create_test_backend_with_full_stubs();
+    *backend.workspace_root().write() = Some(dir.path().to_path_buf());
+    backend.initialized(InitializedParams {}).await;
+
+    let uri = "file:///app.php";
+    let content = r#"<?php
+use Acme\Lib\Widget;
+use Other\Dep\Gadget;
+new Widget();
+new Gadget();
+"#;
+
+    let explicit_hover =
+        hover_text(&hover_at(&backend, uri, content, 3, 6).expect("hover on Widget")).to_string();
+    assert!(
+        explicit_hover.contains("🟢 `acme/lib`"),
+        "explicit dependency hover should show the green package badge, got: {explicit_hover}"
+    );
+
+    let transitive_hover =
+        hover_text(&hover_at(&backend, uri, content, 4, 6).expect("hover on Gadget")).to_string();
+    assert!(
+        transitive_hover.contains("🟠 `other/dep` *(transitive)*"),
+        "transitive dependency hover should show the orange transitive badge, got: {transitive_hover}"
+    );
+}

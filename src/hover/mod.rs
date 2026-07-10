@@ -450,16 +450,28 @@ impl Backend {
 
     /// Return a Markdown provenance line for a function by name.
     ///
-    /// Looks up the function's file path in the autoload index and
-    /// resolves the package info from it.
+    /// By the time hover asks for provenance the function has already
+    /// been resolved, so `global_functions` holds its defining URI
+    /// (including `phpantom-stub-fn://` for built-ins). Falls back to
+    /// the autoload index for functions discovered by the byte-level
+    /// scan but not yet parsed.
     pub(crate) fn provenance_line_for_function(&self, func_name: &str) -> Option<String> {
-        let path = self.autoload_function_index.read().get(func_name).cloned();
-        if let Some(path) = path {
-            let (origin, pkg_name) = self.package_info_for_path(&path);
-            format_provenance_line(origin, pkg_name.as_deref())
-        } else {
-            None
+        let uri = self
+            .global_functions
+            .read()
+            .get(func_name)
+            .map(|(uri, _)| uri.clone());
+        if let Some(uri) = uri {
+            let (origin, pkg_name) = self.package_info_for_uri(&uri);
+            return format_provenance_line(origin, pkg_name.as_deref());
         }
+        let path = self
+            .autoload_function_index
+            .read()
+            .get(func_name)
+            .cloned()?;
+        let (origin, pkg_name) = self.package_info_for_path(&path);
+        format_provenance_line(origin, pkg_name.as_deref())
     }
 
     /// Handle a `textDocument/hover` request.

@@ -776,11 +776,12 @@ async fn test_class_name_completion_use_import_has_higher_sort_priority() {
 
     let widget_item = find_by_fqn(&classes, "Acme\\Widget").unwrap();
     let sort = widget_item.sort_text.as_deref().unwrap_or("");
-    // New format: {quality}{origin}{tier}{affinity:4}{demote}_{name}
-    // Tier '0' = use-imported, at position 2.
+    // Format: {quality}{source}{origin}{affinity:4}{demote}{gap:3}_{name}
+    // Source tier '0' = use-imported, at position 1 (source_tier sorts
+    // before origin_tier).
     assert!(
-        sort.len() > 2 && &sort[2..3] == "0",
-        "Use-imported classes should have source tier '0' at position 2, got: {:?}",
+        sort.len() > 1 && &sort[1..2] == "0",
+        "Use-imported classes should have source tier '0' at position 1, got: {:?}",
         sort
     );
 }
