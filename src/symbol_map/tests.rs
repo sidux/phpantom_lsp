@@ -3477,6 +3477,17 @@ fn see_tag_qualified_member_spans_aligned() {
         class_offset + "App\\Foo".len() as u32,
         "class span end must not overshoot by the synthetic prefix"
     );
+    // The qualified reference must be marked fully-qualified so downstream
+    // consumers do not re-prefix the current namespace and double it.
+    match hit.kind {
+        SymbolKind::ClassReference {
+            ref name, is_fqn, ..
+        } => {
+            assert_eq!(name, "App\\Foo");
+            assert!(is_fqn, "qualified @see class reference must be is_fqn");
+        }
+        ref other => panic!("Expected ClassReference for App\\Foo, got {:?}", other),
+    }
 
     // Member portion: lookup at the exact `bar` offset must succeed (a
     // one-byte shift would make this miss).

@@ -1443,7 +1443,12 @@ fn emit_see_reference(reference: &str, file_offset: u32, spans: &mut Vec<SymbolS
         // original source bytes.
         let class_start = file_offset;
         let class_end = file_offset + class_part.len() as u32 - prefix_len;
-        emit_identifier_span(clean_class, class_start, class_end, spans);
+        // Pass `class_part` (which keeps any leading `\`, including the
+        // synthetic one prepended above) so the emitted ClassReference
+        // carries the correct `is_fqn` flag. Passing the stripped
+        // `clean_class` would drop the flag and make downstream
+        // consumers re-prefix the current namespace, doubling it.
+        emit_identifier_span(class_part, class_start, class_end, spans);
 
         // Emit a MemberAccess span for the member portion.
         let member_start = file_offset + sep_pos as u32 + 2 - prefix_len;

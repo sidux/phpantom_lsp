@@ -3756,7 +3756,7 @@ pub(crate) fn is_keyword_type(name: &str) -> bool {
             | "enum-string"
             // ── Array / list refinements ────────────────────────────
             | "associative-array"
-        // ── Scalar / mixed variants ─────────────────────────────
+            // ── Scalar / mixed variants ─────────────────────────────
             | "mixed"
             | "empty-scalar"
             | "non-empty-scalar"
