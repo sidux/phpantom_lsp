@@ -292,6 +292,19 @@ fn check_scope(
                 continue;
             }
 
+            // Skip variables captured by reference (`use (&$var)`).
+            // A write to a by-reference capture inside the closure
+            // propagates to the outer scope, so the variable is never
+            // truly unused within the closure frame even if it is only
+            // written (and never read) here.
+            if frame
+                .captures
+                .iter()
+                .any(|(name, by_ref)| *by_ref && name == var_name)
+            {
+                continue;
+            }
+
             // Skip $loop in Blade files — it's injected by the
             // preprocessor for every @foreach/@forelse and may not
             // be explicitly referenced in the template body.
@@ -1114,6 +1127,71 @@ function foo($query) {
         assert!(
             !diags.iter().any(|d| d.message.contains("$q")),
             "closure param should not leak to outer scope: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_by_reference_capture_written_in_closure() {
+        // A variable captured by reference and written inside the
+        // closure is not unused: the write propagates to the outer
+        // scope through the reference.
+        let diags = collect(
+            r#"<?php
+function foo() {
+    $lastId = null;
+    $fn = function () use (&$lastId): void { $lastId = 5; };
+    $fn();
+    return $lastId;
+}
+"#,
+        );
+        assert!(
+            !diags.iter().any(|d| d.message.contains("$lastId")),
+            "by-reference capture should not be flagged unused: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_by_reference_capture_only_written() {
+        // Even when the outer variable is never read after the closure,
+        // the by-reference capture counts as a use (conservatively).
+        let diags = collect(
+            r#"<?php
+function foo(array $items) {
+    $total = 0;
+    array_walk($items, function ($item) use (&$total): void {
+        $total += $item;
+    });
+    echo $total;
+}
+"#,
+        );
+        assert!(
+            !diags.iter().any(|d| d.message.contains("$total")),
+            "by-reference capture accumulator should not be flagged: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn still_flags_by_value_capture_reassigned_but_unread() {
+        // A by-value capture reassigned inside the closure but never
+        // read there is a genuine dead write — the reassignment does
+        // not escape the closure, so it should still be flagged.
+        let diags = collect(
+            r#"<?php
+function foo() {
+    $x = 1;
+    $fn = function () use ($x): void { $x = 5; };
+    $fn();
+}
+"#,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("$x")),
+            "dead by-value capture write should still be flagged: {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }

@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Variables captured by reference in a closure are no longer flagged as unused.** A local variable captured with `use (&$var)` and written inside the closure (e.g. an accumulator passed to `array_walk`) is now recognized as used, since the write propagates back to the outer scope through the reference.
 - **A string literal naming a class satisfies a `class-string<Bound>` parameter.** Passing a quoted class name, such as `$this->expectException('RuntimeException')`, no longer reports a type mismatch when the named class satisfies the expected bound. The diagnostic still fires when the literal names a class that is provably unrelated to the bound.
 - **Passing a class constant to a generic parameter infers the constant's value type.** A call like `static::assertSame(Command::INVALID, $exitCode)` where `INVALID` is an untyped `int` constant now binds the template parameter to `int` instead of the constant's owning class, so it no longer reports a spurious "expects Command, got int" mismatch on the second argument.
 - **Passing a class name to a `class-string<T>` generic parameter infers the class, not the string type.** Calls like `$this->assertInstanceOf('Iterator', $value)` bind the template to the class the argument names, so the parameter no longer resolves to the nonsensical `class-string<string>`. A bare `class-string` value is likewise accepted, resolving the parameter to `class-string<object>` rather than reporting a spurious mismatch.

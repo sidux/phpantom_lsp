@@ -118,9 +118,9 @@ pub(crate) struct Frame {
     /// Variables explicitly captured via `use($x, &$y)` in closures.
     /// Each entry is `(name_with_dollar, is_by_reference)`.
     ///
-    /// Populated during collection; will be read by Extract Function
+    /// Populated during collection; read by the unused-variable
+    /// diagnostic to skip by-reference captures, and by Extract Function
     /// to detect closure captures that cross extraction boundaries.
-    #[allow(dead_code)] // infrastructure for Extract Function closure-aware extraction
     pub captures: Vec<(String, bool)>,
     /// Parameter names (with `$` prefix) declared on this frame.
     ///

@@ -15,26 +15,6 @@ errors the bug accounts for across the sample projects and are
 approximate — fixing an upstream bug often clears cascading
 errors attributed to other buckets.
 
-## B54. Variables captured by reference in closures are flagged unused
-
-**Severity: Medium (unused_variable FP) · Reproduced**
-
-```php
-$lastId = null;
-$fn = function () use (&$lastId): void { $lastId = 5; };
-$fn();
-return $lastId;    // "Unused variable '$lastId'" on the init line
-```
-
-Real-world: luxplus-backoffice
-`app/Jobs/Elastic/ReindexCustomers.php:58` (init + by-ref capture
-+ read after the closure). A `use (&$var)` capture must count as
-a use (conservatively: both read and write) of the outer
-variable.
-
-**Fix:** in the unused-variable scan, treat by-reference closure
-captures as uses of the captured variable.
-
 ## B55. Union-typed unknown-member check ignores `__call` catch-alls
 
 **Severity: Low-Medium (5+ errors, Mockery-heavy test suites) · Confirmed from output**
