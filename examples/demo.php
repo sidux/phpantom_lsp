@@ -365,6 +365,32 @@ class StaticAssertNarrowingDemo
     }
 }
 
+// ── Inherited Assert Narrowing (PHPUnit shape) ─────────────────────────────
+
+// The assert method is declared on the parent (StaticAssert); narrowing
+// still applies when it is reached through inheritance, exactly like a
+// PHPUnit test case calling the inherited `assertInstanceOf`.
+class InheritedAssertNarrowingDemo extends StaticAssert
+{
+    public function demo(): void
+    {
+        // $this-> on an inherited assert method
+        $viaThis = getUnknownValue();
+        $this->assertRock($viaThis);
+        $viaThis->crush();                        // narrowed to Rock
+
+        // self:: on an inherited assert method
+        $viaSelf = getUnknownValue();
+        self::assertRock($viaSelf);
+        $viaSelf->crush();                        // narrowed to Rock
+
+        // static:: on an inherited assert method
+        $viaStatic = getUnknownValue();
+        static::assertRock($viaStatic);
+        $viaStatic->crush();                      // narrowed to Rock
+    }
+}
+
 
 // ── Guard Clause Narrowing (Early Return / Throw) ──────────────────────────
 

@@ -391,12 +391,23 @@ pub fn extract_type_assertions_from_info(info: &DocblockInfo) -> Vec<TypeAsserti
             continue;
         }
 
-        // Check for negation: `!Type $param`
-        let (negated, rest) = if let Some(r) = desc.strip_prefix('!') {
-            (true, r.trim_start())
-        } else {
-            (false, desc)
-        };
+        // Strip leading assertion-type modifiers in any order: `!` marks a
+        // negated assertion; `=` marks an exact-type assertion (PHPUnit's
+        // `assertInstanceOf`, `assertSame`, etc. use `=ExpectedType`).  For
+        // narrowing purposes the exact form behaves the same as the default
+        // subtype form, so the `=` is dropped.
+        let mut rest = desc;
+        let mut negated = false;
+        loop {
+            if let Some(r) = rest.strip_prefix('!') {
+                negated = !negated;
+                rest = r.trim_start();
+            } else if let Some(r) = rest.strip_prefix('=') {
+                rest = r.trim_start();
+            } else {
+                break;
+            }
+        }
 
         // Next token is the type (which may contain spaces in generics).
         let (type_str, remainder) = split_type_token(rest);
@@ -2171,6 +2182,32 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert!(result[0].negated);
         assert_eq!(result[0].asserted_type.to_string(), "Collection<int, User>");
+    }
+
+    #[test]
+    fn assert_exact_type_prefix_is_stripped() {
+        // PHPUnit's `assertInstanceOf` ships `@phpstan-assert =ExpectedType`.
+        let doc = "/** @phpstan-assert =ExpectedType $actual */";
+        let result = extract_type_assertions(doc);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].asserted_type.to_string(), "ExpectedType");
+        assert_eq!(result[0].param_name, "$actual");
+        assert!(!result[0].negated);
+    }
+
+    #[test]
+    fn assert_negated_exact_type_prefix() {
+        // Both modifiers together, in either order, are stripped and the
+        // negation is preserved.
+        for doc in [
+            "/** @phpstan-assert !=Foobar $actual */",
+            "/** @phpstan-assert =!Foobar $actual */",
+        ] {
+            let result = extract_type_assertions(doc);
+            assert_eq!(result.len(), 1, "doc: {doc}");
+            assert_eq!(result[0].asserted_type.to_string(), "Foobar", "doc: {doc}");
+            assert!(result[0].negated, "doc: {doc}");
+        }
     }
 
     #[test]

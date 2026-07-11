@@ -685,37 +685,181 @@ fn extract_call_assertions<'a>(
             })
         }
         Call::StaticMethod(static_call) => {
-            let class_name = match static_call.class {
-                Expression::Identifier(ident) => bytes_to_str(ident.value()).to_string(),
-                Expression::Self_(_) | Expression::Static(_) => ctx.current_class.name.to_string(),
-                _ => return None,
-            };
             let method_name = match &static_call.method {
-                ClassLikeMemberSelector::Identifier(ident) => bytes_to_str(ident.value).to_string(),
+                ClassLikeMemberSelector::Identifier(ident) => bytes_to_str(ident.value),
                 _ => return None,
             };
-            let class_info = (ctx.class_loader)(&class_name)?;
-            let method = class_info
-                .methods
-                .iter()
-                .find(|m| m.name == method_name && m.is_static)?
-                .clone();
-            if method.type_assertions.is_empty() {
-                return None;
-            }
-            // Leak MethodInfo to get a stable reference for the duration
-            // of this narrowing pass.
-            let method = Box::leak(Box::new(method));
-            Some(CallAssertionInfo {
-                assertions: &method.type_assertions,
-                parameters: &method.parameters,
-                argument_list: &static_call.argument_list,
-                template_params: &method.template_params,
-                template_bindings: &method.template_bindings,
-            })
+            let class_info = resolve_static_receiver_class(static_call.class, ctx)?;
+            build_method_assertion_info(&class_info, method_name, &static_call.argument_list, ctx)
+        }
+        Call::Method(method_call) => {
+            let method_name = match &method_call.method {
+                ClassLikeMemberSelector::Identifier(ident) => bytes_to_str(ident.value),
+                _ => return None,
+            };
+            let class_info = resolve_instance_receiver_class(method_call.object, ctx)?;
+            build_method_assertion_info(&class_info, method_name, &method_call.argument_list, ctx)
+        }
+        Call::NullSafeMethod(method_call) => {
+            let method_name = match &method_call.method {
+                ClassLikeMemberSelector::Identifier(ident) => bytes_to_str(ident.value),
+                _ => return None,
+            };
+            let class_info = resolve_instance_receiver_class(method_call.object, ctx)?;
+            build_method_assertion_info(&class_info, method_name, &method_call.argument_list, ctx)
+        }
+    }
+}
+
+/// Resolve the receiver class of a static method call (the `X` in
+/// `X::method()`) to a loaded [`ClassInfo`].
+///
+/// Handles class-name identifiers (including subclass names), `self`,
+/// `static`, and `parent`.  The returned class is the raw parsed class;
+/// callers resolve inheritance separately so that methods declared on an
+/// ancestor (e.g. PHPUnit's `Assert::assertInstanceOf`) are found.
+fn resolve_static_receiver_class(
+    class_expr: &Expression<'_>,
+    ctx: &VarResolutionCtx<'_>,
+) -> Option<Arc<ClassInfo>> {
+    match class_expr {
+        Expression::Identifier(ident) => {
+            let name = bytes_to_str(ident.value());
+            let fqn = crate::util::resolve_name_via_loader(name, ctx.class_loader);
+            (ctx.class_loader)(&fqn).or_else(|| (ctx.class_loader)(name))
+        }
+        Expression::Self_(_) | Expression::Static(_) => (ctx.class_loader)(&ctx.current_class.name),
+        Expression::Parent(_) => {
+            let parent = ctx.current_class.parent_class.as_ref()?;
+            (ctx.class_loader)(parent)
         }
         _ => None,
     }
+}
+
+/// Resolve the receiver class of an instance method call (the `$x` in
+/// `$x->method()`) to a loaded [`ClassInfo`].
+///
+/// `$this` resolves to the enclosing class.  Other variables are resolved
+/// through the forward walker's scope so that, for example,
+/// `$test->assertInstanceOf(...)` narrows correctly.
+fn resolve_instance_receiver_class(
+    object_expr: &Expression<'_>,
+    ctx: &VarResolutionCtx<'_>,
+) -> Option<Arc<ClassInfo>> {
+    let Expression::Variable(Variable::Direct(dv)) = object_expr else {
+        return None;
+    };
+    // Variable names carry the leading `$` (e.g. `$this`, `$obj`).
+    let name = bytes_to_str(dv.name);
+    if name == "$this" {
+        return (ctx.class_loader)(&ctx.current_class.name);
+    }
+    let resolver = ctx.scope_var_resolver?;
+    let first = resolver(name).into_iter().next()?;
+    (ctx.class_loader)(&first.type_string.to_string())
+}
+
+/// Build [`CallAssertionInfo`] for a method call once the receiver class
+/// has been resolved.
+///
+/// Walks the receiver's trait and parent chain (using raw class loads) so
+/// that assertion annotations declared on an ancestor are found — e.g.
+/// PHPUnit's `assertInstanceOf`, declared on the base `Assert` class and
+/// called through a `TestCase` subclass.  Returns `None` when no
+/// reachable definition of the method carries assertions.
+///
+/// A full inheritance merge is deliberately avoided here: this runs inside
+/// the forward walker while the enclosing class may itself be mid-resolution,
+/// and `resolve_class_fully` would write a partial result into the shared
+/// resolved-class cache, corrupting later member lookups.
+fn build_method_assertion_info<'a>(
+    class: &ClassInfo,
+    method_name: &str,
+    argument_list: &'a ArgumentList<'a>,
+    ctx: &VarResolutionCtx<'_>,
+) -> Option<CallAssertionInfo<'a>> {
+    let method =
+        find_assertion_method_in_chain(class, method_name, ctx.class_loader, &mut Vec::new(), 0)?;
+    // Leak MethodInfo to get a stable reference for the duration of this
+    // narrowing pass.
+    let method = Box::leak(Box::new(method));
+    Some(CallAssertionInfo {
+        assertions: &method.type_assertions,
+        parameters: &method.parameters,
+        argument_list,
+        template_params: &method.template_params,
+        template_bindings: &method.template_bindings,
+    })
+}
+
+/// Find the definition of `method_name` that carries `@phpstan-assert`
+/// metadata, searching the class's own methods, its traits, and its parent
+/// chain (in PHP resolution order).  Uses raw class loads only, so it never
+/// mutates the shared resolved-class cache.
+///
+/// Returns an owned clone of the first matching method that has non-empty
+/// `type_assertions`.  A `visited` set and `depth` bound guard against
+/// cyclic hierarchies.
+pub(in crate::completion) fn find_assertion_method_in_chain(
+    class: &ClassInfo,
+    method_name: &str,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    visited: &mut Vec<Atom>,
+    depth: usize,
+) -> Option<crate::types::MethodInfo> {
+    if depth > 15 {
+        return None;
+    }
+    let fqn = class.fqn();
+    if visited.contains(&fqn) {
+        return None;
+    }
+    visited.push(fqn);
+
+    // Own methods first: the most-derived definition wins.  A derived
+    // override with its own assertions takes precedence; an override with
+    // no docblock falls through so an ancestor's assertions can apply
+    // (matching how inheritance propagates assertion metadata).
+    if let Some(method) = class
+        .methods
+        .iter()
+        .find(|m| m.name.eq_ignore_ascii_case(method_name))
+        && !method.type_assertions.is_empty()
+    {
+        return Some(method.as_ref().clone());
+    }
+
+    // Traits mixed into this class.
+    for trait_name in &class.used_traits {
+        if let Some(trait_class) = class_loader(trait_name)
+            && let Some(method) = find_assertion_method_in_chain(
+                &trait_class,
+                method_name,
+                class_loader,
+                visited,
+                depth + 1,
+            )
+        {
+            return Some(method);
+        }
+    }
+
+    // Parent class chain.
+    if let Some(parent) = class.parent_class.as_ref()
+        && let Some(parent_class) = class_loader(parent)
+        && let Some(method) = find_assertion_method_in_chain(
+            &parent_class,
+            method_name,
+            class_loader,
+            visited,
+            depth + 1,
+        )
+    {
+        return Some(method);
+    }
+
+    None
 }
 
 /// Apply narrowing from `@phpstan-assert` / `@psalm-assert` annotations

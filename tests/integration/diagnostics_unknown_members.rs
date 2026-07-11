@@ -4145,6 +4145,82 @@ class Consumer {
     );
 }
 
+/// A generic `@phpstan-assert` on a static method declared on a base
+/// class must narrow when called through a subclass via `$this->`,
+/// `static::`, and `self::` (the PHPUnit `assertInstanceOf` shape).
+/// Previously the metadata was only found when the call named the
+/// declaring class directly, producing false `unresolved-member-access`
+/// positives across PHPUnit-based test suites.
+#[test]
+fn scope_cache_phpstan_assert_inherited_narrows_via_this_static_self() {
+    let backend = create_test_backend();
+    {
+        let mut cfg = backend.config();
+        cfg.diagnostics.unresolved_member_access = Some(true);
+        backend.set_config(cfg);
+    }
+    let uri = "file:///test.php";
+    let text = r#"<?php
+class Node {
+    public function getName(): string { return ''; }
+}
+class BaseAssert {
+    /**
+     * @template ExpectedType of object
+     * @param class-string<ExpectedType> $expected
+     * @phpstan-assert ExpectedType $actual
+     */
+    public static function assertInstanceOf(string $expected, object $actual): void {}
+}
+class NodeTest extends BaseAssert {
+    public function testThis(mixed $v): void {
+        $this->assertInstanceOf(Node::class, $v);
+        $v->getName();
+    }
+    public function testStatic(mixed $v): void {
+        static::assertInstanceOf(Node::class, $v);
+        $v->getName();
+    }
+    public function testSelf(mixed $v): void {
+        self::assertInstanceOf(Node::class, $v);
+        $v->getName();
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics_with_scope_cache(&backend, uri, text);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("getName")),
+        "No diagnostic expected for 'getName' after inherited assertInstanceOf via \
+         $this->/static::/self::, got: {diags:?}",
+    );
+}
+
+/// An exact-type assertion `@phpstan-assert =Type $x` must not emit a
+/// bogus `Class '=Type' not found` diagnostic on the docblock.
+#[test]
+fn exact_type_assertion_prefix_does_not_emit_unknown_class() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+class Foobar {
+    public function fooMethod(): void {}
+}
+class Asserter {
+    /**
+     * @phpstan-assert =Foobar $actual
+     */
+    public function assertIsFoobar(object $actual): void {}
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_slow_diagnostics(uri, text, &mut diags);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("=Foobar")),
+        "No unknown-class diagnostic expected for the `=` exact-type prefix, got: {diags:?}",
+    );
+}
+
 /// Members accessed BEFORE the assert should still be diagnosed when
 /// they don't exist on the pre-assert type.
 #[test]

@@ -8177,30 +8177,45 @@ fn apply_phpstan_assert_condition_narrowing<'b>(
             }
         }
         Call::StaticMethod(static_call) => {
-            let class_name = match static_call.class {
-                Expression::Identifier(ident) => bytes_to_str(ident.value()).to_string(),
-                Expression::Self_(_) | Expression::Static(_) => ctx.current_class.name.to_string(),
-                _ => return,
-            };
             let method_name = match &static_call.method {
                 ClassLikeMemberSelector::Identifier(ident) => bytes_to_str(ident.value).to_string(),
                 _ => return,
             };
-            let class_info = match (ctx.class_loader)(&class_name) {
+            // Resolve the receiver to a class, handling `self`, `static`,
+            // `parent`, and subclass names.
+            let receiver = match static_call.class {
+                Expression::Identifier(ident) => {
+                    let name = bytes_to_str(ident.value());
+                    let fqn = crate::util::resolve_name_via_loader(name, ctx.class_loader);
+                    (ctx.class_loader)(&fqn).or_else(|| (ctx.class_loader)(name))
+                }
+                Expression::Self_(_) | Expression::Static(_) => {
+                    (ctx.class_loader)(&ctx.current_class.name)
+                }
+                Expression::Parent(_) => match ctx.current_class.parent_class.as_ref() {
+                    Some(parent) => (ctx.class_loader)(parent),
+                    None => return,
+                },
+                _ => return,
+            };
+            let class_info = match receiver {
                 Some(ci) => ci,
                 None => return,
             };
-            let method = match class_info
-                .methods
-                .iter()
-                .find(|m| m.name == method_name && m.is_static)
-            {
-                Some(m) => m.clone(),
+            // Search the trait/parent chain so assertions declared on an
+            // ancestor (e.g. PHPUnit's `Assert`) are found.  Uses raw class
+            // loads only, avoiding a full merge that would poison the shared
+            // resolved-class cache mid-walk.
+            let method = match narrowing::find_assertion_method_in_chain(
+                &class_info,
+                &method_name,
+                ctx.class_loader,
+                &mut Vec::new(),
+                0,
+            ) {
+                Some(m) => m,
                 None => return,
             };
-            if method.type_assertions.is_empty() {
-                return;
-            }
             for assertion in &method.type_assertions {
                 let applies_positively = match assertion.kind {
                     AssertionKind::IfTrue => function_returned_true,
@@ -8264,17 +8279,22 @@ fn apply_phpstan_assert_condition_narrowing<'b>(
             // Collect assertions from all candidate classes.
             let mut to_apply: Vec<(crate::php_type::PhpType, bool, String)> = Vec::new();
             for rt in receiver_types {
-                let class_info = match (ctx.class_loader)(&rt.type_string.to_string()) {
+                let receiver = match (ctx.class_loader)(&rt.type_string.to_string()) {
                     Some(ci) => ci,
                     None => {
                         continue;
                     }
                 };
-                let method = match class_info
-                    .methods
-                    .iter()
-                    .find(|m| m.name == method_name && !m.is_static)
-                {
+                // Search the trait/parent chain for the method's assertions
+                // using raw class loads only (a full merge would poison the
+                // shared resolved-class cache mid-walk).
+                let method = match narrowing::find_assertion_method_in_chain(
+                    &receiver,
+                    &method_name,
+                    ctx.class_loader,
+                    &mut Vec::new(),
+                    0,
+                ) {
                     Some(m) => m,
                     None => continue,
                 };
@@ -8292,7 +8312,7 @@ fn apply_phpstan_assert_condition_narrowing<'b>(
                     // `Decimal::isZero()` would narrow $denominator to
                     // `Monetary` instead of `Decimal`.
                     let resolved_type = if assertion.asserted_type.contains_self_ref() {
-                        assertion.asserted_type.replace_self(&class_info.fqn())
+                        assertion.asserted_type.replace_self(&receiver.fqn())
                     } else {
                         assertion.asserted_type.clone()
                     };

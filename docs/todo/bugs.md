@@ -15,47 +15,6 @@ errors the bug accounts for across the sample projects and are
 approximate — fixing an upstream bug often clears cascading
 errors attributed to other buckets.
 
-## B44. `@phpstan-assert` narrowing only applies when called via the declaring class name
-
-**Severity: High (~200+ false positives; the largest single bucket) · Reproduced**
-
-A static method with `@template T of object`, `@param
-class-string<T> $expected`, and `@phpstan-assert T $actual`
-narrows `$actual` only when invoked as
-`DeclaringClass::assertInstanceOf(...)`. The same call via
-`self::`, `static::`, `$this->`, or a subclass name
-(`Sub::assertInstanceOf(...)`) performs no narrowing, so the
-variable stays `mixed`/unresolved afterwards.
-
-This is exactly the PHPUnit shape: `assertInstanceOf` is declared
-on `PHPUnit\Framework\Assert` and always called through a
-`TestCase` subclass as `static::assertInstanceOf(X::class, $v)`
-or `$this->assertInstanceOf(...)`. Dominates the pdepend and
-phpmd test suites (`$copy = unserialize(...)` +
-`assertInstanceOf` alone is ~25 errors; the PHP 8.x feature test
-files are ~60 more) and appears in the Luxplus projects.
-
-Repro: declare the asserter above, subclass it, call
-`self::assertInstanceOf(Node::class, $v)` on a `mixed $v`, then
-`$v->getName()` → `unresolved_member_access`. Calling via the
-declaring class name works.
-
-Note: PHPUnit needs no stubs or patches for this — since ~9.5 it
-ships the assertion annotations natively (`@psalm-assert
-=ExpectedType` on PHPUnit 10, `@phpstan-assert =ExpectedType` on
-11+, verified in the pdepend/phpmd/luxplus vendor dirs). The
-PHPUnit test-suite errors are this bug compounded with B61 (the
-`=` prefix is not parsed); both must be fixed. Only projects on
-ancient PHPUnit (< 9.5, no annotations) would need a stub patch
-via the external-stubs system (`docs/todo/external-stubs.md`) —
-that is a follow-up, not part of this fix.
-
-**Fix:** resolve the assertion metadata through the same
-class-loading path used for the call itself (merged/inherited
-method lookup), not just a direct name match on the receiver
-text. `self`, `static`, `parent`, `$this`, and subclass receivers
-must all find `type_assertions` on the declaring method.
-
 ## B45. No narrowing of property or method-call subjects inside ternary conditions
 
 **Severity: High (widespread in pdepend/phpmd src + Laravel projects) · Reproduced**
@@ -361,30 +320,3 @@ shared binding path.
 **Fix:** confirm with a minimal facade fixture, then bind
 method-level templates from closure literal return types in the
 same place existing `@method` template inference runs.
-
-## B61. Exact-type assertion prefix `=` is not parsed
-
-**Severity: High (blocks all PHPUnit narrowing even after B44) · Reproduced**
-
-`@phpstan-assert =T $actual` and `@psalm-assert =ExpectedType
-$actual` (the "exact type, no subtype widening" form) are not
-recognized: the `=` is kept as part of the type name, producing a
-bogus `unknown_class` diagnostic on the docblock ("Class '=T' not
-found") and no narrowing at the call site. The plain form
-(`@psalm-assert T $actual`) works.
-
-This is the exact form PHPUnit ships: PHPUnit 10 uses
-`@psalm-assert =ExpectedType $actual` and PHPUnit 11+ uses
-`@phpstan-assert =ExpectedType $actual` on `assertInstanceOf`,
-`assertSame`, and friends — so every vendored PHPUnit in the
-sample projects hits this. Repro: copy PHPUnit's
-`assertInstanceOf` docblock onto a stub class and call it via the
-declaring class name; narrowing fails and the `=T` unknown-class
-error appears on the declaration.
-
-**Fix:** strip the leading `=` when parsing assertion types (for
-narrowing purposes exact and subtype asserts behave the same) in
-the `@phpstan-assert` / `@psalm-assert` family, including the
-`-if-true` / `-if-false` variants, and make sure docblock type
-spans for these tags don't feed the unknown-class diagnostic with
-the raw `=`-prefixed token.

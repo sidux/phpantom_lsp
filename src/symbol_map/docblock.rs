@@ -291,7 +291,10 @@ fn emit_type_first_tag(
     let raw = &docblock[desc_start_in_docblock..];
     let first_nl = raw.find('\n').unwrap_or(raw.len());
     let first_line = &raw[..first_nl];
-    let trimmed = first_line.trim_start();
+    // Skip leading `@phpstan-assert` / `@psalm-assert` type modifiers
+    // (`!` negation, `=` exact-type) so they aren't emitted as bogus
+    // class-name references (e.g. `Class '=T' not found`).
+    let trimmed = first_line.trim_start().trim_start_matches(['!', '=']);
     if trimmed.is_empty() {
         return;
     }
