@@ -27,7 +27,6 @@ within the same impact tier.
 | --- | --------------------------------------------------------------------------------------------------------------------- | ---------- | ------ |
 | B60 | [Template binding from closure returns through facade `@method`](todo/bugs.md#b60-template-binding-from-closure-return-types-through-facade-method-tags)       | Medium-High | Medium      |
 | L18 | [`Storage::disk()` return type — resolve from config, don't guess](todo/laravel.md#l18-storagedisk-return-type-is-genuinely-polymorphic--resolve-from-config-dont-guess) | Medium-High | Low-Medium  |
-| B51 | [String literal naming a class rejected by `class-string<Bound>`](todo/bugs.md#b51-string-literal-naming-a-class-rejected-by-class-stringbound)                | Medium      | Low         |
 | B54 | [By-ref closure captures flagged as unused variables](todo/bugs.md#b54-variables-captured-by-reference-in-closures-are-flagged-unused)                         | Medium      | Low         |
 | B52 | [String literals bind class-string templates to the string type](todo/bugs.md#b52-string-literals-bind-class-string-templates-to-the-string-type)              | Medium      | Low-Medium  |
 | B53 | [`Class::CONST` args bind templates to the class, not the constant type](todo/bugs.md#b53-template-binding-from-classconst-arguments-binds-the-class-not-the-constant-type) | Medium      | Low-Medium  |

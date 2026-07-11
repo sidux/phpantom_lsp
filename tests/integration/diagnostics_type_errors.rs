@@ -1480,6 +1480,103 @@ function test(): void {
     );
 }
 
+#[test]
+fn no_diagnostic_for_string_literal_naming_subclass() {
+    let php = r#"<?php
+class Animal {}
+class Cat extends Animal {}
+
+/** @param class-string<Animal> $cls */
+function takes_animal_class(string $cls): void {}
+
+function test(): void {
+    takes_animal_class('Cat');
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "Should not flag string literal 'Cat' passed to class-string<Animal>, got: {diags:?}"
+    );
+}
+
+#[test]
+fn no_diagnostic_for_string_literal_naming_bound_class_itself() {
+    let php = r#"<?php
+class Animal {}
+
+/** @param class-string<Animal> $cls */
+function takes_animal_class(string $cls): void {}
+
+function test(): void {
+    takes_animal_class('Animal');
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "Should not flag string literal 'Animal' passed to class-string<Animal>, got: {diags:?}"
+    );
+}
+
+#[test]
+fn no_diagnostic_for_unresolvable_string_literal_class_string() {
+    let php = r#"<?php
+class Animal {}
+
+/** @param class-string<Animal> $cls */
+function takes_animal_class(string $cls): void {}
+
+function test(): void {
+    takes_animal_class('SomeUnknownClass');
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "Should stay silent when the string literal can't be resolved to a class, got: {diags:?}"
+    );
+}
+
+#[test]
+fn flags_string_literal_naming_unrelated_class() {
+    let php = r#"<?php
+class Animal {}
+class Vehicle {}
+
+/** @param class-string<Animal> $cls */
+function takes_animal_class(string $cls): void {}
+
+function test(): void {
+    takes_animal_class('Vehicle');
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        has_type_error(&diags),
+        "Should flag string literal 'Vehicle' passed to class-string<Animal>, got: {diags:?}"
+    );
+}
+
+#[test]
+fn no_diagnostic_for_string_literal_class_name_expect_exception() {
+    let php = r#"<?php
+class TestCase {
+    /** @param class-string<\Throwable> $exception */
+    function expectException(string $exception): void {}
+
+    function test(): void {
+        $this->expectException('RuntimeException');
+    }
+}
+"#;
+    let diags = collect_with_full_stubs(php);
+    assert!(
+        !has_type_error(&diags),
+        "Should not flag 'RuntimeException' passed to class-string<Throwable>, got: {diags:?}"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // New rules: iterable<...> accepts arrays
 // ═══════════════════════════════════════════════════════════════════════════

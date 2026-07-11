@@ -1254,6 +1254,40 @@ pub(crate) fn is_subtype_of_typed(
         return is_subtype_of_typed(sub_inner, sup_inner, class_loader);
     }
 
+    // ── String literal <: class-string<Bound> ────────────────────
+    // A string literal that names an existing class satisfying the
+    // bound is a valid `class-string<Bound>`, e.g. passing
+    // `'RuntimeException'` where `class-string<Throwable>` is
+    // expected.  Stay silent (return true) whenever the literal's
+    // content cannot be resolved to a class — it may simply live in
+    // a file we haven't indexed — and only reject when the resolved
+    // class provably fails to satisfy the bound.
+    if let PhpType::Literal(crate::php_type::LiteralValue::String(_)) = subtype
+        && matches!(
+            supertype,
+            PhpType::ClassString(_) | PhpType::InterfaceString(_)
+        )
+    {
+        let PhpType::Literal(lit) = subtype else {
+            unreachable!()
+        };
+        let Some(class_name) = lit.string_content() else {
+            return true;
+        };
+        let Some(cls) = class_loader(class_name) else {
+            return true;
+        };
+        return match supertype {
+            PhpType::ClassString(Some(bound)) | PhpType::InterfaceString(Some(bound)) => {
+                match bound.base_name() {
+                    Some(bound_name) => is_subtype_of(&cls, bound_name, class_loader),
+                    None => true,
+                }
+            }
+            _ => true,
+        };
+    }
+
     // ── Nominal class hierarchy check ───────────────────────────
     // Both sides must resolve to a class name for the hierarchy walk.
     let sub_name = subtype.base_name();

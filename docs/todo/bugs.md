@@ -15,20 +15,6 @@ errors the bug accounts for across the sample projects and are
 approximate — fixing an upstream bug often clears cascading
 errors attributed to other buckets.
 
-## B51. String literal naming a class rejected by `class-string<Bound>`
-
-**Severity: Medium (31 errors in pdepend) · Reproduced**
-
-`$this->expectException('RuntimeException')` reports "expects
-class-string<Throwable>, got 'RuntimeException'". A string
-literal that names an existing class satisfying the bound is a
-valid `class-string<Bound>`.
-
-**Fix:** when the argument is a string literal and the param is
-`class-string<Bound>`, resolve the literal's content as a class
-name; stay silent when it resolves to a subtype of the bound (or
-when it cannot be resolved); flag only a provable non-subtype.
-
 ## B52. String literals bind class-string templates to the string type
 
 **Severity: Medium (~25 errors in pdepend/phpmd/api-php) · Reproduced**
