@@ -15,34 +15,6 @@ errors the bug accounts for across the sample projects and are
 approximate — fixing an upstream bug often clears cascading
 errors attributed to other buckets.
 
-## B45. No narrowing of property or method-call subjects inside ternary conditions
-
-**Severity: High (widespread in pdepend/phpmd src + Laravel projects) · Reproduced**
-
-`$this->node instanceof Artifact ? $this->node->getCompilationUnit() : null`
-flags `getCompilationUnit` as unknown on the declared type — the
-`instanceof` in the ternary condition does not narrow
-`$this->node` in the then-branch. Same for repeated method-call
-subjects: `$request->user() ? $request->user()->id : null`
-(luxplus-website `app/Exceptions/Handler.php:74`).
-
-Plain **variable** subjects narrow correctly in ternaries
-(verified) — the gap is property accesses and method calls as
-subjects.
-
-Cascading effect: because the then-branch fails to resolve, the
-whole ternary's result type collapses to the else-branch (`null`)
-instead of a union, so a later
-`$compilationUnit ? $compilationUnit->getFileName() : null`
-reports `scalar_member_access` on type 'null'
-(phpmd `src/AbstractNode.php:248-252`).
-
-**Fix:** apply the existing narrowing logic to non-variable
-subjects keyed by normalized expression text (PHPStan keys its
-resolved-type cache by printed expression), and make the ternary
-result type the union of both branch types even when one branch
-only partially resolves.
-
 ## B46. Short-circuit narrowing missing on the right side of boolean OR
 
 **Severity: Medium-High (phpmd/pdepend src, common guard idiom) · Reproduced**

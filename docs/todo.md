@@ -25,7 +25,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                                  | Impact     | Effort |
 | --- | --------------------------------------------------------------------------------------------------------------------- | ---------- | ------ |
-| B45 | [No narrowing of property/method-call subjects in ternaries](todo/bugs.md#b45-no-narrowing-of-property-or-method-call-subjects-inside-ternary-conditions)      | High        | Medium      |
 | B47 | [Assignment inside a condition leaves the variable unresolved](todo/bugs.md#b47-assignment-inside-a-condition-leaves-the-variable-unresolved)                  | Medium-High | Medium      |
 | B46 | [Short-circuit narrowing missing on the right side of boolean OR](todo/bugs.md#b46-short-circuit-narrowing-missing-on-the-right-side-of-boolean-or)            | Medium-High | Low-Medium  |
 | B60 | [Template binding from closure returns through facade `@method`](todo/bugs.md#b60-template-binding-from-closure-return-types-through-facade-method-tags)       | Medium-High | Medium      |

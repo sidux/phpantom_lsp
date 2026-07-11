@@ -5207,3 +5207,133 @@ function pure(Direction $d): string {
         diags
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Ternary condition narrows property / method-call subjects
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `$this->node instanceof Foo ? $this->node->fooMethod() : null` must
+/// narrow the `$this->node` property to `Foo` inside the then-branch, so
+/// that a method only declared on `Foo` is not flagged as unknown on the
+/// declared property type.
+#[test]
+fn ternary_instanceof_narrows_property_subject() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+interface Node {}
+class Artifact implements Node {
+    public function getCompilationUnit(): string { return ''; }
+}
+class AbstractNode {
+    private Node $node;
+    public function getCompilationUnit(): ?string {
+        return $this->node instanceof Artifact
+            ? $this->node->getCompilationUnit()
+            : null;
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics_with_scope_cache(&backend, uri, text);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("getCompilationUnit")),
+        "No diagnostic expected for 'getCompilationUnit' inside the ternary then-branch, got: {:?}",
+        diags
+    );
+}
+
+/// The type of a ternary whose then-branch narrows a property must be the
+/// union of both branches, not just the else-branch.  Here the assigned
+/// variable should be `string|null`, so a later truthy-guarded member
+/// access must not report member access on `null`.
+#[test]
+fn ternary_property_narrowing_does_not_collapse_to_else_branch() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+interface Node {}
+class CompilationUnit {
+    public function getFileName(): string { return ''; }
+}
+class Artifact implements Node {
+    public function getCompilationUnit(): CompilationUnit { return new CompilationUnit(); }
+}
+class AbstractNode {
+    private Node $node;
+    public function getFileName(): ?string {
+        $unit = $this->node instanceof Artifact
+            ? $this->node->getCompilationUnit()
+            : null;
+        return $unit
+            ? $unit->getFileName()
+            : null;
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics_with_scope_cache(&backend, uri, text);
+    assert!(
+        diags.is_empty(),
+        "Ternary result must be CompilationUnit|null (not just null), so 'getFileName' must not be flagged, got: {:?}",
+        diags
+    );
+}
+
+/// A nullable method-call subject inside a truthy ternary condition is
+/// narrowed to its non-null type in the then-branch, so a member declared
+/// on that type is not flagged.
+#[test]
+fn ternary_truthy_narrows_method_call_subject() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+class User {
+    public int $id = 1;
+}
+class Request {
+    public function user(): ?User { return new User(); }
+}
+class Handler {
+    public function handle(Request $request): ?int {
+        return $request->user()
+            ? $request->user()->id
+            : null;
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics_with_scope_cache(&backend, uri, text);
+    assert!(
+        diags.is_empty(),
+        "Nullable method-call subject narrowed to User in ternary then-branch; 'id' must not be flagged, got: {:?}",
+        diags
+    );
+}
+
+/// Guard against over-narrowing: a genuinely missing member inside the
+/// ternary then-branch must still be flagged after narrowing.
+#[test]
+fn ternary_instanceof_still_flags_missing_member() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+interface Node {}
+class Artifact implements Node {
+    public function realMethod(): string { return ''; }
+}
+class AbstractNode {
+    private Node $node;
+    public function run(): ?string {
+        return $this->node instanceof Artifact
+            ? $this->node->missingMethod()
+            : null;
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics_with_scope_cache(&backend, uri, text);
+    assert!(
+        diags.iter().any(|d| d.message.contains("missingMethod")),
+        "A missing method on the narrowed type must still be flagged, got: {:?}",
+        diags
+    );
+}

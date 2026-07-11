@@ -317,13 +317,15 @@ fn resolve_rhs_expression_inner<'b>(
                 }
             }
             let result = resolve_rhs_property_access(access, ctx);
-            // When no scope_var_resolver is available (e.g. type error
-            // diagnostic), apply property narrowing from enclosing
-            // if-conditions (instanceof checks).  This ensures that
-            // `$this->prop` inside `if ($this->prop instanceof X)`
-            // resolves to X instead of the declared property type.
-            if ctx.scope_var_resolver.is_none()
-                && !result.is_empty()
+            // Apply property narrowing from enclosing if / ternary
+            // conditions (instanceof checks) so that `$this->prop` inside
+            // `if ($this->prop instanceof X)` or
+            // `$this->prop instanceof X ? $this->prop->m() : …` resolves to
+            // X instead of the declared property type.  The scope resolver
+            // (when present) is tried first above; property paths are not
+            // locals, so it returns nothing for them and we fall through to
+            // this walk.
+            if !result.is_empty()
                 && let Some(key) = crate::completion::types::narrowing::expr_to_subject_key(expr)
                 && key.contains("->")
             {
@@ -383,10 +385,22 @@ fn resolve_rhs_expression_inner<'b>(
         Expression::Conditional(cond_expr) => {
             let mut combined = Vec::new();
             let then_expr = cond_expr.then.unwrap_or(cond_expr.condition);
-            ResolvedType::extend_unique(&mut combined, resolve_rhs_expression(then_expr, ctx));
+            // Resolve each branch with the cursor positioned inside it so
+            // that instanceof / guard narrowing from the ternary condition
+            // applies to variable and property subjects within the branch.
+            // Without this, `$x instanceof Foo ? $x->m() : null` would
+            // resolve `$x->m()` against the un-narrowed type, the then
+            // branch would fail, and the whole ternary would collapse to
+            // the else branch instead of unioning both.
+            let then_ctx = ctx.with_cursor_offset(then_expr.span().start.offset);
             ResolvedType::extend_unique(
                 &mut combined,
-                resolve_rhs_expression(cond_expr.r#else, ctx),
+                resolve_rhs_expression(then_expr, &then_ctx),
+            );
+            let else_ctx = ctx.with_cursor_offset(cond_expr.r#else.span().start.offset);
+            ResolvedType::extend_unique(
+                &mut combined,
+                resolve_rhs_expression(cond_expr.r#else, &else_ctx),
             );
             combined
         }

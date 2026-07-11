@@ -2269,10 +2269,42 @@ class IntersectionDemo
 
 class TernaryNarrowingDemo
 {
+    public function __construct(private Pen|Pencil $tool) {}
+
     public function demo(): void
     {
+        // Variable subject: narrowed to Rock (then) / Banana (else)
         $thing = pickRockOrBanana();
         $thing instanceof Rock ? $thing->crush() : $thing->peel();
+    }
+
+    /**
+     * instanceof in a ternary condition narrows the `$this->tool` property
+     * subject inside the then-branch, so `->write()` (declared only on Pen)
+     * resolves. Because the then-branch resolves, the ternary type is the
+     * union of both branches (`string|null`), not just the else-branch.
+     */
+    public function toolLabel(): ?string
+    {
+        return $this->tool instanceof Pen
+            ? $this->tool->write()            // narrowed to Pen inside the ternary
+            : null;
+    }
+
+    /**
+     * A truthy ternary condition narrows a repeated nullable method-call
+     * subject to its non-null type inside the then-branch.
+     */
+    public function repeatedCall(): ?string
+    {
+        return $this->maybePen()
+            ? $this->maybePen()->write()      // narrowed to Pen (null stripped)
+            : null;
+    }
+
+    private function maybePen(): ?Pen
+    {
+        return $this->tool instanceof Pen ? $this->tool : null;
     }
 }
 
@@ -5370,6 +5402,14 @@ function runDemoAssertions(): void
     assert($pen instanceof Pen, 'createPen() must return Pen (inferred from body)');
     $tool = $factory->createTool(true);
     assert($tool instanceof Pen || $tool instanceof Pencil, 'createTool() must return Pen|Pencil');
+
+    // ── Ternary Condition Narrowing ─────────────────────────────────────
+    $penTool = new TernaryNarrowingDemo(new Pen());
+    assert($penTool->toolLabel() === '', 'ternary then-branch narrows property to Pen; ->write() returns ""');
+    assert($penTool->repeatedCall() === '', 'ternary truthy narrows method-call subject to Pen');
+    $pencilTool = new TernaryNarrowingDemo(new Pencil());
+    assert($pencilTool->toolLabel() === null, 'ternary else-branch yields null (Pencil is not a Pen)');
+    assert($pencilTool->repeatedCall() === null, 'ternary else-branch yields null for repeated call');
 
     // ── Pseudo-type class-name collision ────────────────────────────────
     $num = new Number('42');

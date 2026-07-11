@@ -1617,6 +1617,17 @@ fn walk_property_narrowing_stmts<'b>(
                     ctx,
                     results,
                 );
+                // `$x = $this->prop instanceof Foo ? … : …` and other
+                // ternaries nested in the expression narrow the property
+                // path inside the branch containing the cursor.
+                walk_property_narrowing_expr(expr_stmt.expression, ctx, results);
+            }
+            Statement::Return(ret) => {
+                // `return $this->prop instanceof Foo ? … : …` — narrow the
+                // property path inside the ternary branch at the cursor.
+                if let Some(value) = ret.value {
+                    walk_property_narrowing_expr(value, ctx, results);
+                }
             }
             Statement::Foreach(foreach) => match &foreach.body {
                 ForeachBody::Statement(inner) => {
@@ -1802,4 +1813,92 @@ fn walk_property_narrowing_stmt<'b>(
     results: &mut Vec<ClassInfo>,
 ) {
     walk_property_narrowing_stmts(std::iter::once(stmt), ctx, results);
+}
+
+/// Apply property-level narrowing inside ternary (conditional) expressions.
+///
+/// When the cursor falls inside the then-branch of
+/// `$this->prop instanceof Foo ? <then> : <else>`, the property path is
+/// narrowed to `Foo`; inside the else-branch the inverse applies. This
+/// mirrors the if-statement narrowing in [`walk_property_narrowing_if`]
+/// but for ternaries, which can appear anywhere an expression is expected
+/// (return values, assignment RHS, call arguments, …). The walk recurses
+/// through those containers so a ternary nested inside them is still
+/// reached.
+fn walk_property_narrowing_expr<'b>(
+    expr: &'b mago_syntax::ast::Expression<'b>,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ClassInfo>,
+) {
+    use mago_span::HasSpan;
+    use mago_syntax::ast::*;
+
+    use super::types::narrowing;
+
+    // Only descend into the sub-expression that contains the cursor.
+    let span = expr.span();
+    if ctx.cursor_offset < span.start.offset || ctx.cursor_offset > span.end.offset {
+        return;
+    }
+
+    match expr {
+        Expression::Conditional(cond) => {
+            // Full ternary `cond ? then : else`. Narrow the property path
+            // in whichever branch holds the cursor. The short form
+            // `$x ?: $y` has no `then` branch, so nothing to narrow there.
+            if let Some(then_expr) = cond.then {
+                let then_span = then_expr.span();
+                if ctx.cursor_offset >= then_span.start.offset
+                    && ctx.cursor_offset <= then_span.end.offset
+                {
+                    narrowing::try_apply_instanceof_narrowing(
+                        cond.condition,
+                        then_span,
+                        ctx,
+                        results,
+                    );
+                    walk_property_narrowing_expr(then_expr, ctx, results);
+                    return;
+                }
+            }
+            let else_span = cond.r#else.span();
+            if ctx.cursor_offset >= else_span.start.offset
+                && ctx.cursor_offset <= else_span.end.offset
+            {
+                narrowing::try_apply_instanceof_narrowing_inverse(
+                    cond.condition,
+                    else_span,
+                    ctx,
+                    results,
+                );
+                walk_property_narrowing_expr(cond.r#else, ctx, results);
+            }
+        }
+        Expression::Assignment(assign) => {
+            walk_property_narrowing_expr(assign.rhs, ctx, results);
+        }
+        Expression::Binary(bin) => {
+            walk_property_narrowing_expr(bin.lhs, ctx, results);
+            walk_property_narrowing_expr(bin.rhs, ctx, results);
+        }
+        Expression::Parenthesized(inner) => {
+            walk_property_narrowing_expr(inner.expression, ctx, results);
+        }
+        Expression::Call(call) => {
+            let args = match call {
+                Call::Function(fc) => &fc.argument_list,
+                Call::Method(mc) => &mc.argument_list,
+                Call::NullSafeMethod(mc) => &mc.argument_list,
+                Call::StaticMethod(sc) => &sc.argument_list,
+            };
+            for arg in args.arguments.iter() {
+                let arg_expr = match arg {
+                    Argument::Positional(a) => a.value,
+                    Argument::Named(a) => a.value,
+                };
+                walk_property_narrowing_expr(arg_expr, ctx, results);
+            }
+        }
+        _ => {}
+    }
 }
