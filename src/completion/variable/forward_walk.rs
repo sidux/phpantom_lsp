@@ -7032,13 +7032,14 @@ fn resolve_iterable_element_via_class(
     iter_type: &PhpType,
     ctx: &ForwardWalkCtx<'_>,
 ) -> Option<PhpType> {
-    // Only attempt for Named types (bare class names without generics).
-    // Generic types like `Collection<int, User>` are handled by
-    // extract_value_type above.
-    let class_name = match iter_type {
-        PhpType::Named(name) => name.as_str(),
-        _ => return None,
-    };
+    // Accept bare class names, whether or not wrapped in `Nullable` (e.g.
+    // `?SimpleXMLElement`, the return type of `SimpleXMLElement::children()`).
+    // `base_name` unwraps `Nullable`/`Generic` to the underlying class name.
+    // Bare generic types like `Collection<int, User>` are handled by
+    // extract_value_type above, so this only needs the name for the
+    // `class_loader` fallback below; `type_hint_to_classes_typed` handles
+    // the full (possibly nullable) type itself.
+    let class_name = iter_type.base_name()?;
 
     // Resolve the class name to ClassInfo.
     let classes = crate::completion::type_resolution::type_hint_to_classes_typed(
@@ -7163,10 +7164,9 @@ fn resolve_iterable_key_via_class(
     iter_type: &PhpType,
     ctx: &ForwardWalkCtx<'_>,
 ) -> Option<PhpType> {
-    let class_name = match iter_type {
-        PhpType::Named(name) => name.as_str(),
-        _ => return None,
-    };
+    // See `resolve_iterable_element_via_class`: unwrap `Nullable`/`Generic`
+    // via `base_name` so `?SimpleXMLElement`-style iterable types resolve.
+    let class_name = iter_type.base_name()?;
 
     let classes = crate::completion::type_resolution::type_hint_to_classes_typed(
         iter_type,

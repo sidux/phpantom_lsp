@@ -527,6 +527,28 @@ class BuiltinGenericCollectionDemo
 }
 
 
+// ── SimpleXMLElement Iteration (Iterator without generics) ──────────────────
+
+class SimpleXmlIterationDemo
+{
+    public function demo(): void
+    {
+        $xml = new \SimpleXMLElement('<root><child/></root>');
+        foreach ($xml->children() as $child) {
+            $child->getName();                    // Iterator (no generics) → current(): static
+        }
+    }
+
+    public function firstChild(): ?\SimpleXMLElement
+    {
+        foreach ((new \SimpleXMLElement('<root><child/></root>'))->children() as $child) {
+            return $child;
+        }
+        return null;
+    }
+}
+
+
 // ── Inherited Docblock Types ────────────────────────────────────────────────
 
 class InheritedDocblockDemo
@@ -6408,6 +6430,11 @@ function runDemoAssertions(): void
     $demo = new BuiltinGenericCollectionDemo();
     $pen = $demo->getPens()->current();
     assert($pen instanceof Pen, 'ArrayIterator<int, Pen>::current() must return Pen');
+
+    // ── SimpleXMLElement iteration (Iterator without generics) ──────────
+    $xmlDemo = new SimpleXmlIterationDemo();
+    $xmlChild = $xmlDemo->firstChild();
+    assert($xmlChild instanceof \SimpleXMLElement, 'SimpleXMLElement::children() foreach element must be SimpleXMLElement');
 
     echo "All assertions passed.\n";
 }

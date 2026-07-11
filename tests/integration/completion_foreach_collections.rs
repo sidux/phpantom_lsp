@@ -1,4 +1,6 @@
-use crate::common::{create_psr4_workspace, create_test_backend};
+use crate::common::{
+    create_psr4_workspace, create_test_backend, create_test_backend_with_full_stubs,
+};
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
 
@@ -751,6 +753,41 @@ async fn test_foreach_nested_generic_array_property_access() {
     assert!(
         labels.iter().any(|l| l.starts_with("apply")),
         "Should include 'apply' from Rule when iterating nested generic array access. Got: {:?}",
+        labels
+    );
+}
+
+// ─── Foreach over SimpleXMLElement (Iterator without generics) ──────────────
+
+/// `SimpleXMLElement` implements `Iterator` directly (not
+/// `IteratorAggregate`) with no generic annotation. Iterating it (or the
+/// result of `children()`/`attributes()`, both typed `?static`) should
+/// still resolve the value variable by falling back to `current()`'s
+/// return type.
+#[tokio::test]
+async fn test_foreach_simplexmlelement_resolves_via_current_method() {
+    let backend = create_test_backend_with_full_stubs();
+    let uri = Url::parse("file:///foreach_simplexml.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "function process(SimpleXMLElement $xml): void {\n",
+        "    foreach ($xml->children() as $child) {\n",
+        "        $child->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 3, 16).await;
+    let labels: Vec<String> = items.iter().map(|i| i.label.clone()).collect();
+
+    assert!(
+        labels.iter().any(|l| l.starts_with("getName")),
+        "Should include 'getName' from SimpleXMLElement when iterating children(). Got: {:?}",
+        labels
+    );
+    assert!(
+        labels.iter().any(|l| l.starts_with("attributes")),
+        "Should include 'attributes' from SimpleXMLElement when iterating children(). Got: {:?}",
         labels
     );
 }

@@ -72,7 +72,9 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
         let short = short_name(name);
         if ITERABLE_IFACE_NAMES.contains(&short) && !args.is_empty() {
             let value = args.last().unwrap();
-            return Some(value.clone());
+            if !is_unbounded_template_placeholder(value) {
+                return Some(value.clone());
+            }
         }
     }
 
@@ -87,7 +89,9 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
             && is_transitive_iterable(&iface, class_loader)
         {
             let value = args.last().unwrap();
-            return Some(value.clone());
+            if !is_unbounded_template_placeholder(value) {
+                return Some(value.clone());
+            }
         }
     }
 
@@ -96,11 +100,81 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
     for (_, args) in &class.extends_generics {
         if !args.is_empty() {
             let value = args.last().unwrap();
-            return Some(value.clone());
+            if !is_unbounded_template_placeholder(value) {
+                return Some(value.clone());
+            }
         }
     }
 
+    // 3. Fall back to the `current()` return type when the class
+    //    implements `Iterator` directly (not `IteratorAggregate`) without
+    //    a generic annotation. `SimpleXMLElement` is the prototypical
+    //    example: it implements `Iterator` with `current(): static`, so
+    //    iterating it yields instances of the iterated class itself.
+    if class_implements_iterator(class, class_loader)
+        && let Some(method) = class.get_method("current")
+        && let Some(return_type) = &method.return_type
+    {
+        return Some(return_type.replace_self(&class.fqn()));
+    }
+
     None
+}
+
+/// Check whether a generic argument is an unbounded template parameter
+/// that was substituted with `mixed` as a fallback (no explicit
+/// `@implements`/`@extends` generic annotation was given).
+///
+/// Interfaces like `Iterator<TKey, TValue>` propagate their template
+/// params through `@template-extends Traversable<TKey, TValue>` even when
+/// the implementing class never annotates concrete types; in that case
+/// the merge falls back to substituting each param with `mixed` (see
+/// `resolve_class_fully_inner` in `virtual_members/mod.rs`). Treating that
+/// placeholder as a "found" element type would shadow the more precise
+/// `current()`/`key()` fallback below.
+fn is_unbounded_template_placeholder(ty: &PhpType) -> bool {
+    matches!(ty, PhpType::Named(name) if name.eq_ignore_ascii_case("mixed"))
+}
+
+/// Check whether `class`, or an ancestor reached by walking the `extends`
+/// chain, directly declares `implements Iterator`.
+///
+/// Only the `extends` chain is walked (not the interface-extends-interface
+/// chain used by [`is_transitive_iterable`]) because `Iterator` is always
+/// implemented by a concrete class, never re-declared through another
+/// interface.
+fn class_implements_iterator(
+    class: &ClassInfo,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+) -> bool {
+    if class
+        .interfaces
+        .iter()
+        .any(|i| short_name(i).eq_ignore_ascii_case("Iterator"))
+    {
+        return true;
+    }
+
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(class.name.to_string());
+    let mut parent_name = class.parent_class.as_ref().map(|a| a.to_string());
+    while let Some(name) = parent_name {
+        if !visited.insert(name.clone()) {
+            break;
+        }
+        let Some(parent) = class_loader(&name) else {
+            break;
+        };
+        if parent
+            .interfaces
+            .iter()
+            .any(|i| short_name(i).eq_ignore_ascii_case("Iterator"))
+        {
+            return true;
+        }
+        parent_name = parent.parent_class.as_ref().map(|a| a.to_string());
+    }
+    false
 }
 
 /// Extract the iterable **key** type from a class's generic annotations.
@@ -116,7 +190,10 @@ pub(in crate::completion) fn extract_iterable_key_type_from_class(
     // 1. Check implements_generics for known iterable interfaces.
     for (name, args) in &class.implements_generics {
         let short = short_name(name);
-        if ITERABLE_IFACE_NAMES.contains(&short) && args.len() >= 2 {
+        if ITERABLE_IFACE_NAMES.contains(&short)
+            && args.len() >= 2
+            && !is_unbounded_template_placeholder(&args[0])
+        {
             return Some(args[0].clone());
         }
     }
@@ -126,6 +203,7 @@ pub(in crate::completion) fn extract_iterable_key_type_from_class(
         let short = short_name(name);
         if !ITERABLE_IFACE_NAMES.contains(&short)
             && args.len() >= 2
+            && !is_unbounded_template_placeholder(&args[0])
             && let Some(iface) = class_loader(name)
             && is_transitive_iterable(&iface, class_loader)
         {
@@ -135,9 +213,19 @@ pub(in crate::completion) fn extract_iterable_key_type_from_class(
 
     // 2. Check extends_generics.
     for (_, args) in &class.extends_generics {
-        if args.len() >= 2 {
+        if args.len() >= 2 && !is_unbounded_template_placeholder(&args[0]) {
             return Some(args[0].clone());
         }
+    }
+
+    // 3. Fall back to the `key()` return type when the class implements
+    //    `Iterator` directly without a generic annotation. Mirrors the
+    //    `current()` fallback in `extract_iterable_element_type_from_class`.
+    if class_implements_iterator(class, class_loader)
+        && let Some(method) = class.get_method("key")
+        && let Some(return_type) = &method.return_type
+    {
+        return Some(return_type.replace_self(&class.fqn()));
     }
 
     None

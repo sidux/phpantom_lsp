@@ -15,24 +15,6 @@ errors the bug accounts for across the sample projects and are
 approximate — fixing an upstream bug often clears cascading
 errors attributed to other buckets.
 
-## B49. SimpleXMLElement iteration and children()/attributes() yield untyped elements
-
-**Severity: Medium (~25+ errors in api-php, cascades) · Reproduced**
-
-`foreach ($xml->children() as $child)` leaves `$child`
-unresolved, so `$child->getName()` etc. all report
-`unresolved_member_access`
-(api-php `src/Response/AbstractResponse.php:81-121`). Iterating a
-`SimpleXMLElement` yields `SimpleXMLElement`s, but the stub types
-`children()`/`attributes()` as `?SimpleXMLElement` and the class
-iterates itself without generics, so element extraction finds
-nothing. PHPStan hardcodes this: iterating `SimpleXMLElement` (or
-a subclass) yields `static`.
-
-**Fix:** special-case foreach element types for
-`SimpleXMLElement` and subclasses (yield the receiver class), the
-same way PHPStan does.
-
 ## B50. Integer literals rejected by refined-int pseudo-types
 
 **Severity: Medium (clear FP, common PHPUnit pattern) · Reproduced**
