@@ -29,7 +29,6 @@ within the same impact tier.
 | L18 | [`Storage::disk()` return type — resolve from config, don't guess](todo/laravel.md#l18-storagedisk-return-type-is-genuinely-polymorphic--resolve-from-config-dont-guess) | Medium-High | Low-Medium  |
 | B57 | [Parameter nullability lost from docblock overrides and null defaults](todo/bugs.md#b57-parameter-nullability-lost-from-docblock-overrides-and-null-defaults)  | Medium      | Low-Medium  |
 | L19 | [Redis client (phpredis/predis) — resolve from config, don't guess](todo/laravel.md#l19-redis-connection-client-is-chosen-by-config-phpredis-vs-predis--resolve-from-config-dont-guess) | Medium      | Low-Medium  |
-| B55 | [Union unknown-member check ignores `__call` catch-alls](todo/bugs.md#b55-union-typed-unknown-member-check-ignores-__call-catch-alls)                          | Low-Medium  | Low         |
 | B58 | [Positional array-shape indexing unresolved](todo/bugs.md#b58-indexing-a-positional-array-shape-does-not-resolve-the-element-type)                             | Low-Medium  | Low         |
 | B56 | [`__benevolent<T>` pseudo-type reported as unknown class](todo/bugs.md#b56-__benevolentt-pseudo-type-reported-as-unknown-class)                                | Low         | Low         |
 | B59 | [Project class sharing a global interface name breaks subtype checks](todo/bugs.md#b59-project-class-sharing-a-global-interface-name-breaks-subtype-checks)    | Low         | Medium      |

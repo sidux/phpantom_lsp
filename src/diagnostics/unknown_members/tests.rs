@@ -163,7 +163,7 @@ echo Foo::class;
 // ── Magic methods ───────────────────────────────────────────────
 
 #[test]
-fn diagnostic_when_class_has_magic_call_but_chain_continues() {
+fn no_diagnostic_when_class_has_magic_call() {
     let php = r#"<?php
 class Dynamic {
 public function __call(string $name, array $args): mixed { return null; }
@@ -176,15 +176,9 @@ $d->anything();
 "#;
     let backend = Backend::new_test();
     let diags = collect(&backend, "file:///test.php", php);
-    assert_eq!(
-        diags.len(),
-        1,
-        "Should flag unknown method even when __call exists, got: {diags:?}"
-    );
     assert!(
-        diags[0].message.contains("anything"),
-        "Diagnostic should mention 'anything', got: {}",
-        diags[0].message
+        diags.is_empty(),
+        "Method dispatched through __call is valid and must not be flagged, got: {diags:?}"
     );
 }
 
@@ -206,7 +200,7 @@ echo $d->anything;
 }
 
 #[test]
-fn diagnostic_when_class_has_magic_call_static_but_chain_continues() {
+fn no_diagnostic_when_class_has_magic_call_static() {
     let php = r#"<?php
 class Dynamic {
 public static function __callStatic(string $name, array $args): mixed { return null; }
@@ -216,15 +210,9 @@ Dynamic::anything();
 "#;
     let backend = Backend::new_test();
     let diags = collect(&backend, "file:///test.php", php);
-    assert_eq!(
-        diags.len(),
-        1,
-        "Should flag unknown static method even when __callStatic exists, got: {diags:?}"
-    );
     assert!(
-        diags[0].message.contains("anything"),
-        "Diagnostic should mention 'anything', got: {}",
-        diags[0].message
+        diags.is_empty(),
+        "Static method dispatched through __callStatic is valid and must not be flagged, got: {diags:?}"
     );
 }
 
@@ -850,7 +838,7 @@ $svc->run();
 // ── Parent with magic ───────────────────────────────────────────
 
 #[test]
-fn diagnostic_when_parent_has_magic_call_but_chain_continues() {
+fn no_diagnostic_when_parent_has_magic_call() {
     let php = r#"<?php
 class Base {
 public function __call(string $name, array $args): mixed { return null; }
@@ -864,15 +852,9 @@ $c->anything();
 "#;
     let backend = Backend::new_test();
     let diags = collect(&backend, "file:///test.php", php);
-    assert_eq!(
-        diags.len(),
-        1,
-        "Should flag unknown method even when parent has __call, got: {diags:?}"
-    );
     assert!(
-        diags[0].message.contains("anything"),
-        "Diagnostic should mention 'anything', got: {}",
-        diags[0].message
+        diags.is_empty(),
+        "Method inherited through a parent's __call is valid and must not be flagged, got: {diags:?}"
     );
 }
 
@@ -1022,7 +1004,13 @@ public function run(): void {
 }
 
 #[test]
-fn diagnostic_when_any_union_branch_has_magic_call_but_chain_continues() {
+fn no_diagnostic_when_any_union_branch_has_magic_call() {
+    // When the subject is a union and any branch defines `__call`, the
+    // access is dynamically dispatched through that branch at runtime,
+    // so it must not be flagged (matches PHPStan, and the single-class
+    // behaviour).  This is the Mockery higher-order-message pattern:
+    // `$mock->shouldReceive(...)` returns a union where one branch has
+    // `__call`, so the fluent method must not warn.
     let php = r#"<?php
 class Normal {
 public function known(): void {}
@@ -1045,15 +1033,9 @@ public function run(): void {
 "#;
     let backend = Backend::new_test();
     let diags = collect(&backend, "file:///test.php", php);
-    assert_eq!(
-        diags.len(),
-        1,
-        "Should flag unknown method even when a union branch has __call, got: {diags:?}"
-    );
     assert!(
-        diags[0].message.contains("anything"),
-        "Diagnostic should mention 'anything', got: {}",
-        diags[0].message
+        diags.is_empty(),
+        "Method dispatched through a union branch's __call must not be flagged, got: {diags:?}"
     );
 }
 
@@ -4074,11 +4056,11 @@ while ($row = nextRow()) {
 
 // ── __call chain continuation ───────────────────────────────────
 
-/// When a class defines `__call` with a typed return, unknown methods
-/// are flagged but the chain continues.  Known methods after the
-/// unknown call should NOT be flagged.
+/// When a class defines `__call` with a typed return, the dispatched
+/// method is valid PHP and must not be flagged.  Known methods after
+/// it resolve through the `__call` return type.
 #[test]
-fn magic_call_chain_flags_unknown_but_continues() {
+fn magic_call_chain_not_flagged_and_continues() {
     let php = r#"<?php
 class AppleCart {
 public function getApples(): array { return []; }
@@ -4096,22 +4078,17 @@ public function run(): void {
 "#;
     let backend = Backend::new_test();
     let diags = collect(&backend, "file:///test.php", php);
-    assert_eq!(
-        diags.len(),
-        1,
-        "Should flag only doesntExist(), not first() or getApples(), got: {diags:?}"
-    );
     assert!(
-        diags[0].message.contains("doesntExist"),
-        "Diagnostic should mention 'doesntExist', got: {}",
-        diags[0].message
+        diags.is_empty(),
+        "doesntExist() is dispatched through __call (returns static), so nothing should be flagged, got: {diags:?}"
     );
 }
 
-/// Two unknown methods in a chain should both be flagged, but known
-/// methods between and after them should not.
+/// Multiple `__call`-dispatched methods in a chain are all valid and
+/// none should be flagged; known methods between and after them
+/// resolve through the `__call` return type.
 #[test]
-fn magic_call_chain_flags_multiple_unknown_methods() {
+fn magic_call_chain_multiple_dynamic_methods_not_flagged() {
     let php = r#"<?php
 class AppleCart {
 public function getApples(): array { return []; }
@@ -4130,30 +4107,15 @@ public function run(): void {
 "#;
     let backend = Backend::new_test();
     let diags = collect(&backend, "file:///test.php", php);
-    // First statement: doesntExist (1 diagnostic)
-    // Second statement: doesntExist + alsoDoesntExist (2 diagnostics)
-    let unknown_diags: Vec<_> = diags
-        .iter()
-        .filter(|d| d.message.contains("doesntExist") || d.message.contains("alsoDoesntExist"))
-        .collect();
-    assert_eq!(
-        unknown_diags.len(),
-        3,
-        "Should flag doesntExist twice and alsoDoesntExist once, got: {diags:?}"
-    );
-    // first() and getApples() should NOT be flagged
-    let false_positives: Vec<_> = diags
-        .iter()
-        .filter(|d| d.message.contains("first") || d.message.contains("getApples"))
-        .collect();
     assert!(
-        false_positives.is_empty(),
-        "Should not flag first() or getApples(), got: {false_positives:?}"
+        diags.is_empty(),
+        "Dynamic methods dispatched through __call must not be flagged, got: {diags:?}"
     );
 }
 
 /// When `__call` returns a concrete type (not self/static), the
-/// chain resolves to that type after the unknown method.
+/// dispatched method is not flagged and the chain resolves to that
+/// type afterwards.
 #[test]
 fn magic_call_concrete_return_continues_chain() {
     let php = r#"<?php
@@ -4172,23 +4134,18 @@ public function run(): void {
 "#;
     let backend = Backend::new_test();
     let diags = collect(&backend, "file:///test.php", php);
-    assert_eq!(
-        diags.len(),
-        1,
-        "Should flag 'anything' but not 'getData', got: {diags:?}"
-    );
     assert!(
-        diags[0].message.contains("anything"),
-        "Diagnostic should mention 'anything', got: {}",
-        diags[0].message
+        diags.is_empty(),
+        "anything() dispatches through __call (returns Result), getData() resolves — nothing to flag, got: {diags:?}"
     );
 }
 
-/// When `__call` returns `mixed`, the chain cannot recover.
-/// The unknown method is flagged, and downstream methods produce
-/// unresolvable-chain diagnostics.
+/// When `__call` returns `mixed`, the dispatched method is still not
+/// flagged.  The chain type becomes `mixed`, which is unresolvable, so
+/// downstream accesses are simply unverifiable (no diagnostic by
+/// default) rather than flagged as unknown members.
 #[test]
-fn magic_call_mixed_return_breaks_chain_downstream() {
+fn magic_call_mixed_return_not_flagged() {
     let php = r#"<?php
 class Loose {
 public function __call(string $name, array $args): mixed { return null; }
@@ -4202,13 +4159,9 @@ public function run(): void {
 "#;
     let backend = Backend::new_test();
     let diags = collect(&backend, "file:///test.php", php);
-    // 'unknown' is flagged (magic fallback, chain continues in
-    // principle but mixed resolves to nothing).
-    // 'somethingElse' should get an unresolvable-chain diagnostic
-    // because mixed yields no class info.
     assert!(
-        diags.iter().any(|d| d.message.contains("unknown")),
-        "Should flag 'unknown', got: {diags:?}"
+        !diags.iter().any(|d| d.message.contains("unknown")),
+        "unknown() is dispatched through __call and must not be flagged, got: {diags:?}"
     );
 }
 

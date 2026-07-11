@@ -356,7 +356,7 @@ $name = Foo::class;
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn diagnostic_when_class_has_magic_call_but_chain_continues() {
+fn no_diagnostic_when_class_has_magic_call() {
     let backend = create_test_backend();
     let uri = "file:///test.php";
     let text = r#"<?php
@@ -373,21 +373,10 @@ class Consumer {
 }
 "#;
     let diags = unknown_member_diagnostics(&backend, uri, text);
-    assert_eq!(
-        diags.len(),
-        2,
-        "Should flag unknown methods even when __call exists, got: {:?}",
+    assert!(
+        diags.is_empty(),
+        "Methods dispatched through __call are valid and must not be flagged, got: {:?}",
         diags
-    );
-    assert!(
-        diags[0].message.contains("anything"),
-        "First diagnostic should mention 'anything', got: {}",
-        diags[0].message
-    );
-    assert!(
-        diags[1].message.contains("whatever"),
-        "Second diagnostic should mention 'whatever', got: {}",
-        diags[1].message
     );
 }
 
@@ -417,7 +406,7 @@ class Consumer {
 }
 
 #[test]
-fn diagnostic_when_class_has_magic_call_static_but_chain_continues() {
+fn no_diagnostic_when_class_has_magic_call_static() {
     let backend = create_test_backend();
     let uri = "file:///test.php";
     let text = r#"<?php
@@ -429,21 +418,10 @@ StaticMagic::anything();
 StaticMagic::whatever();
 "#;
     let diags = unknown_member_diagnostics(&backend, uri, text);
-    assert_eq!(
-        diags.len(),
-        2,
-        "Should flag unknown static methods even when __callStatic exists, got: {:?}",
+    assert!(
+        diags.is_empty(),
+        "Static methods dispatched through __callStatic are valid and must not be flagged, got: {:?}",
         diags
-    );
-    assert!(
-        diags[0].message.contains("anything"),
-        "First diagnostic should mention 'anything', got: {}",
-        diags[0].message
-    );
-    assert!(
-        diags[1].message.contains("whatever"),
-        "Second diagnostic should mention 'whatever', got: {}",
-        diags[1].message
     );
 }
 
@@ -480,7 +458,7 @@ class Consumer {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn diagnostic_when_parent_has_magic_call_but_chain_continues() {
+fn no_diagnostic_when_parent_has_magic_call() {
     let backend = create_test_backend();
     let uri = "file:///test.php";
     let text = r#"<?php
@@ -498,16 +476,10 @@ class Consumer {
 }
 "#;
     let diags = unknown_member_diagnostics(&backend, uri, text);
-    assert_eq!(
-        diags.len(),
-        1,
-        "Should flag unknown method even when parent has __call, got: {:?}",
-        diags
-    );
     assert!(
-        diags[0].message.contains("anything"),
-        "Diagnostic should mention 'anything', got: {}",
-        diags[0].message
+        diags.is_empty(),
+        "Method inherited through a parent's __call is valid and must not be flagged, got: {:?}",
+        diags
     );
 }
 
@@ -3634,10 +3606,11 @@ class ProductRepository {
 }
 
 #[test]
-fn scope_on_standalone_bare_builder_param_flags_warning_chain_continues() {
+fn scope_on_standalone_bare_builder_param_not_flagged_chain_continues() {
     // When a function parameter is typed as bare `Builder` (no callable
     // inference context), scope methods cannot be verified statically.
-    // They are flagged via MagicFallback (__call exists), but the chain
+    // Because `Builder` defines `__call`, the call is dispatched through
+    // it at runtime and must not be flagged (matching PHPStan). The chain
     // continues because Builder's __call return type is patched to
     // `static` during resolution.
     let (backend, _dir) = create_psr4_workspace(
@@ -3713,15 +3686,15 @@ function filterProducts(Builder $query): void {
     let mut diags = Vec::new();
     backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
 
-    // Scope method IS flagged — no callable inference to refine the
-    // bare Builder to Builder<Product>.
+    // Scope method is NOT flagged — Builder defines __call, so the call
+    // is valid and dynamically dispatched even without knowing the model.
     assert!(
-        diags.iter().any(|d| d.message.contains("whereIsLuxury")),
-        "Scope method on standalone bare Builder param should be flagged, got: {:?}",
+        !diags.iter().any(|d| d.message.contains("whereIsLuxury")),
+        "Scope method dispatched through Builder's __call must not be flagged, got: {:?}",
         diags
     );
 
-    // Chain continues — known methods after the unknown scope call
+    // Chain continues — known methods after the scope call
     // should NOT be flagged because __call returns static.
     assert!(
         !diags.iter().any(|d| d.message.contains("orderBy")),

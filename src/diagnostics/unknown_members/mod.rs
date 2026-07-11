@@ -735,13 +735,18 @@ impl Backend {
             return (MemberCheckResult::Ok, diagnostics);
         }
 
-        // ── Check for __call / __callStatic on ANY branch ───────────
-        // When any branch has a magic call handler, the method IS
-        // dispatched at runtime (no fatal error), but it is still
-        // "unknown" in the sense that it has no explicit declaration.
-        // We emit the diagnostic so the user knows, but we return
-        // `MagicFallback` so the chain is NOT broken — the return
-        // type of `__call`/`__callStatic` recovers the chain type.
+        // ── Suppress method calls dispatched through __call / __callStatic ──
+        // When any branch has a magic call handler, the method is
+        // dispatched to it at runtime, so the call is valid PHP — there
+        // is no fatal error and no undefined member.  This is how
+        // proxies (SoapClient), mock/fluent APIs (Mockery's higher-order
+        // messages), and dynamic query builders work.  We suppress the
+        // diagnostic entirely (mirroring how `__get` suppresses
+        // property-access diagnostics above) and return `MagicFallback`
+        // so the chain keeps resolving through the magic method's return
+        // type.  A speculative "we can't verify this" warning here is a
+        // false positive: the receiver has explicitly opted into handling
+        // arbitrary method names.
         let has_magic_call = is_method_call
             && (base_classes
                 .iter()
@@ -749,17 +754,7 @@ impl Backend {
                 || resolved_classes
                     .iter()
                     .any(|c| has_magic_method_for_access(c, is_static, true, report_magic)));
-
-        // ── SoapClient: suppress diagnostic entirely ────────────────
-        // SoapClient is a SOAP proxy where any method name is valid
-        // (proxied to the remote service).  PHP does not error, and
-        // PHPStan treats all calls as returning mixed.  Suppress the
-        // diagnostic but do not break the chain.
-        if has_magic_call
-            && resolved_classes
-                .iter()
-                .any(|c| is_soap_client(&c.name, class_loader))
-        {
+        if has_magic_call {
             return (MemberCheckResult::MagicFallback, diagnostics);
         }
 
@@ -810,12 +805,9 @@ impl Backend {
             message,
         ));
 
-        let result = if has_magic_call {
-            MemberCheckResult::MagicFallback
-        } else {
-            MemberCheckResult::Break
-        };
-        (result, diagnostics)
+        // The member exists on no branch and no branch has a magic call
+        // handler, so the type cannot be recovered — break the chain.
+        (MemberCheckResult::Break, diagnostics)
     }
 }
 
@@ -998,29 +990,6 @@ fn has_magic_method_for_access(
         }
     }
 
-    false
-}
-
-/// Returns `true` if `class_name` is `SoapClient` or a class that
-/// ultimately extends `SoapClient`.  SoapClient acts as a SOAP
-/// proxy: any method name is valid and returns mixed at runtime.
-fn is_soap_client(class_name: &str, class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>) -> bool {
-    if class_name == "SoapClient" {
-        return true;
-    }
-    // Walk the parent chain to check if this class extends SoapClient.
-    let mut current = class_loader(class_name);
-    let mut depth = 0;
-    while let Some(cls) = current {
-        if cls.name == "SoapClient" {
-            return true;
-        }
-        depth += 1;
-        if depth > 20 {
-            break;
-        }
-        current = cls.parent_class.as_ref().and_then(|p| class_loader(p));
-    }
     false
 }
 

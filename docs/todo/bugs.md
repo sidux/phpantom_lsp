@@ -15,24 +15,6 @@ errors the bug accounts for across the sample projects and are
 approximate — fixing an upstream bug often clears cascading
 errors attributed to other buckets.
 
-## B55. Union-typed unknown-member check ignores `__call` catch-alls
-
-**Severity: Low-Medium (5+ errors, Mockery-heavy test suites) · Confirmed from output**
-
-"Method 'requestRefund' not found on any of the 3 possible types
-(Mockery\Expectation, Mockery\ExpectationInterface,
-Mockery\ExpectsHigherOrderMessage)" — but
-`ExpectsHigherOrderMessage` has `__call`
-(mockery `library/Mockery/ExpectsHigherOrderMessage.php:26`), so
-the access is dynamically dispatched and must not be flagged. The
-single-class path already respects `__call`; the
-union/multiple-candidates path does not
-(luxplus-backoffice `tests/Feature/Orders/CreateRefundTest.php:113`).
-
-**Fix:** in the union branch of the unknown-member check, stay
-silent when any candidate type has `__call`/`__callStatic`/`__get`
-(matching the single-type behavior).
-
 ## B56. `__benevolent<T>` pseudo-type reported as unknown class
 
 **Severity: Low (1 error, trivial) · Confirmed from output**
