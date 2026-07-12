@@ -625,42 +625,51 @@ fn collect_mixin_members(
             })
             .map(|(_, args)| args.as_slice());
 
-        // Resolve the mixin class with its own inheritance so we see
-        // all of its inherited/trait members too.  Use base resolution
-        // (not resolve_class_fully) to avoid circular provider calls.
+        // Resolve the mixin class *fully* so that its own virtual members
+        // (Laravel relationship properties, scopes, casts, accessors, and
+        // `@method` / `@property` tags) are exposed on the consuming class,
+        // not just its real declared members.  A `@mixin` proxies the whole
+        // public API via magic methods, so a model's synthesized members
+        // must come through as well.
         //
-        // Results are cached in a thread-local map so that the same
-        // mixin (e.g. Builder) is only resolved once per thread.
-        ensure_mixin_cache_fresh();
+        // The re-entrancy guard in `resolve_class_fully_inner` breaks any
+        // cyclic `@mixin` chain by returning a base-only result on re-entry,
+        // so this cannot recurse unboundedly.  Eager resolution populates the
+        // shared cache in dependency order (mixin targets before their
+        // dependents), so on the warm path this is a cache hit.
+        //
+        // Prefer the caller-supplied cache, falling back to the thread-local
+        // active cache so consumers that reach this path through the uncached
+        // `resolve_class_fully` still share resolved results.
         let resolved_mixin = if let Some(c) = cache {
-            let cached = {
-                let map = c.read();
-                map.get(&(Atom::from(&resolved_mixin_name), Vec::new()))
-                    .map(Arc::clone)
-            };
+            // The shared cache memoizes the full resolution, so resolve
+            // directly and let it serve repeat lookups.
+            super::resolve_class_fully_maybe_cached(&mixin_class, class_loader, Some(c))
+        } else if let Some(active) = super::active_resolved_class_cache() {
+            super::resolve_class_fully_maybe_cached(&mixin_class, class_loader, Some(active))
+        } else {
+            // No shared cache is active — memoize per thread so that a deep
+            // mixin (e.g. the Eloquent query builder) is fully resolved at
+            // most once per thread.  The full resolution runs virtual member
+            // providers, which recurse back into this function for nested
+            // mixins, so it must happen *outside* the cache borrow: get,
+            // release, resolve, then insert.
+            ensure_mixin_cache_fresh();
+            let cached = MIXIN_CACHE
+                .with(|thread_cache| thread_cache.borrow().1.get(&resolved_mixin_name).cloned());
             if let Some(cached) = cached {
                 cached
             } else {
+                let resolved =
+                    super::resolve_class_fully_maybe_cached(&mixin_class, class_loader, None);
                 MIXIN_CACHE.with(|thread_cache| {
-                    let mut map = thread_cache.borrow_mut();
-                    Arc::clone(map.1.entry(resolved_mixin_name.clone()).or_insert_with(|| {
-                        Arc::new(crate::inheritance::resolve_class_with_inheritance(
-                            &mixin_class,
-                            class_loader,
-                        ))
-                    }))
-                })
+                    thread_cache
+                        .borrow_mut()
+                        .1
+                        .insert(resolved_mixin_name.clone(), Arc::clone(&resolved));
+                });
+                resolved
             }
-        } else {
-            MIXIN_CACHE.with(|thread_cache| {
-                let mut map = thread_cache.borrow_mut();
-                Arc::clone(map.1.entry(resolved_mixin_name.clone()).or_insert_with(|| {
-                    Arc::new(crate::inheritance::resolve_class_with_inheritance(
-                        &mixin_class,
-                        class_loader,
-                    ))
-                }))
-            })
         };
 
         // Build a substitution map from the mixin class's template params

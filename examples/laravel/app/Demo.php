@@ -292,4 +292,20 @@ class Demo
         $request->user()->isPremium();    // → Customer method
         $request->user()->name;           // → Customer property
     }
+
+
+    // ── @mixin of an Eloquent model exposes its virtual members ─────────
+
+    public function mixinModel(): void
+    {
+        // BakeryProxy is a plain class with `@mixin Bakery`.  The model's
+        // synthesized virtual members flow through the mixin, not just its
+        // real declared members.
+        $proxy = new BakeryProxy(new Bakery());
+
+        $proxy->baguettes;                // relationship HasMany → Collection<Loaf>
+        $proxy->headBaker;                // relationship HasOne  → Baker
+        $proxy->apricot;                  // $casts 'boolean'     → bool
+        $proxy->topping('choc');          // scope method         → Builder
+    }
 }

@@ -773,17 +773,3 @@ remaining work is wiring that call-site through the shared resolution
 pipeline (which today has no `Backend` handle on the forward-walk
 `VarResolutionCtx` path).
 
-#### L23. Eloquent virtual members through `@mixin`
-
-**Impact: Medium (~10 errors) · Effort: Low-Medium**
-
-A non-model class annotated `@mixin ShoppingCart` (a model) does
-not receive the model's *virtual* members — relationship
-properties (`$cart->linkCampaign`, luxplus-website
-`app/Http/Middleware/GlobaLinkCampaign.php:38`, cascades ×4;
-`$cart->items`, ×3) resolve to nothing even though the same access
-works on the model itself. The `@mixin` merge must include
-provider-synthesized members (relationships, scopes, casts,
-accessors), not just declared ones. Distinct from bugs.md B78
-(`@mixin` with a *template* target).
-
