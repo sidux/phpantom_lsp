@@ -481,6 +481,7 @@ impl LanguageServer for Backend {
         // the merged cache — resolves them correctly.  Clearing here lets
         // the now-complete index rebuild every merge correctly.
         self.resolved_class_cache.write().clear();
+        self.auth_user_type_cache.write().clear();
 
         // Mark initialization as complete so that diagnostic workers
         // and pull handlers know the project is fully indexed.
@@ -2377,6 +2378,7 @@ impl Backend {
             // class whose file changed.
             self.class_not_found_cache.write().clear();
             self.resolved_class_cache.write().clear();
+            self.auth_user_type_cache.write().clear();
             self.member_completion_cache.lock().clear();
         }
 

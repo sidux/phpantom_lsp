@@ -153,6 +153,21 @@ check(
     $result === null
 );
 
+// ─── Auth user model (config/auth.php) ───────────────────────────────────────
+
+// The default guard's provider model is App\Models\Customer, so the analyzer
+// resolves Request::user() to that model (widened to the Authenticatable
+// contract because AUTH_MODEL may override it at runtime).
+$authModel = (require __DIR__ . '/config/auth.php')['providers']['users']['model'];
+check(
+    'config/auth.php default provider model is Customer',
+    $authModel === \App\Models\Customer::class
+);
+check(
+    'Customer is an Authenticatable',
+    is_subclass_of(\App\Models\Customer::class, \Illuminate\Contracts\Auth\Authenticatable::class)
+);
+
 // ─── Summary ────────────────────────────────────────────────────────────────
 
 echo "\n";

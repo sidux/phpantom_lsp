@@ -688,3 +688,34 @@ blowup.
 
 
 
+
+## T31. Closure literal-return shape inference
+
+**Impact: Low-Medium · Effort: Medium**
+
+A closure whose native return hint is just `array` but whose body
+returns a literal array should get the literal shape as its
+inferred return type, so `array_map()` results carry it:
+
+```php
+$declarations = array_map(function (ASTNode $child): array {
+    return [$child->getType(), $childChildren[1]];
+}, $children);
+
+[$type, $variable] = $declarations[$index];
+$type->getImage();   // "type of '$type' could not be resolved"
+```
+
+Found in the 2026-07 analyze triage: ~10 pdepend errors
+(`tests/.../PHP82/TrueTypeTest.php:89`,
+`AllowNullAndFalseAsStandAloneTypesTest.php:94`,
+`PHPParserVersion81Test.php:1191,1480`) destructure tuples out of
+`array_map` results built this way. PHPStan infers the shape from
+the return statements; without it the destructured elements are
+unresolved. Depends on nothing else in this file; complements the
+call-site inference work in T25.
+
+**References:**
+- PHPStan: closure return type inference in
+  `ClosureReturnStatementsNode` / `TypeSpecifyingExtension` flow.
+- Psalm: `ClosureAnalyzer` return-type widening.

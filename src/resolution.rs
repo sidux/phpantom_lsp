@@ -87,7 +87,16 @@ impl Backend {
     /// overload performs internally.
     pub(crate) fn find_or_load_class_typed(&self, ty: &PhpType) -> Option<Arc<ClassInfo>> {
         let base = ty.base_name()?;
-        self.find_or_load_class_inner(base)
+        let loaded = self.find_or_load_class_inner(base)?;
+        // Refine the auth entry points' `user()` return type to the configured
+        // model.  Gated on the cheap stored short name so the hot loader path
+        // is untouched for every other class.
+        if matches!(loaded.name.as_str(), "Guard" | "Request") {
+            return Some(crate::virtual_members::laravel::patch_auth_user_class(
+                self, loaded,
+            ));
+        }
+        Some(loaded)
     }
 
     /// Shared implementation used by [`find_or_load_class`].

@@ -76,9 +76,11 @@
 //!   (for `User::whereName('Alice')`).
 
 mod accessors;
+mod auth;
 mod builder;
 mod casts;
 mod config_keys;
+mod config_values;
 mod env_vars;
 mod factory;
 mod helpers;
@@ -90,6 +92,7 @@ mod trans_keys;
 mod view_names;
 mod where_property;
 
+pub(crate) use auth::patch_auth_user_class;
 pub(crate) use config_keys::find_config_references;
 pub(crate) use config_keys::{
     find_all_config_references, resolve_config_key_declaration,

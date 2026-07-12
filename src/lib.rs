@@ -431,6 +431,13 @@ pub struct Backend {
     /// `parse_and_cache_content`) so that stale results never survive
     /// an edit.
     pub(crate) resolved_class_cache: virtual_members::ResolvedClassCache,
+    /// Memoized authenticated-user model type, derived from `config/auth.php`.
+    ///
+    /// Keyed by guard name (an empty string denotes the default guard).
+    /// Populated lazily when an auth-user access is resolved and cleared
+    /// whenever files are re-parsed, so edits to `config/auth.php` take
+    /// effect without a restart.
+    pub(crate) auth_user_type_cache: Arc<RwLock<HashMap<String, Option<crate::php_type::PhpType>>>>,
     /// Per-target member completion cache.
     ///
     /// Typing `$model->wh...` triggers a completion request for each
@@ -845,6 +852,7 @@ impl Backend {
             stub_function_index: RwLock::new(CiMap::from(stubs::build_stub_function_index())),
             stub_constant_index: RwLock::new(stubs::build_stub_constant_index()),
             resolved_class_cache: virtual_members::new_resolved_class_cache(),
+            auth_user_type_cache: Arc::new(RwLock::new(HashMap::new())),
             member_completion_cache: Arc::new(Mutex::new(HashMap::new())),
             method_store: Arc::new(RwLock::new(HashMap::new())),
             gti_index: Arc::new(RwLock::new(HashMap::new())),
@@ -933,6 +941,7 @@ impl Backend {
             stub_function_index: RwLock::new(CiMap::new()),
             stub_constant_index: RwLock::new(HashMap::new()),
             resolved_class_cache: virtual_members::new_resolved_class_cache(),
+            auth_user_type_cache: Arc::new(RwLock::new(HashMap::new())),
             member_completion_cache: Arc::new(Mutex::new(HashMap::new())),
             method_store: Arc::new(RwLock::new(HashMap::new())),
             gti_index: Arc::new(RwLock::new(HashMap::new())),
@@ -1496,6 +1505,7 @@ impl Backend {
             class_not_found_cache: Arc::clone(&self.class_not_found_cache),
             stub_index: RwLock::new(self.stub_index.read().clone()),
             resolved_class_cache: Arc::clone(&self.resolved_class_cache),
+            auth_user_type_cache: Arc::clone(&self.auth_user_type_cache),
             member_completion_cache: Arc::clone(&self.member_completion_cache),
             method_store: Arc::clone(&self.method_store),
             gti_index: Arc::clone(&self.gti_index),

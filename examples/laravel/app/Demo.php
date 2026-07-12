@@ -12,6 +12,7 @@ use App\Models\Bakery;
 use App\Models\BlogAuthor;
 use App\Models\BlogPost;
 use App\Models\Review;
+use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
@@ -276,5 +277,19 @@ class Demo
 
         $forever = Cache::rememberForever('count', fn () => BlogAuthor::count());
         $forever + 1;                     // → int
+    }
+
+
+    // ── Auth user model from config/auth.php ────────────────────────────
+
+    public function authUser(Request $request): void
+    {
+        // config/auth.php maps the default guard's provider to
+        // App\Models\Customer, so the authenticated user resolves to that
+        // model.  Because the model is behind env('AUTH_MODEL', …), the
+        // type widens to Customer|Authenticatable — the best guess plus the
+        // contract Laravel actually guarantees.
+        $request->user()->isPremium();    // → Customer method
+        $request->user()->name;           // → Customer property
     }
 }
