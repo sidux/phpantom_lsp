@@ -2586,7 +2586,17 @@ impl Backend {
             return Some(ty);
         }
 
-        // ClassName::class → ClassName
+        // ClassName::class → class-string<ClassName>
+        //
+        // The magic `::class` constant yields the fully-qualified class
+        // name as a `class-string<T>`, mirroring the general expression
+        // resolver (`resolve_rhs_property_access`).  Keeping the wrapper
+        // here means a template param bound directly from a `::class`
+        // argument (`@param T $x`) infers `class-string<T>` rather than
+        // the bare class, matching the argument's actual type.  The
+        // `class-string<T>` unwrapping paths (ClassStringInner and the
+        // class-string generic wrapper) strip the wrapper back off when
+        // they need the bare class.
         if let Some(name) = trimmed.strip_suffix("::class")
             && !name.is_empty()
             && name
@@ -2595,23 +2605,23 @@ impl Backend {
         {
             // self::class / static::class / parent::class resolve relative
             // to the class at the call site.
-            if name.eq_ignore_ascii_case("self") || name.eq_ignore_ascii_case("static") {
-                return ctx
-                    .current_class
-                    .map(|c| PhpType::Named(c.fqn().to_string()));
-            }
-            if name.eq_ignore_ascii_case("parent") {
-                return ctx
-                    .current_class
-                    .and_then(|c| c.parent_class.as_ref())
-                    .map(|p| PhpType::Named(p.to_string()));
-            }
-            let resolved_name = if let Some(cls) = (ctx.class_loader)(name) {
-                cls.fqn().to_string()
-            } else {
-                name.to_string()
-            };
-            return Some(PhpType::Named(resolved_name));
+            let class_named =
+                if name.eq_ignore_ascii_case("self") || name.eq_ignore_ascii_case("static") {
+                    ctx.current_class
+                        .map(|c| PhpType::Named(c.fqn().to_string()))
+                } else if name.eq_ignore_ascii_case("parent") {
+                    ctx.current_class
+                        .and_then(|c| c.parent_class.as_ref())
+                        .map(|p| PhpType::Named(p.to_string()))
+                } else {
+                    let resolved_name = if let Some(cls) = (ctx.class_loader)(name) {
+                        cls.fqn().to_string()
+                    } else {
+                        name.to_string()
+                    };
+                    Some(PhpType::Named(resolved_name))
+                };
+            return class_named.map(|n| PhpType::ClassString(Some(Box::new(n))));
         }
 
         // When the expression contains a `->` chain (e.g.

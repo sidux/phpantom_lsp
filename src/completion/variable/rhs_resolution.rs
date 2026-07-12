@@ -1465,7 +1465,7 @@ fn classify_from_php_type(tpl_name: &str, ty: &PhpType) -> TemplateBindingMode {
             }
             TemplateBindingMode::Direct
         }
-        PhpType::ClassString(Some(inner)) => {
+        PhpType::ClassString(Some(inner)) | PhpType::InterfaceString(Some(inner)) => {
             if inner.as_ref().is_named(tpl_name) {
                 return TemplateBindingMode::ClassStringInner;
             }

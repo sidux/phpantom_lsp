@@ -622,6 +622,11 @@ class MethodTemplateDemo
         // type (int), not the constant's owning class.
         $mapper->identity(ConstantTypeDemo::TIMEOUT); // hover → int
 
+        // A `::class` argument binds `@param T` to the argument's actual
+        // type — a class-string — so the return type is class-string<Pen>,
+        // not the bare Pen instance type.
+        $mapper->identity(Pen::class); // hover → class-string<Pen>
+
         // Chained instantiation preserves constructor-inferred generics
         (new ObjectMapper())->wrap(new Pen())->first()->write(); // (new ...)->method() chain with generics
 
@@ -5688,6 +5693,11 @@ function runDemoAssertions(): void
     // Untyped class constant argument binds the template to its value type (int).
     $constValue = $mapper->identity(ConstantTypeDemo::TIMEOUT);
     assert(is_int($constValue), 'identity(ConstantTypeDemo::TIMEOUT) must return int (constant value type, not owning class)');
+
+    // A `::class` argument binds `@param T` to a class-string, so the
+    // returned value is the fully-qualified class name string.
+    $penClass = $mapper->identity(Pen::class);
+    assert($penClass === Pen::class, 'identity(Pen::class) must return the class-string Pen::class');
 
     // ── ScaffoldingReducible::reduce() — closure return type binding ────
     /** @var ScaffoldingReducible<Pencil> $reducible */

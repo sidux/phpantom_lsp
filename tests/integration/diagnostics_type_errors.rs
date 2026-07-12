@@ -1690,6 +1690,60 @@ function test(): void {
     );
 }
 
+#[test]
+fn no_diagnostic_for_class_const_binding_bare_template() {
+    // A template param bound directly from a `::class` argument
+    // (`@param T $expected`, no `class-string<>` wrapper) must infer
+    // `class-string<T>` — the argument's actual type — not the bare
+    // class name. Binding to the bare class produces a spurious
+    // "expects Carbon, got class-string<Carbon>" mismatch because the
+    // parameter type is compared against the very argument that bound
+    // it. This is the `Mockery::type(SomeClass::class)` pattern.
+    let php = r#"<?php
+class Carbon {}
+
+class Matcher {
+    /**
+     * @template TExpectedType
+     * @param TExpectedType $expected
+     */
+    public static function type($expected): void {}
+}
+
+function test(): void {
+    Matcher::type(Carbon::class);
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "Should not flag Carbon::class bound through bare @param T, got: {diags:?}"
+    );
+}
+
+#[test]
+fn no_diagnostic_for_class_const_binding_bare_template_function() {
+    // The same self-referential binding for a function-level template.
+    let php = r#"<?php
+class Carbon {}
+
+/**
+ * @template TExpectedType
+ * @param TExpectedType $expected
+ */
+function matcher($expected): void {}
+
+function test(): void {
+    matcher(Carbon::class);
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "Should not flag Carbon::class bound through bare @param T function, got: {diags:?}"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // New rules: iterable<...> accepts arrays
 // ═══════════════════════════════════════════════════════════════════════════
