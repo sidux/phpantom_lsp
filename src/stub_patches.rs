@@ -28,6 +28,13 @@
 //! 1. **`range`** -- phpstorm-stubs return bare `array`.  We patch with a
 //!    conditional return type: `($start is string ? list<string> : list<int|float>)`.
 //!
+//! 2. **`stream_bucket_make_writeable`** -- phpstorm-stubs type the
+//!    return as `object|null` below PHP 8.4 (the `StreamBucket` class
+//!    only exists from 8.4 onward). Bare `object` in a union is not
+//!    recognised as the universal-container case, so property access
+//!    on the result is unverifiable. We override the pre-8.4 case to
+//!    `stdClass|null`, matching PHPStan's function map.
+//!
 //! ### Class patches
 //!
 //! 1. **`WeakMap`** -- phpstorm-stubs have `@template TKey of object`,
@@ -76,8 +83,10 @@ use crate::types::{ClassInfo, FunctionInfo};
 /// cached in `global_functions`.  Only functions with known deficiencies
 /// are patched; all others pass through unchanged.
 pub fn apply_function_stub_patches(func: &mut FunctionInfo) {
-    if func.name.as_str() == "range" {
-        patch_range(func);
+    match func.name.as_str() {
+        "range" => patch_range(func),
+        "stream_bucket_make_writeable" => patch_stream_bucket_make_writeable(func),
+        _ => {}
     }
 }
 
@@ -98,6 +107,41 @@ fn patch_range(func: &mut FunctionInfo) {
             PhpType::float(),
         ]))),
     });
+}
+
+/// Override the pre-8.4 return type of `stream_bucket_make_writeable()`.
+///
+/// phpstorm-stubs resolve the return type to bare `object|null` for PHP
+/// versions before 8.4 (the `StreamBucket` class was only introduced in
+/// 8.4). Bare `object` inside a union is not recognised by the type
+/// engine's universal-container fallback the way `object` or `?object`
+/// alone are, so `$bucket->data` / `$bucket->datalen` become
+/// unverifiable. PHPStan's function map overrides this same case to
+/// `stdClass|null`, which the type engine already treats as accepting
+/// arbitrary properties. The real PHP 8.4+ `StreamBucket|null` type is
+/// left untouched.
+fn patch_stream_bucket_make_writeable(func: &mut FunctionInfo) {
+    if func.return_type.as_ref().is_some_and(is_pre_84_object_type) {
+        func.return_type = Some(PhpType::parse("stdClass|null"));
+    }
+    if func
+        .native_return_type
+        .as_ref()
+        .is_some_and(is_pre_84_object_type)
+    {
+        func.native_return_type = Some(PhpType::parse("stdClass|null"));
+    }
+}
+
+/// Whether `ty` is the pre-8.4 `object|null` (or bare `object`) shape,
+/// as opposed to the real `StreamBucket|null` type used from 8.4 on.
+fn is_pre_84_object_type(ty: &PhpType) -> bool {
+    match ty {
+        PhpType::Named(name) => name.eq_ignore_ascii_case("object"),
+        PhpType::Nullable(inner) => is_pre_84_object_type(inner),
+        PhpType::Union(members) => members.iter().any(is_pre_84_object_type),
+        _ => false,
+    }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -451,6 +495,31 @@ mod tests {
         }
     }
 
+    fn empty_function(name: &str) -> FunctionInfo {
+        FunctionInfo {
+            name: atom(name),
+            name_offset: 0,
+            parameters: Vec::new(),
+            return_type: None,
+            native_return_type: None,
+            description: None,
+            return_description: None,
+            links: Vec::new(),
+            see_refs: Vec::new(),
+            namespace: None,
+            conditional_return: None,
+            type_assertions: Vec::new(),
+            deprecation_message: None,
+            deprecated_replacement: None,
+            throws: Vec::new(),
+            template_params: Vec::new(),
+            template_param_bounds: Default::default(),
+            template_bindings: Vec::new(),
+            is_polyfill: false,
+            overloads: Vec::new(),
+        }
+    }
+
     #[test]
     fn weak_map_gets_array_access_generics() {
         let mut class = empty_class("WeakMap");
@@ -504,32 +573,41 @@ mod tests {
 
     #[test]
     fn range_gets_conditional_return() {
-        let mut func = FunctionInfo {
-            name: atom("range"),
-            name_offset: 0,
-            parameters: Vec::new(),
-            return_type: None,
-            native_return_type: None,
-            description: None,
-            return_description: None,
-            links: Vec::new(),
-            see_refs: Vec::new(),
-            namespace: None,
-            conditional_return: None,
-            type_assertions: Vec::new(),
-            deprecation_message: None,
-            deprecated_replacement: None,
-            throws: Vec::new(),
-            template_params: Vec::new(),
-            template_param_bounds: Default::default(),
-            template_bindings: Vec::new(),
-            is_polyfill: false,
-            overloads: Vec::new(),
-        };
+        let mut func = empty_function("range");
         apply_function_stub_patches(&mut func);
         assert!(
             func.conditional_return.is_some(),
             "range() should have a conditional return type after patching"
+        );
+    }
+
+    #[test]
+    fn stream_bucket_make_writeable_pre_84_becomes_stdclass() {
+        let mut func = empty_function("stream_bucket_make_writeable");
+        func.return_type = Some(PhpType::parse("object|null"));
+        func.native_return_type = Some(PhpType::parse("object|null"));
+
+        apply_function_stub_patches(&mut func);
+
+        assert_eq!(func.return_type, Some(PhpType::parse("stdClass|null")));
+        assert_eq!(
+            func.native_return_type,
+            Some(PhpType::parse("stdClass|null"))
+        );
+    }
+
+    #[test]
+    fn stream_bucket_make_writeable_84_plus_unchanged() {
+        let mut func = empty_function("stream_bucket_make_writeable");
+        func.return_type = Some(PhpType::parse("StreamBucket|null"));
+        func.native_return_type = Some(PhpType::parse("StreamBucket|null"));
+
+        apply_function_stub_patches(&mut func);
+
+        assert_eq!(func.return_type, Some(PhpType::parse("StreamBucket|null")));
+        assert_eq!(
+            func.native_return_type,
+            Some(PhpType::parse("StreamBucket|null"))
         );
     }
 }

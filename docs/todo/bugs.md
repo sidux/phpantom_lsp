@@ -458,17 +458,3 @@ fails ("type of '$iterator[]' could not be resolved") — bracket
 indexing on an object implementing `ArrayAccess<K, V>` should
 resolve to `V` (or the `offsetGet` return type)
 (pdepend `tests/php/PDepend/Source/AST/ASTArtifactListTest.php:221`).
-
-## B88. `stream_bucket_make_writeable` stub returns bare `object` before PHP 8.4
-
-**Severity: Low (2 errors, phpmd) · Confirmed with fixture (requires `"php": "^8.1"` in composer.json)**
-
-phpstorm-stubs types the return as `object|null` below PHP 8.4
-(the `StreamBucket` class only exists from 8.4), so
-`$bucket->data` / `$bucket->datalen` inside the standard
-`php_user_filter::filter()` loop are unverifiable
-(phpmd `tests/php/PHPMD/TextUI/StreamFilter.php:39,43`). Stubs
-bucket: override the pre-8.4 signature to the object shape PHP
-actually returns (`object{bucket: resource, data: string,
-datalen: int, dataLength: int}|false`, as PHPStan's function map
-does) via the stub-patch mechanism (E7), or upstream.
