@@ -1258,6 +1258,12 @@ class BrokenDocblockDemo
         $collection = collect([]);
         $collection->groupBy('key');             // multi-line @return resolves correctly
 
+        // Nested conditional in the generic return collapses against the
+        // argument: grouping by a string key makes the result's key type
+        // `array-key`, so passing a string to `get()` type-checks cleanly
+        // instead of comparing against a raw, unevaluated conditional.
+        $collection->groupBy('key')->get('bucket');
+
         $recovered = (new BrokenDocRecovery())->broken();
         $recovered->working();                   // recovers `static` from broken @return static<
     }
@@ -5601,6 +5607,15 @@ class FluentCollection
      */
     public function groupBy($groupBy, $preserveKeys = false)
     {
+    }
+
+    /**
+     * @param  TKey  $key
+     * @return TValue|null
+     */
+    public function get($key)
+    {
+        return $this->items[$key] ?? null;
     }
 
     /**

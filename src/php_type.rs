@@ -760,6 +760,45 @@ impl PhpType {
         matches!(self, PhpType::Named(s) if s.eq_ignore_ascii_case("null"))
     }
 
+    /// Whether a [`PhpType::Conditional`] appears anywhere in this type tree.
+    ///
+    /// Used as a cheap guard before running the (cloning) nested-conditional
+    /// evaluator over a method's resolved return type: conditionals embedded
+    /// inside a generic wrapper (e.g. `Collection<($x is array ? … : …), …>`)
+    /// need to be collapsed against the call arguments, but the vast majority
+    /// of return types contain no conditional and can be left untouched.
+    pub fn contains_conditional(&self) -> bool {
+        match self {
+            PhpType::Conditional { .. } => true,
+            PhpType::Nullable(inner)
+            | PhpType::Array(inner)
+            | PhpType::ClassString(Some(inner))
+            | PhpType::InterfaceString(Some(inner))
+            | PhpType::KeyOf(inner)
+            | PhpType::ValueOf(inner) => inner.contains_conditional(),
+            PhpType::Union(members)
+            | PhpType::Intersection(members)
+            | PhpType::Generic(_, members) => members.iter().any(|m| m.contains_conditional()),
+            PhpType::ArrayShape(entries) | PhpType::ObjectShape(entries) => {
+                entries.iter().any(|e| e.value_type.contains_conditional())
+            }
+            PhpType::Callable {
+                params,
+                return_type,
+                ..
+            } => {
+                params.iter().any(|p| p.type_hint.contains_conditional())
+                    || return_type
+                        .as_ref()
+                        .is_some_and(|r| r.contains_conditional())
+            }
+            PhpType::IndexAccess(base, index) => {
+                base.contains_conditional() || index.contains_conditional()
+            }
+            _ => false,
+        }
+    }
+
     /// Whether this type is `bool` or `boolean` (case-insensitive).
     ///
     /// Also returns `true` when the type is `?bool` (nullable wrapper).

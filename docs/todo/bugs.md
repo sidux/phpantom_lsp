@@ -235,22 +235,3 @@ foreach cascades at lines 102 and 179). The subtype-check variant
 of this was fixed previously ("a project class sharing a global
 interface's short name"); the `new X()` resolution path still
 prefers the stub.
-
-## B77. Conditional types are not evaluated at call sites in parameter and return position
-
-**Severity: Low-Medium (~3 errors, luxplus-backoffice) · Confirmed from output**
-
-1. Parameter position: Laravel Collection `groupBy`/`keyBy`
-   parameters typed with PHPStan conditional types are compared
-   unevaluated, producing messages that print the raw conditional
-   ("Argument 1 ($key) expects $groupBy is array|string ? array-key
-   : TGroupKey is UnitEnum ? array-key : ..., got string" —
-   `app/Domain/ProductCacheService/Services/ProductCacheRedisService.php:56`,
-   `app/Http/Controllers/Products/Routines/ProductRoutineTemplatesController.php:252`).
-   The conditional must be resolved against the bound template
-   arguments before the subtype check (and never printed raw).
-2. Return position with non-variable arguments:
-   `Str::replace(...)` has `@return ($subject is string ? string : string[])`;
-   passing a method-call chain as `$subject` picks the array branch
-   ("expects string, got array<string>" —
-   `app/Services/Feeds/ProductFeedService.php:1047`).

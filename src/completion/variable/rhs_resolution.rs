@@ -3284,6 +3284,11 @@ fn resolve_rhs_method_call_inner<'b>(
             }
         });
 
+        // Resolver from an argument's source text to its type, used to
+        // evaluate `is <Type>` conditions whose argument is an expression
+        // (a method-call chain, property access, …) rather than a literal.
+        let arg_ty_resolver = |t: &str| Backend::resolve_arg_text_to_type(t, &rctx);
+
         // When the method declares a PHPStan conditional return type,
         // evaluate it against the call-site arguments and prefer the
         // resolved type. This carries mode-dependent shapes (e.g.
@@ -3294,11 +3299,13 @@ fn resolve_rhs_method_call_inner<'b>(
         let ret_type_string = match method_ref.and_then(|m| m.conditional_return.as_ref()) {
             Some(cond) => {
                 let params = method_ref.map(|m| m.parameters.as_slice()).unwrap_or(&[]);
-                let tpl = crate::completion::conditional_resolution::TemplateContext::with_params(
-                    method_ref
+                let tpl = crate::completion::conditional_resolution::TemplateContext {
+                    defaults: None,
+                    params: method_ref
                         .map(|m| m.template_params.as_slice())
                         .unwrap_or(&[]),
-                );
+                    arg_type_resolver: Some(&arg_ty_resolver),
+                };
                 crate::completion::conditional_resolution::resolve_conditional_with_text_args_and_defaults(
                     cond,
                     params,
@@ -3319,6 +3326,36 @@ fn resolve_rhs_method_call_inner<'b>(
             }
             None => ret_type_string,
         };
+
+        // Collapse any conditionals nested inside the (template-substituted)
+        // return type against the call arguments, so a generic wrapper like
+        // `Collection<($groupBy is array|string ? array-key : …), …>` yields
+        // a concrete key type instead of carrying a raw conditional that
+        // later gets compared against — and printed in — an argument-type
+        // diagnostic.
+        let ret_type_string = ret_type_string.map(|ty| {
+            if ty.contains_conditional() {
+                let params = method_ref.map(|m| m.parameters.as_slice()).unwrap_or(&[]);
+                let tpl = crate::completion::conditional_resolution::TemplateContext {
+                    defaults: Some(&template_subs),
+                    params: method_ref
+                        .map(|m| m.template_params.as_slice())
+                        .unwrap_or(&[]),
+                    arg_type_resolver: Some(&arg_ty_resolver),
+                };
+                crate::completion::conditional_resolution::evaluate_nested_conditionals_text(
+                    &ty,
+                    params,
+                    &text_args,
+                    Some(&var_resolver),
+                    Some(&ctx.current_class.name),
+                    ctx.class_loader,
+                    &tpl,
+                )
+            } else {
+                ty
+            }
+        });
 
         let results = Backend::resolve_method_return_types_with_args(
             owner,
@@ -3772,17 +3809,24 @@ fn resolve_rhs_static_call(
                 substituted.replace_self(&owner.fqn())
             });
 
+            // Resolver from an argument's source text to its type, used to
+            // evaluate `is <Type>` conditions whose argument is an expression
+            // (e.g. `Str::replace(..., $obj->toHtml())`) rather than a
+            // literal, so the correct branch is chosen.
+            let arg_ty_resolver = |t: &str| Backend::resolve_arg_text_to_type(t, &rctx);
+
             // Prefer the conditional return type resolved against the
             // call-site arguments (see the instance-call path above).
             let ret_type_string = match method_ref.and_then(|m| m.conditional_return.as_ref()) {
                 Some(cond) => {
                     let params = method_ref.map(|m| m.parameters.as_slice()).unwrap_or(&[]);
-                    let tpl =
-                        crate::completion::conditional_resolution::TemplateContext::with_params(
-                            method_ref
-                                .map(|m| m.template_params.as_slice())
-                                .unwrap_or(&[]),
-                        );
+                    let tpl = crate::completion::conditional_resolution::TemplateContext {
+                        defaults: None,
+                        params: method_ref
+                            .map(|m| m.template_params.as_slice())
+                            .unwrap_or(&[]),
+                        arg_type_resolver: Some(&arg_ty_resolver),
+                    };
                     crate::completion::conditional_resolution::resolve_conditional_with_text_args_and_defaults(
                         cond,
                         params,
@@ -3803,6 +3847,33 @@ fn resolve_rhs_static_call(
                 }
                 None => ret_type_string,
             };
+
+            // Collapse conditionals nested inside the return type (e.g. a
+            // static factory returning `Collection<($k is array|string ?
+            // array-key : …), …>`) against the call arguments.
+            let ret_type_string = ret_type_string.map(|ty| {
+                if ty.contains_conditional() {
+                    let params = method_ref.map(|m| m.parameters.as_slice()).unwrap_or(&[]);
+                    let tpl = crate::completion::conditional_resolution::TemplateContext {
+                        defaults: Some(&template_subs),
+                        params: method_ref
+                            .map(|m| m.template_params.as_slice())
+                            .unwrap_or(&[]),
+                        arg_type_resolver: Some(&arg_ty_resolver),
+                    };
+                    crate::completion::conditional_resolution::evaluate_nested_conditionals_text(
+                        &ty,
+                        params,
+                        &text_args,
+                        Some(&var_resolver),
+                        Some(&ctx.current_class.name),
+                        ctx.class_loader,
+                        &tpl,
+                    )
+                } else {
+                    ty
+                }
+            });
 
             let results = Backend::resolve_method_return_types_with_args(
                 owner,

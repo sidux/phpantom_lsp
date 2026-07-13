@@ -654,6 +654,34 @@ impl Backend {
                             &method_subs,
                         );
                     }
+                    // Collapse any conditionals nested inside the return type
+                    // (e.g. `Collection<($k is array|string ? array-key :
+                    // …), …>`) against the call arguments so signature help
+                    // and downstream consumers never see a raw conditional.
+                    if result_method
+                        .return_type
+                        .as_ref()
+                        .is_some_and(|r| r.contains_conditional())
+                    {
+                        let ret = result_method.return_type.as_ref().unwrap();
+                        let arg_ty_resolver = |t: &str| Self::resolve_arg_text_to_type(t, rctx);
+                        let tpl = TemplateContext {
+                            defaults: Some(&method_subs),
+                            params: &result_method.template_params,
+                            arg_type_resolver: Some(&arg_ty_resolver),
+                        };
+                        let evaluated =
+                            crate::completion::types::conditional::evaluate_nested_conditionals_text(
+                                ret,
+                                &result_method.parameters,
+                                at,
+                                None,
+                                rctx.current_class.map(|c| c.name.as_str()),
+                                rctx.class_loader,
+                                &tpl,
+                            );
+                        result_method.return_type = Some(evaluated);
+                    }
                 }
 
                 let target = ResolvedCallableTarget {
@@ -770,6 +798,33 @@ impl Backend {
                 Self::build_method_template_subs(&merged, method_name, &split_args, rctx);
             if !method_subs.is_empty() {
                 crate::inheritance::apply_substitution_to_method(&mut result_method, &method_subs);
+            }
+            // Collapse conditionals nested inside the return type (e.g.
+            // `Str::replace`'s `($subject is string ? string : string[])`
+            // wrapped in a generic factory) against the call arguments.
+            if result_method
+                .return_type
+                .as_ref()
+                .is_some_and(|r| r.contains_conditional())
+            {
+                let ret = result_method.return_type.as_ref().unwrap();
+                let arg_ty_resolver = |t: &str| Self::resolve_arg_text_to_type(t, rctx);
+                let tpl = TemplateContext {
+                    defaults: Some(&method_subs),
+                    params: &result_method.template_params,
+                    arg_type_resolver: Some(&arg_ty_resolver),
+                };
+                let evaluated =
+                    crate::completion::types::conditional::evaluate_nested_conditionals_text(
+                        ret,
+                        &result_method.parameters,
+                        at,
+                        None,
+                        rctx.current_class.map(|c| c.name.as_str()),
+                        rctx.class_loader,
+                        &tpl,
+                    );
+                result_method.return_type = Some(evaluated);
             }
         }
 
@@ -1876,6 +1931,7 @@ impl Backend {
                             .collect::<HashMap<String, PhpType>>(),
                     ),
                     params: &method.template_params,
+                    arg_type_resolver: None,
                 };
                 let resolved_type = if !text_args.is_empty() {
                     resolve_conditional_with_text_args_and_defaults(
