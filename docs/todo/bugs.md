@@ -254,23 +254,3 @@ prefers the stub.
    passing a method-call chain as `$subject` picks the array branch
    ("expects string, got array<string>" —
    `app/Services/Feeds/ProductFeedService.php:1047`).
-
-## B78. `@mixin` with a template parameter resolves no members
-
-**Severity: Low-Medium (2 direct errors, phpmd; unblocks the phpmd/pdepend wrapper hierarchy) · Confirmed with fixture**
-
-```php
-/**
- * @template-covariant TNode of Engine
- * @mixin TNode
- */
-abstract class Wrapper { }
-
-$wrapper->getLabel();  // "Method 'getLabel' not found on class 'Wrapper'"
-```
-
-When the `@mixin` target is a template parameter, members should
-resolve through the template's upper bound (`Engine` here), and
-through the concrete binding where one exists
-(phpmd `src/Rule/Controversial/CamelCaseParameterName.php:47,51`
-via `AbstractNode`'s `@mixin TNode`).

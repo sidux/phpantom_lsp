@@ -3901,7 +3901,7 @@ abstract class ScaffoldingAbstractAstNode {
     /** @return mixed */
     public function __call(string $name, array $arguments): mixed {
         return match ($name) {
-            'getStartColumn', 'getEndColumn' => 0,
+            'getStartColumn', 'getEndColumn', 'getParameterCount' => 0,
             default => null,
         };
     }
@@ -3911,6 +3911,25 @@ abstract class ScaffoldingAbstractAstNode {
  * @extends ScaffoldingAbstractAstNode<ScaffoldingAstNodeInterface>
  */
 class ScaffoldingConcreteAstNode extends ScaffoldingAbstractAstNode {}
+
+// A subclass tightens the template bound to a narrower interface that adds
+// `getParameterCount()`.  The `@mixin TNode` still lives on the base
+// `ScaffoldingAbstractAstNode` (bound to the looser interface), so resolving
+// the tighter member exercises picking the most specific bound in the chain.
+interface ScaffoldingCallableAstNodeInterface extends ScaffoldingAstNodeInterface {
+    public function getParameterCount(): int;
+}
+
+/**
+ * @template-covariant TNode of ScaffoldingCallableAstNodeInterface
+ * @extends ScaffoldingAbstractAstNode<TNode>
+ */
+abstract class ScaffoldingAbstractCallableAstNode extends ScaffoldingAbstractAstNode {}
+
+/**
+ * @extends ScaffoldingAbstractCallableAstNode<ScaffoldingCallableAstNodeInterface>
+ */
+class ScaffoldingConcreteCallableAstNode extends ScaffoldingAbstractCallableAstNode {}
 
 // ── Pseudo-type class-name collision scaffolding ─────────────────────────────
 // `Number` collides with the `number` PHPDoc pseudo-type but is a real class.
@@ -6527,6 +6546,11 @@ function runDemoAssertions(): void
     $tplMixinNode = new ScaffoldingConcreteAstNode();
     $col = $tplMixinNode->getStartColumn();
     assert(is_int($col), 'ConcreteAstNode (via @mixin TNode bound) getStartColumn() must return int');
+    // The tighter member is only on the subclass's narrowed bound, resolved
+    // through the @mixin declared on the base class.
+    $tplCallableNode = new ScaffoldingConcreteCallableAstNode();
+    $count = $tplCallableNode->getParameterCount();
+    assert(is_int($count), 'ConcreteCallableAstNode (via tightest @mixin TNode bound) getParameterCount() must return int');
 
     // ── new $var() with class-string<T> ─────────────────────────────────
     $penFromClassString = ScaffoldingClassStringFactory::create(Pen::class);

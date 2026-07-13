@@ -110,6 +110,21 @@ struct MixinDedup {
     constants: HashSet<String>,
 }
 
+/// The substitution environment for a single [`collect_mixin_members`] level.
+///
+/// Groups the two maps used to resolve a `@mixin` name that is a template
+/// parameter into a concrete class, keeping the argument count of
+/// [`collect_mixin_members`] within clippy's limit.
+struct MixinSubs<'a> {
+    /// Concrete type per template param (from generic arguments provided by
+    /// a subclass via `@extends`/`@mixin` generics).  Checked first.
+    subs: &'a HashMap<String, PhpType>,
+    /// Upper bound per template param (from `@template T of Bound`).  Used
+    /// as a fallback when no concrete type is bound, so a `@mixin T` still
+    /// resolves members through the constraint.
+    bounds: &'a crate::atom::AtomMap<PhpType>,
+}
+
 use super::{VirtualMemberProvider, VirtualMembers};
 
 /// Virtual member provider for `@method`, `@property`, and `@mixin` docblock tags.
@@ -333,7 +348,12 @@ impl VirtualMemberProvider for PHPDocProvider {
 
                 // Build a substitution map for this parent level from
                 // the child's `@extends` generics.
-                let level_subs = build_mixin_substitution_map(&current, &parent, &active_subs);
+                let level_subs = build_mixin_substitution_map(
+                    &current,
+                    &parent,
+                    &active_subs,
+                    &class.template_param_bounds,
+                );
 
                 if let Some(doc_text) = parent.class_docblock.as_deref()
                     && !doc_text.is_empty()
@@ -485,7 +505,10 @@ impl VirtualMemberProvider for PHPDocProvider {
             &class.mixin_generics,
             class_loader,
             &mut collector,
-            &HashMap::new(),
+            &MixinSubs {
+                subs: &HashMap::new(),
+                bounds: &class.template_param_bounds,
+            },
             0,
             cache,
         );
@@ -517,7 +540,12 @@ impl VirtualMemberProvider for PHPDocProvider {
 
             // Build the substitution map for this parent level,
             // analogous to `build_substitution_map` in inheritance.rs.
-            let level_subs = build_mixin_substitution_map(&current_ancestor, &parent, &active_subs);
+            let level_subs = build_mixin_substitution_map(
+                &current_ancestor,
+                &parent,
+                &active_subs,
+                &class.template_param_bounds,
+            );
 
             if !parent.mixins.is_empty() {
                 // Apply the accumulated substitution map to the
@@ -542,7 +570,10 @@ impl VirtualMemberProvider for PHPDocProvider {
                     &resolved_mixin_generics,
                     class_loader,
                     &mut collector,
-                    &level_subs,
+                    &MixinSubs {
+                        subs: &level_subs,
+                        bounds: &parent.template_param_bounds,
+                    },
                     0,
                     cache,
                 );
@@ -583,13 +614,15 @@ fn collect_mixin_members(
     mixin_generics: &[(Atom, Vec<PhpType>)],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     collector: &mut MixinCollector,
-    template_subs: &HashMap<String, PhpType>,
+    subs: &MixinSubs<'_>,
     depth: u32,
     cache: Option<&super::ResolvedClassCache>,
 ) {
     if depth > MAX_MIXIN_DEPTH {
         return;
     }
+
+    let template_subs = subs.subs;
 
     for mixin_name in mixin_names {
         // If the mixin name is a template parameter, substitute it
@@ -600,6 +633,20 @@ fn collect_mixin_members(
             } else {
                 // The concrete type is a scalar, union, or other
                 // non-class type — cannot be used as a mixin.
+                continue;
+            }
+        } else if let Some(bound) = subs.bounds.get(mixin_name) {
+            // The mixin name is a template parameter with no concrete
+            // binding (e.g. `@mixin TNode` on a class declaring
+            // `@template TNode of Engine`).  Resolve members through the
+            // template's upper bound so the class itself still exposes the
+            // bound's public API.  A concrete subclass that provides a
+            // real binding via `@extends` overrides this through the
+            // substitution path above.
+            if let Some(base) = bound.base_name() {
+                base.to_string()
+            } else {
+                // The bound is a scalar, union, or other non-class type.
                 continue;
             }
         } else {
@@ -821,7 +868,10 @@ fn collect_mixin_members(
                 &mixin_class.mixin_generics,
                 class_loader,
                 collector,
-                &HashMap::new(),
+                &MixinSubs {
+                    subs: &HashMap::new(),
+                    bounds: &mixin_class.template_param_bounds,
+                },
                 depth + 1,
                 cache,
             );
@@ -900,7 +950,10 @@ pub fn resolve_template_param_mixins(
         &original_class.mixin_generics,
         class_loader,
         &mut collector,
-        template_subs,
+        &MixinSubs {
+            subs: template_subs,
+            bounds: &original_class.template_param_bounds,
+        },
         0,
         None,
     );
@@ -996,6 +1049,7 @@ fn build_mixin_substitution_map(
     current: &ClassInfo,
     parent: &ClassInfo,
     active_subs: &HashMap<String, PhpType>,
+    origin_bounds: &crate::atom::AtomMap<PhpType>,
 ) -> HashMap<String, PhpType> {
     if parent.template_params.is_empty() {
         return active_subs.clone();
@@ -1050,10 +1104,22 @@ fn build_mixin_substitution_map(
 
             // Fall back to the template bound only when the parent
             // uses the template param directly as a mixin name.
+            //
+            // Prefer the bound declared on the walk-origin class (the
+            // most-derived class whose members are being resolved) over
+            // the intermediate level's bound.  In a straight-through chain
+            // (`@extends Parent<TNode>` at every level) each class may
+            // tighten the constraint, e.g. `AbstractNode<TNode of ASTNode>`
+            // → `CallableNode<TNode of AbstractCallable>`.  The mixin lives
+            // on the ancestor with the loosest bound, but the concrete
+            // members available come from the origin's tighter bound, so
+            // that is the one to resolve against.
             if parent_has_template_param_mixin
                 && let Some(name) = resolved.base_name()
                 && let Some(tp) = current.template_params.iter().find(|t| t.as_str() == name)
-                && let Some(bound) = current.template_param_bounds.get(tp)
+                && let Some(bound) = origin_bounds
+                    .get(tp)
+                    .or_else(|| current.template_param_bounds.get(tp))
             {
                 resolved = bound.clone();
             }
