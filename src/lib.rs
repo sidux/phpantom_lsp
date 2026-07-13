@@ -446,8 +446,7 @@ pub struct Backend {
     /// this project has no such aliases" (e.g. a non-Laravel project). Cleared
     /// whenever files are re-parsed so edits to `config/app.php` take effect
     /// without a restart.
-    pub(crate) laravel_aliases:
-        Arc<RwLock<Option<Arc<virtual_members::laravel::LaravelAliases>>>>,
+    pub(crate) laravel_aliases: Arc<RwLock<Option<Arc<virtual_members::laravel::LaravelAliases>>>>,
     /// Per-target member completion cache.
     ///
     /// Typing `$model->wh...` triggers a completion request for each

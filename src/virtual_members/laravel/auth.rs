@@ -42,10 +42,10 @@ use super::config_values::{ConfigNode, parse_config_tree};
 pub(crate) const AUTHENTICATABLE_FQN: &str = "Illuminate\\Contracts\\Auth\\Authenticatable";
 
 /// FQN of the guard contract whose `user()` resolves the default-guard model.
-const GUARD_FQN: &str = "Illuminate\\Contracts\\Auth\\Guard";
+pub(crate) const GUARD_FQN: &str = "Illuminate\\Contracts\\Auth\\Guard";
 
 /// FQN of the HTTP request whose `user()` resolves the default-guard model.
-const REQUEST_FQN: &str = "Illuminate\\Http\\Request";
+pub(crate) const REQUEST_FQN: &str = "Illuminate\\Http\\Request";
 
 /// Refine `Guard::user()` / `Request::user()` to return the configured auth
 /// user model for the **default** guard, preserving the method's nullability.

@@ -135,7 +135,14 @@ fn build_laravel_aliases(backend: &Backend) -> LaravelAliases {
 /// on-disk copy. Located via the class index (`fqn_uri_index`), which already
 /// covers every vendor class from the Composer classmap.
 fn read_source_by_fqn(backend: &Backend, fqn: &str) -> Option<String> {
-    let uri = match backend.fqn_uri_index.read().get(fqn).cloned() {
+    // Bind the lookup to a `let` so the `fqn_uri_index` read guard is
+    // released before the `None` arm runs.  Holding it across
+    // `find_or_load_class` would self-deadlock: parsing the class takes a
+    // `write()` on the same index, which blocks forever waiting for this
+    // thread's own outstanding reader (a temporary in a `match` scrutinee
+    // lives to the end of the `match`).
+    let indexed = backend.fqn_uri_index.read().get(fqn).cloned();
+    let uri = match indexed {
         Some(uri) => uri,
         None => {
             // Not yet in the class index (e.g. a lazily-loaded PSR-4 project).
@@ -172,10 +179,7 @@ fn read_project_config(backend: &Backend, file_name: &str) -> Option<String> {
 /// Run the parser and mago-names resolver over `content`, then hand the parsed
 /// program and resolved-name table to `f` (which must extract owned data before
 /// the arena is dropped).
-fn with_parsed<R>(
-    content: &str,
-    f: impl FnOnce(&Program<'_>, &OwnedResolvedNames) -> R,
-) -> R {
+fn with_parsed<R>(content: &str, f: impl FnOnce(&Program<'_>, &OwnedResolvedNames) -> R) -> R {
     let arena = Bump::new();
     let file_id = FileId::new(b"input.php");
     let program = parse_file_content(&arena, file_id, content.as_bytes());
@@ -263,10 +267,7 @@ fn parse_config_facade_aliases(content: &str) -> HashMap<String, String> {
 
 /// Recursively collect every array literal (`[…]` and `array(…)`) reachable
 /// from `node`.
-fn collect_arrays<'ast, 'arena>(
-    node: Node<'ast, 'arena>,
-    out: &mut Vec<&'ast Array<'arena>>,
-) {
+fn collect_arrays<'ast, 'arena>(node: Node<'ast, 'arena>, out: &mut Vec<&'ast Array<'arena>>) {
     if let Node::Array(arr) = node {
         out.push(arr);
     }

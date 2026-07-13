@@ -88,12 +88,24 @@ class CacheManager
 
 fn base_files() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("vendor/illuminate/Foundation/Application.php", APPLICATION_PHP),
+        (
+            "vendor/illuminate/Foundation/Application.php",
+            APPLICATION_PHP,
+        ),
         ("vendor/illuminate/Support/Facades/Facade.php", FACADE_PHP),
         ("vendor/illuminate/Support/Facades/App.php", FACADE_APP_PHP),
-        ("vendor/illuminate/Support/Facades/Cache.php", FACADE_CACHE_PHP),
-        ("vendor/illuminate/View/Compilers/BladeCompiler.php", BLADE_COMPILER_PHP),
-        ("vendor/illuminate/Cache/CacheManager.php", CACHE_MANAGER_PHP),
+        (
+            "vendor/illuminate/Support/Facades/Cache.php",
+            FACADE_CACHE_PHP,
+        ),
+        (
+            "vendor/illuminate/View/Compilers/BladeCompiler.php",
+            BLADE_COMPILER_PHP,
+        ),
+        (
+            "vendor/illuminate/Cache/CacheManager.php",
+            CACHE_MANAGER_PHP,
+        ),
     ]
 }
 

@@ -121,6 +121,14 @@ pub(super) fn build_var_resolver<'a>(
 /// method body can be scanned for return statements.
 type BodyReturnInferrerFn = Box<dyn Fn(&str, &MethodInfo) -> Option<PhpType>>;
 
+/// Closure type for guard-aware auth user model resolution.
+///
+/// Takes an optional guard name (`None` for the default guard) and
+/// returns the model type configured for that guard in
+/// `config/auth.php`, or `None` when no concrete model can be pinned
+/// down.
+type AuthUserResolverFn = Box<dyn Fn(Option<&str>) -> Option<PhpType>>;
+
 thread_local! {
     /// When `Some`, `resolve_instance_method_callable` caches results
     /// by `"FQN::method_lower"`.  Activated by
@@ -151,6 +159,20 @@ thread_local! {
     /// (forward walker + full resolution), so even non-recursive
     /// chains are expensive.
     static BODY_INFER_DEPTH: Cell<u8> = const { Cell::new(0) };
+
+    /// When `Some`, `user()` calls on an auth entry point (a `Guard` or
+    /// `Request` subtype) resolve the model configured in
+    /// `config/auth.php` for the guard named at the call site.
+    ///
+    /// The closure takes an optional guard name (from `auth('admin')`,
+    /// `Auth::guard('admin')`, `->guard('admin')`, or
+    /// `$request->user('admin')`; `None` for the default guard) and
+    /// returns the resolved model type.  Set up by
+    /// [`Backend::activate_auth_user_resolver`] at request entry points
+    /// that have access to `Backend` (which holds the config and class
+    /// index the traversal needs).
+    static AUTH_USER_RESOLVER: RefCell<Option<AuthUserResolverFn>> =
+        const { RefCell::new(None) };
 }
 
 /// RAII guard that clears the callable target cache on drop.
@@ -277,7 +299,168 @@ pub(crate) fn try_infer_body_return_type(class_fqn: &str, method: &MethodInfo) -
     result
 }
 
+// ── Guard-aware auth user model resolution ──────────────────────────────────
+
+/// RAII guard that clears [`AUTH_USER_RESOLVER`] on drop.
+pub(crate) struct AuthUserResolverGuard {
+    owns: bool,
+}
+
+impl Drop for AuthUserResolverGuard {
+    fn drop(&mut self) {
+        if self.owns {
+            AUTH_USER_RESOLVER.with(|cell| {
+                *cell.borrow_mut() = None;
+            });
+        }
+    }
+}
+
+/// Activate guard-aware auth user model resolution for the current thread.
+///
+/// The provided closure maps an optional guard name to the model type
+/// configured for that guard in `config/auth.php`.  Returns an RAII
+/// guard that clears the resolver on drop.
+pub(crate) fn with_auth_user_resolver(resolver: AuthUserResolverFn) -> AuthUserResolverGuard {
+    let already_active = AUTH_USER_RESOLVER.with(|cell| cell.borrow().is_some());
+    if already_active {
+        return AuthUserResolverGuard { owns: false };
+    }
+    AUTH_USER_RESOLVER.with(|cell| {
+        *cell.borrow_mut() = Some(resolver);
+    });
+    AuthUserResolverGuard { owns: true }
+}
+
+/// Resolve a `user()` call on an auth entry point to the model type
+/// configured for the guard named at the call site.
+///
+/// Returns `None` (so the caller falls back to ordinary method
+/// resolution, which keeps the default-guard class-level patch) when:
+///
+/// * the receiver is not a `Guard`/`Request` subtype (so this is some
+///   unrelated `user()` method),
+/// * no [`AUTH_USER_RESOLVER`] is active on this thread, or
+/// * the guard's provider maps to no concrete model.
+///
+/// `base` is the receiver expression (used to recover the guard name
+/// from `auth('admin')` / `Auth::guard('admin')` / `->guard('admin')`),
+/// and `user_args` is the argument text of the `user()` call itself
+/// (used to recover the guard name from `$request->user('admin')`).
+fn resolve_auth_user_at_call(
+    base: &SubjectExpr,
+    user_args: &str,
+    owners: &[ResolvedType],
+    ctx: &ResolutionCtx<'_>,
+) -> Option<Vec<Arc<ClassInfo>>> {
+    // Cheap gate first: without an active resolver there is nothing to
+    // refine, so skip the (comparatively expensive) subtype walk below.
+    let is_resolver_active = AUTH_USER_RESOLVER.with(|cell| cell.borrow().is_some());
+    if !is_resolver_active {
+        return None;
+    }
+
+    // Only intercept `user()` on an actual auth entry point.  Every
+    // other class with a `user()` method must resolve normally.
+    let is_auth_receiver = owners.iter().any(|rt| {
+        rt.class_info.as_ref().is_some_and(|ci| {
+            crate::util::is_subtype_of(
+                ci,
+                crate::virtual_members::laravel::GUARD_FQN,
+                ctx.class_loader,
+            ) || crate::util::is_subtype_of(
+                ci,
+                crate::virtual_members::laravel::REQUEST_FQN,
+                ctx.class_loader,
+            )
+        })
+    });
+    if !is_auth_receiver {
+        return None;
+    }
+
+    let guard = auth_guard_name(base, user_args);
+    let model_type =
+        AUTH_USER_RESOLVER.with(|cell| cell.borrow().as_ref().and_then(|f| f(guard.as_deref())))?;
+
+    let classes = super::type_resolution::type_hint_to_classes_typed(
+        &model_type,
+        "",
+        ctx.all_classes,
+        ctx.class_loader,
+    );
+    if classes.is_empty() {
+        None
+    } else {
+        Some(classes)
+    }
+}
+
+/// Recover the guard name from a `user()` call site.
+///
+/// The guard name may be an explicit argument to `user()` itself
+/// (`$request->user('admin')`) or come from the auth entry point that
+/// produced the receiver (`auth('admin')`, `Auth::guard('admin')`,
+/// `auth()->guard('admin')`).  Returns `None` for the default guard or
+/// when the guard argument is not a plain string literal (a runtime
+/// value we cannot pin down statically).
+fn auth_guard_name(base: &SubjectExpr, user_args: &str) -> Option<String> {
+    // Explicit guard argument on `user()` itself.
+    if let Some(name) = first_string_literal_arg(user_args) {
+        return Some(name);
+    }
+    // Guard name carried by the receiver expression.
+    if let SubjectExpr::CallExpr { callee, args_text } = base {
+        match callee.as_ref() {
+            // `auth('admin')` global helper.
+            SubjectExpr::FunctionCall(name)
+                if name.trim_start_matches('\\').eq_ignore_ascii_case("auth") =>
+            {
+                return first_string_literal_arg(args_text);
+            }
+            // `Auth::guard('admin')` facade, or `auth()->guard('admin')` /
+            // `$factory->guard('admin')`.  The receiver-subtype gate above
+            // has already confirmed the resulting value is a `Guard`.
+            SubjectExpr::StaticMethodCall { method, .. }
+            | SubjectExpr::MethodCall { method, .. }
+                if method.eq_ignore_ascii_case("guard") =>
+            {
+                return first_string_literal_arg(args_text);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Extract the first argument of a call as a plain string literal.
+///
+/// Returns `None` when there are no arguments or the first argument is
+/// not a single-quoted or double-quoted string literal.
+fn first_string_literal_arg(args_text: &str) -> Option<String> {
+    let first = split_text_args(args_text).into_iter().next()?;
+    crate::util::unquote_php_string(first.trim()).map(str::to_string)
+}
+
 impl Backend {
+    /// Build and activate the thread-local guard-aware auth user model
+    /// resolver.
+    ///
+    /// Returns an RAII guard that deactivates the resolver on drop.
+    /// Call this alongside [`activate_body_return_inferrer`] at request
+    /// entry points so that `user()` calls resolve the model configured
+    /// for the guard named at the call site.
+    ///
+    /// [`activate_body_return_inferrer`]: Backend::activate_body_return_inferrer
+    pub(crate) fn activate_auth_user_resolver(&self) -> AuthUserResolverGuard {
+        let backend = self.clone_for_diagnostic_worker();
+        let resolver = move |guard: Option<&str>| -> Option<PhpType> {
+            let loader = |name: &str| backend.find_or_load_class(name);
+            crate::virtual_members::laravel::resolve_auth_user_type(&backend, guard, &loader)
+        };
+        with_auth_user_resolver(Box::new(resolver))
+    }
+
     /// Build and activate the thread-local body return type inferrer.
     ///
     /// Returns an RAII guard that deactivates the inferrer on drop.
@@ -938,6 +1121,19 @@ impl Backend {
                 // return type.
                 let lhs_resolved: Vec<ResolvedType> =
                     super::resolver::resolve_target_classes_expr(base, AccessKind::Arrow, ctx);
+
+                // Guard-aware auth user model: a `user()` call on a
+                // `Guard`/`Request` subtype resolves to the model
+                // configured for the guard named at the call site
+                // (`auth('admin')`, `Auth::guard('admin')`,
+                // `$request->user('admin')`), falling back to the
+                // default-guard model otherwise.
+                if method_name == "user"
+                    && let Some(classes) =
+                        resolve_auth_user_at_call(base, text_args, &lhs_resolved, ctx)
+                {
+                    return classes;
+                }
 
                 // Capture the raw return type hint while we iterate
                 // the owner classes below.  We grab it from the first
@@ -3065,5 +3261,63 @@ fn callable_type_as_target(return_type: &PhpType) -> Option<ResolvedCallableTarg
         }
         PhpType::Nullable(inner) => callable_type_as_target(inner),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod auth_guard_tests {
+    use super::{auth_guard_name, first_string_literal_arg};
+    use crate::subject_expr::SubjectExpr;
+
+    #[test]
+    fn first_arg_reads_string_literals() {
+        assert_eq!(
+            first_string_literal_arg("'admin'").as_deref(),
+            Some("admin")
+        );
+        assert_eq!(
+            first_string_literal_arg("\"admin\"").as_deref(),
+            Some("admin")
+        );
+        // Extra arguments after the first are ignored.
+        assert_eq!(
+            first_string_literal_arg("'admin', true").as_deref(),
+            Some("admin")
+        );
+    }
+
+    #[test]
+    fn first_arg_rejects_non_literals() {
+        assert_eq!(first_string_literal_arg(""), None);
+        assert_eq!(first_string_literal_arg("$guard"), None);
+        assert_eq!(first_string_literal_arg("GUARD_NAME"), None);
+    }
+
+    /// The guard name is recovered from every call-site form.
+    #[test]
+    fn guard_name_from_receiver_and_args() {
+        let cases = [
+            // `auth('admin')->user()`
+            ("auth('admin')", "", Some("admin")),
+            // `Auth::guard('admin')->user()`
+            ("Auth::guard('admin')", "", Some("admin")),
+            // `auth()->guard('admin')->user()`
+            ("auth()->guard('admin')", "", Some("admin")),
+            // `$request->user('admin')` — guard is the `user()` argument.
+            ("$request", "'admin'", Some("admin")),
+            // Default guard: no argument anywhere.
+            ("$request", "", None),
+            ("auth()", "", None),
+            // A dynamic guard argument cannot be pinned down statically.
+            ("auth($name)", "", None),
+        ];
+        for (base_src, user_args, expected) in cases {
+            let base = SubjectExpr::parse(base_src);
+            assert_eq!(
+                auth_guard_name(&base, user_args).as_deref(),
+                expected,
+                "base = {base_src:?}, user_args = {user_args:?}"
+            );
+        }
     }
 }

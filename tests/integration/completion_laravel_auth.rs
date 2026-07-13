@@ -8,9 +8,12 @@ use tower_lsp::lsp_types::*;
 const COMPOSER_JSON: &str = r#"{
     "autoload": {
         "psr-4": {
+            "App\\": "src/",
             "App\\Models\\": "src/Models/",
             "Illuminate\\Contracts\\Auth\\": "vendor/illuminate/Contracts/Auth/",
-            "Illuminate\\Http\\": "vendor/illuminate/Http/"
+            "Illuminate\\Http\\": "vendor/illuminate/Http/",
+            "Illuminate\\Foundation\\Http\\": "vendor/illuminate/Foundation/Http/",
+            "Illuminate\\Support\\Facades\\": "vendor/illuminate/Support/Facades/"
         }
     }
 }"#;
@@ -61,6 +64,25 @@ class Admin implements Authenticatable {
 }
 ";
 
+/// The `Auth` facade, whose `guard()` returns a `Guard` for the named
+/// guard (`Auth::guard('admin')`).
+const AUTH_FACADE_PHP: &str = "\
+<?php
+namespace Illuminate\\Support\\Facades;
+use Illuminate\\Contracts\\Auth\\Guard;
+class Auth {
+    public static function guard($name = null): Guard { return null; }
+}
+";
+
+/// A `FormRequest` base extending `Request`, mirroring Laravel's own.
+const FORM_REQUEST_PHP: &str = "\
+<?php
+namespace Illuminate\\Foundation\\Http;
+use Illuminate\\Http\\Request;
+class FormRequest extends Request {}
+";
+
 fn base_files() -> Vec<(&'static str, &'static str)> {
     vec![
         (
@@ -69,10 +91,42 @@ fn base_files() -> Vec<(&'static str, &'static str)> {
         ),
         ("vendor/illuminate/Contracts/Auth/Guard.php", GUARD_PHP),
         ("vendor/illuminate/Http/Request.php", REQUEST_PHP),
+        (
+            "vendor/illuminate/Foundation/Http/FormRequest.php",
+            FORM_REQUEST_PHP,
+        ),
+        (
+            "vendor/illuminate/Support/Facades/Auth.php",
+            AUTH_FACADE_PHP,
+        ),
         ("src/Models/User.php", USER_PHP),
         ("src/Models/Admin.php", ADMIN_PHP),
     ]
 }
+
+/// A two-guard config: the default `web` guard maps to `User`, and the
+/// named `admin` guard maps to `Admin`.  Both are hard literals so the
+/// default resolves precisely to `User` with no fan-out.
+const MULTI_GUARD_CONFIG: (&str, &str) = (
+    "config/auth.php",
+    "<?php return [
+        'defaults' => ['guard' => 'web'],
+        'guards' => [
+            'web' => ['provider' => 'users'],
+            'admin' => ['provider' => 'admins'],
+        ],
+        'providers' => [
+            'users' => ['model' => App\\Models\\User::class],
+            'admins' => ['model' => App\\Models\\Admin::class],
+        ],
+    ];",
+);
+
+/// A global `auth()` helper returning a `Guard`, mirroring Laravel's.
+const AUTH_HELPER_PHP: &str = "\
+<?php
+function auth($guard = null): \\Illuminate\\Contracts\\Auth\\Guard { return null; }
+";
 
 async fn complete_labels(
     files: &[(&str, &str)],
@@ -81,7 +135,34 @@ async fn complete_labels(
     line: u32,
     character: u32,
 ) -> Vec<String> {
+    complete_labels_with_opens(files, &[], open_path, content, line, character).await
+}
+
+/// Like [`complete_labels`], but first opens each `(path, content)` in
+/// `pre_open` so their symbols (e.g. a global `auth()` helper) are
+/// indexed before the completion request runs.
+async fn complete_labels_with_opens(
+    files: &[(&str, &str)],
+    pre_open: &[(&str, &str)],
+    open_path: &str,
+    content: &str,
+    line: u32,
+    character: u32,
+) -> Vec<String> {
     let (backend, dir) = create_psr4_workspace(COMPOSER_JSON, files);
+    for (path, text) in pre_open {
+        let uri = Url::from_file_path(dir.path().join(path)).unwrap();
+        backend
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri,
+                    language_id: "php".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            })
+            .await;
+    }
     let uri = Url::from_file_path(dir.path().join(open_path)).unwrap();
     backend
         .did_open(DidOpenTextDocumentParams {
@@ -253,5 +334,174 @@ class C {
     assert!(
         labels.iter().any(|l| l.starts_with("isSuperUser")),
         "expected Admin::isSuperUser from the raised floor, got: {labels:?}"
+    );
+}
+
+/// `Auth::guard('admin')->user()` resolves to the model configured for
+/// the **named** guard (`Admin`), not the default guard's `User`.
+#[tokio::test]
+async fn named_guard_via_facade_resolves_that_guards_model() {
+    let mut files = base_files();
+    files.push(MULTI_GUARD_CONFIG);
+
+    let controller = "\
+<?php
+namespace App;
+use Illuminate\\Support\\Facades\\Auth;
+class C {
+    public function show() {
+        Auth::guard('admin')->user()->
+    }
+}
+";
+    let labels = complete_labels(&files, "src/C.php", controller, 5, 38).await;
+    assert!(
+        labels.iter().any(|l| l.starts_with("isSuperUser")),
+        "expected Admin::isSuperUser via Auth::guard('admin'), got: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|l| l.starts_with("isActive")),
+        "did not expect the default guard's User::isActive, got: {labels:?}"
+    );
+}
+
+/// The guard name passed directly to `Request::user('admin')` selects
+/// the named guard's model.
+#[tokio::test]
+async fn named_guard_via_user_argument_resolves_that_guards_model() {
+    let mut files = base_files();
+    files.push(MULTI_GUARD_CONFIG);
+
+    let controller = "\
+<?php
+namespace App;
+use Illuminate\\Http\\Request;
+class C {
+    public function show(Request $request) {
+        $request->user('admin')->
+    }
+}
+";
+    let labels = complete_labels(&files, "src/C.php", controller, 5, 33).await;
+    assert!(
+        labels.iter().any(|l| l.starts_with("isSuperUser")),
+        "expected Admin::isSuperUser via user('admin'), got: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|l| l.starts_with("isActive")),
+        "did not expect the default guard's User::isActive, got: {labels:?}"
+    );
+}
+
+/// With no guard argument, `$request->user()` still resolves to the
+/// default guard's model even when other guards are configured.
+#[tokio::test]
+async fn default_guard_unaffected_by_named_guards() {
+    let mut files = base_files();
+    files.push(MULTI_GUARD_CONFIG);
+
+    let controller = "\
+<?php
+namespace App;
+use Illuminate\\Http\\Request;
+class C {
+    public function show(Request $request) {
+        $request->user()->
+    }
+}
+";
+    let labels = complete_labels(&files, "src/C.php", controller, 5, 26).await;
+    assert!(
+        labels.iter().any(|l| l.starts_with("isActive")),
+        "expected default guard's User::isActive, got: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|l| l.starts_with("isSuperUser")),
+        "did not expect the admin guard's Admin::isSuperUser, got: {labels:?}"
+    );
+}
+
+/// `$this->user()` inside a `FormRequest` subclass resolves the default
+/// guard's model, exercising the receiver-subtype gate on an inherited
+/// `user()`.
+#[tokio::test]
+async fn form_request_this_user_resolves_default_model() {
+    let mut files = base_files();
+    files.push(MULTI_GUARD_CONFIG);
+
+    let form_request = "\
+<?php
+namespace App;
+use Illuminate\\Foundation\\Http\\FormRequest;
+class StoreRequest extends FormRequest {
+    public function authorize(): bool {
+        $this->user()->
+    }
+}
+";
+    let labels = complete_labels(&files, "src/StoreRequest.php", form_request, 5, 23).await;
+    assert!(
+        labels.iter().any(|l| l.starts_with("isActive")),
+        "expected User::isActive via FormRequest $this->user(), got: {labels:?}"
+    );
+}
+
+/// `$request->user()` where `$request` is a `Request`-typed **property**
+/// resolves the default guard's model.
+#[tokio::test]
+async fn request_property_user_resolves_default_model() {
+    let mut files = base_files();
+    files.push(MULTI_GUARD_CONFIG);
+
+    let handler = "\
+<?php
+namespace App;
+use Illuminate\\Http\\Request;
+class Handler {
+    public function __construct(private Request $request) {}
+    public function run() {
+        $this->request->user()->
+    }
+}
+";
+    let labels = complete_labels(&files, "src/Handler.php", handler, 6, 32).await;
+    assert!(
+        labels.iter().any(|l| l.starts_with("isActive")),
+        "expected User::isActive via $this->request->user(), got: {labels:?}"
+    );
+}
+
+/// `auth('admin')->user()` through the global `auth()` helper resolves
+/// the named guard's model.
+#[tokio::test]
+async fn named_guard_via_helper_resolves_that_guards_model() {
+    let mut files = base_files();
+    files.push(MULTI_GUARD_CONFIG);
+
+    let controller = "\
+<?php
+namespace App;
+class C {
+    public function show() {
+        auth('admin')->user()->
+    }
+}
+";
+    let labels = complete_labels_with_opens(
+        &files,
+        &[("src/helpers.php", AUTH_HELPER_PHP)],
+        "src/C.php",
+        controller,
+        4,
+        31,
+    )
+    .await;
+    assert!(
+        labels.iter().any(|l| l.starts_with("isSuperUser")),
+        "expected Admin::isSuperUser via auth('admin'), got: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|l| l.starts_with("isActive")),
+        "did not expect the default guard's User::isActive, got: {labels:?}"
     );
 }

@@ -663,37 +663,3 @@ binding names (`app('...')`), facade string aliases, and anything else that
 requires the live container. These genuinely cannot be resolved without
 booting, and a snapshot of them is the "true for one boot" half-truth we are
 choosing not to ship.
-
----
-
-#### L22b. Guard-argument-aware auth user model
-
-**Impact: Low-Medium · Effort: Medium**
-
-`Request::user()` / `Guard::user()` now resolve to the configured
-default-guard model (union of every candidate the config allows;
-when a branch is runtime-dynamic the floor is raised to the
-project's own `Authenticatable` implementors).
-What is still missing is guard-*argument* awareness: `auth('admin')`,
-`Auth::guard('admin')`, and `$request->user('admin')` currently
-receive the default-guard model rather than the model configured for
-the named guard.
-
-Doing this right needs a call-site intercept, because
-`auth('admin')` collapses to a plain `Guard` type before `user()` is
-resolved — the guard name is only recoverable at the call
-expression, not from the method's return type. The static traversal
-already accepts an explicit guard name
-(`resolve_auth_user_model(tree, Some("admin"), …)`), so the
-remaining work is wiring that call-site through the shared resolution
-pipeline (which today has no `Backend` handle on the forward-walk
-`VarResolutionCtx` path).
-
-The 2026-07 re-run (after the base L22 fix) still shows ~13
-`user()` sites unresolved that look like coverage gaps of the base
-fix rather than guard arguments: `$this->user()` inside `FormRequest`
-subclasses (9, luxplus-backoffice `app/Http/Requests/**` `authorize()`
-methods) and `$request->user()` / `$this->request->user()` on
-request *properties* (4, luxplus-website `app/Exceptions/Handler.php:74`,
-`app/View/Components/Search/SearchField.php:21`). Verify these
-shapes reach the intercept while doing this task.

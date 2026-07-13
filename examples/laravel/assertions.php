@@ -155,17 +155,32 @@ check(
 
 // ─── Auth user model (config/auth.php) ───────────────────────────────────────
 
-// The default guard's provider model is App\Models\Customer, so the analyzer
-// resolves Request::user() to that model (widened to the Authenticatable
-// contract because AUTH_MODEL may override it at runtime).
-$authModel = (require __DIR__ . '/config/auth.php')['providers']['users']['model'];
+// The default `web` guard's provider model is App\Models\Customer and the
+// `admin` guard's provider model is App\Models\Administrator, so the analyzer
+// resolves Request::user() to Customer and auth('admin')->user() to
+// Administrator.
+$authConfig = require __DIR__ . '/config/auth.php';
 check(
-    'config/auth.php default provider model is Customer',
-    $authModel === \App\Models\Customer::class
+    'config/auth.php default guard is web',
+    $authConfig['defaults']['guard'] === 'web'
+);
+check(
+    'web guard provider model is Customer',
+    $authConfig['providers'][$authConfig['guards']['web']['provider']]['model']
+        === \App\Models\Customer::class
+);
+check(
+    'admin guard provider model is Administrator',
+    $authConfig['providers'][$authConfig['guards']['admin']['provider']]['model']
+        === \App\Models\Administrator::class
 );
 check(
     'Customer is an Authenticatable',
     is_subclass_of(\App\Models\Customer::class, \Illuminate\Contracts\Auth\Authenticatable::class)
+);
+check(
+    'Administrator is an Authenticatable',
+    is_subclass_of(\App\Models\Administrator::class, \Illuminate\Contracts\Auth\Authenticatable::class)
 );
 
 // ─── Paginator element types ─────────────────────────────────────────────────

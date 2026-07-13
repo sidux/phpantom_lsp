@@ -14,6 +14,7 @@ use App\Models\BlogPost;
 use App\Models\Review;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Lang;
@@ -296,13 +297,18 @@ class Demo
 
     public function authUser(Request $request): void
     {
-        // config/auth.php maps the default guard's provider to
+        // config/auth.php maps the default `web` guard's provider to
         // App\Models\Customer, so the authenticated user resolves to that
-        // model.  Because the model is behind env('AUTH_MODEL', …), the
-        // type widens to Customer|Authenticatable — the best guess plus the
-        // contract Laravel actually guarantees.
+        // model.
         $request->user()->isPremium();    // → Customer method
         $request->user()->name;           // → Customer property
+
+        // Passing a guard name selects that guard's configured model.
+        // The `admin` guard's provider maps to App\Models\Administrator,
+        // so the user resolves to Administrator, not Customer.
+        auth('admin')->user()->isSuperAdmin();          // → Administrator method
+        Auth::guard('admin')->user()->isSuperAdmin();   // → Administrator method
+        $request->user('admin')->isSuperAdmin();        // → Administrator method
     }
 
 

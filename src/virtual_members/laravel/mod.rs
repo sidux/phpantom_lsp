@@ -94,7 +94,7 @@ mod view_names;
 mod where_property;
 
 pub(crate) use aliases::LaravelAliases;
-pub(crate) use auth::patch_auth_user_class;
+pub(crate) use auth::{GUARD_FQN, REQUEST_FQN, patch_auth_user_class, resolve_auth_user_type};
 pub(crate) use config_keys::find_config_references;
 pub(crate) use config_keys::{
     find_all_config_references, resolve_config_key_declaration,

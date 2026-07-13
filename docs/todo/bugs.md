@@ -16,8 +16,8 @@ approximate — fixing an upstream bug often clears cascading
 errors attributed to other buckets.
 
 Laravel-specific items from the same sweep are in
-`docs/todo/laravel.md` (L21 alias parsing, L22b auth guard
-coverage); ~50 further errors were reclassified as intended
+`docs/todo/laravel.md` (L21 alias parsing); ~50 further errors
+were reclassified as intended
 diagnostics per the declared-types philosophy there. The closure
 literal-return shape gap is filed as T31 in
 `docs/todo/type-inference.md`.
