@@ -332,16 +332,3 @@ Assorted guard forms that PHPStan reconciles and we do not:
 
 Same structural home as the T20 reconciliation engine — prefer
 fixing these in the reconciliation layer over one-off patches.
-
-## B82. `assertInstanceOf` with a variable class argument destroys the subject's type
-
-**Severity: Low (~3 errors, pdepend) · Confirmed from output**
-
-`static::assertInstanceOf($expectedTypeClass, $reference)` where
-the class is a variable cannot narrow to a concrete class — but it
-must keep the subject's prior declared type instead of unresolving
-it (`$reference->getImage()` fails afterwards even though
-`$reference` was `ASTNode|null` before, pdepend
-`tests/php/PDepend/Source/AST/ASTInstanceOfExpressionTest.php:204`).
-Narrow to `object` (PHPStan's behaviour) intersected with the
-prior type.

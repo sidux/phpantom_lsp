@@ -3163,6 +3163,17 @@ class GenericAssertNarrowingDemo
         ScaffoldingAssert::assertInstanceOf(Pen::class, $obj);
         $obj->write();                    // $obj narrowed to Pen
     }
+
+    public function demoVariableClass(string $cls, ?Pen $node): void
+    {
+        // When the asserted class is a variable that cannot be resolved
+        // to a concrete class, the assertion narrows to `object`
+        // intersected with the prior type: `null` is dropped but the
+        // subject keeps the type it already had, so member access still
+        // resolves instead of unresolving the subject entirely.
+        ScaffoldingAssert::assertInstanceOf($cls, $node);
+        $node->write();                   // $node kept as Pen (null dropped)
+    }
 }
 
 
@@ -6482,6 +6493,12 @@ function runDemoAssertions(): void
     $assertObj = new Pen();
     ScaffoldingAssert::assertInstanceOf(Pen::class, $assertObj);
     assert($assertObj instanceof Pen, 'ScaffoldingAssert::assertInstanceOf(Pen::class, $obj) must narrow to Pen');
+
+    // A variable class argument still guarantees the subject is an object.
+    $assertCls = Pen::class;
+    $assertNode = new Pen();
+    ScaffoldingAssert::assertInstanceOf($assertCls, $assertNode);
+    assert($assertNode instanceof Pen, 'ScaffoldingAssert::assertInstanceOf($cls, $node) keeps the prior Pen type');
 
     // ── @param-closure-this scaffolding ──────────────────────────────────
     $ctRoute = new ScaffoldingClosureThisRoute();

@@ -5594,9 +5594,24 @@ fn process_assert_narrowing<'b>(
         });
 
         // @phpstan-assert / @psalm-assert
+        let mut narrows_to_object = false;
         ResolvedType::apply_narrowing(&mut results, |classes| {
-            narrowing::try_apply_custom_assert_narrowing(expr, &var_ctx, classes);
+            narrowing::try_apply_custom_assert_narrowing(
+                expr,
+                &var_ctx,
+                classes,
+                &mut narrows_to_object,
+            );
         });
+
+        // A custom assert whose class argument could not be resolved (e.g.
+        // `assertInstanceOf($variableClass, $x)`) still guarantees the
+        // subject is an object.  Narrow to `object` intersected with the
+        // prior type: drop null/scalar union members but keep the class the
+        // subject already had, rather than unresolving it entirely.
+        if narrows_to_object {
+            narrowing::apply_type_guard_inclusion(narrowing::TypeGuardKind::Object, &mut results);
+        }
 
         if resolved_types_differ(&results, &before) {
             if results.is_empty() {

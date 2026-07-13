@@ -888,10 +888,18 @@ pub(in crate::completion) fn find_assertion_method_in_chain(
 /// Only `AssertionKind::Always` assertions are applied here — the
 /// `IfTrue` / `IfFalse` variants are handled by
 /// `try_apply_assert_condition_narrowing`.
+///
+/// When the asserted type is a template parameter bound to a `class-string`
+/// argument that cannot be resolved to a concrete class (e.g.
+/// `assertInstanceOf($variableClass, $x)` where `$variableClass` holds an
+/// unknown class name), `*narrows_to_object` is set to `true`.  The caller
+/// then narrows the subject to `object` intersected with its prior type
+/// rather than destroying the type entirely, matching PHPStan's behaviour.
 pub(in crate::completion) fn try_apply_custom_assert_narrowing(
     expr: &Expression<'_>,
     ctx: &VarResolutionCtx<'_>,
     results: &mut Vec<ClassInfo>,
+    narrows_to_object: &mut bool,
 ) {
     let expr = match expr {
         Expression::Parenthesized(inner) => inner.expression,
@@ -919,6 +927,19 @@ pub(in crate::completion) fn try_apply_custom_assert_narrowing(
             // argument bound via `class-string<T>`.
             let effective_type =
                 resolve_assertion_template_type(&assertion.asserted_type, &info, ctx);
+
+            // The substitution failed when the effective type is still a
+            // template parameter — the bound `class-string` argument was a
+            // variable whose concrete class could not be determined.  A
+            // positive assertion still guarantees the subject is an object,
+            // so defer to the caller's `object` narrowing instead of
+            // clearing the subject's prior type.
+            if !assertion.negated
+                && matches!(&effective_type, PhpType::Named(n) if info.template_params.iter().any(|t| t == n))
+            {
+                *narrows_to_object = true;
+                continue;
+            }
 
             if assertion.negated {
                 apply_instanceof_exclusion(&effective_type, ctx, results);
