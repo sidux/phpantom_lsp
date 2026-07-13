@@ -1108,6 +1108,22 @@ pub(crate) fn resolve_subject_outcome(
         if let Some(scalar) = resolve_call_scalar_return(callee, access_kind, ctx) {
             return SubjectOutcome::Scalar(scalar);
         }
+        // A call returning `object` (or `?object`) yields no concrete
+        // class, but `object` is the "any object" escape hatch: member
+        // access is always valid at runtime.  Resolve it to a synthetic
+        // `stdClass` so downstream verification treats it like the plain
+        // `object` property/parameter case, instead of reporting the
+        // subject type as unresolved.  `is_object()` unwraps nullability,
+        // so `?object` is handled here too.
+        if let Some(raw_type) = resolve_call_raw_return_type(callee, "", ctx)
+            && raw_type.is_object()
+        {
+            let synthetic = Arc::new(ClassInfo {
+                name: crate::atom::atom("stdClass"),
+                ..ClassInfo::default()
+            });
+            return SubjectOutcome::Resolved(vec![synthetic]);
+        }
         // Try unresolvable class detection for function calls.
         if let SubjectExpr::FunctionCall(fn_name) = callee.as_ref()
             && let Some(fl) = ctx.function_loader

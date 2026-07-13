@@ -274,19 +274,3 @@ resolve through the template's upper bound (`Engine` here), and
 through the concrete binding where one exists
 (phpmd `src/Rule/Controversial/CamelCaseParameterName.php:47,51`
 via `AbstractNode`'s `@mixin TNode`).
-
-## B79. `?object` return type loses the `object` type
-
-**Severity: Low-Medium (2 errors, luxplus-site-manager) · Confirmed with fixture**
-
-```php
-public function all():? object { ... }
-
-$r->all()->projects ?? [];
-// "Cannot verify property 'projects' — type of '$r->all()' could not be resolved"
-```
-
-A plain `object` return works (property access is not flagged);
-adding nullability makes the whole type unresolvable. The
-null-stripping step discards `object` instead of keeping it
-(luxplus-site-manager `app/Services/EnvoyerService.php:19,47`).

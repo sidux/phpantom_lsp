@@ -4532,6 +4532,58 @@ public function calculateCost(array $items): Decimal {
     );
 }
 
+/// A call whose return type is `object` is the "any object" escape
+/// hatch: property/method access on the result is always valid at
+/// runtime, so no unresolved-member diagnostic should fire.
+#[test]
+fn no_diagnostic_for_object_return_type_member_access() {
+    let php = r#"<?php
+class Repo {
+    public function all(): object { return new \stdClass(); }
+}
+function test(Repo $r): void {
+    $x = $r->all()->projects ?? [];
+}
+"#;
+    let backend = Backend::new_test();
+    {
+        let mut cfg = backend.config();
+        cfg.diagnostics.unresolved_member_access = Some(true);
+        backend.set_config(cfg);
+    }
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(
+        diags.is_empty(),
+        "expected no diagnostics for member access on object return type, got: {diags:?}"
+    );
+}
+
+/// Adding nullability (`?object`) must not lose the `object` type and
+/// leave the subject unresolvable.  Property access on a `?object`
+/// return is treated the same as a plain `object` return.
+#[test]
+fn no_diagnostic_for_nullable_object_return_type_member_access() {
+    let php = r#"<?php
+class Repo {
+    public function all(): ?object { return new \stdClass(); }
+}
+function test(Repo $r): void {
+    $x = $r->all()->projects ?? [];
+}
+"#;
+    let backend = Backend::new_test();
+    {
+        let mut cfg = backend.config();
+        cfg.diagnostics.unresolved_member_access = Some(true);
+        backend.set_config(cfg);
+    }
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(
+        diags.is_empty(),
+        "expected no diagnostics for member access on nullable object return type, got: {diags:?}"
+    );
+}
+
 #[test]
 fn no_diagnostic_for_object_parameter_type() {
     let php = r#"<?php
