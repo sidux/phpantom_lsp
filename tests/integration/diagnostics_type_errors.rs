@@ -5388,6 +5388,53 @@ function test(string $value): void
     );
 }
 
+#[test]
+fn no_false_positive_for_is_numeric_narrowed_string_param() {
+    let php = r#"<?php
+function takes_string(string $s): void {}
+
+function test(mixed $value): void
+{
+    if (is_numeric($value)) {
+        takes_string($value);
+    }
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "is_numeric($value) should narrow to numeric-string|int|float, still valid for a string param: {:?}",
+        type_error_messages(&diags)
+    );
+}
+
+#[test]
+fn no_false_positive_for_is_a_allow_string_narrowed_array_key() {
+    let php = r#"<?php
+class Extension {}
+
+/**
+ * @param class-string<Extension> $className
+ */
+function takes_extension_class_string(string $className): void {}
+
+function activate(array $config): void
+{
+    if (!is_a($config['class'], Extension::class, true)) {
+        throw new RuntimeException('not an Extension');
+    }
+
+    takes_extension_class_string($config['class']);
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "is_a($config['class'], Extension::class, true) guard should narrow to class-string<Extension>: {:?}",
+        type_error_messages(&diags)
+    );
+}
+
 // ─── Issue #166: @phpstan-type aliases must not trigger false positives ──────
 
 #[test]

@@ -7973,6 +7973,10 @@ fn apply_condition_narrowing<'b>(
     // Type guard narrowing: `is_object($x)`, `is_array($x)`, etc.
     apply_type_guard_narrowing_truthy(condition, scope);
 
+    // `is_a($x, Class::class, true)` / `class_exists($x)` narrowing:
+    // narrow a string-typed `$x` to `class-string<Class>` / `class-string`.
+    apply_class_string_guard_narrowing(condition, scope, ctx, true);
+
     // Null narrowing: `if ($x !== null)` — remove null from scope.
     apply_null_narrowing_truthy(condition, scope, ctx);
 
@@ -8088,6 +8092,7 @@ fn apply_condition_narrowing_inverse<'b>(
         // Type guard, null, phpstan-assert, and in_array narrowing
         // operate on the full condition expression.
         apply_type_guard_narrowing_inverse(condition, scope);
+        apply_class_string_guard_narrowing(condition, scope, ctx, false);
         apply_null_narrowing_inverse(condition, scope, ctx);
         apply_phpstan_assert_condition_narrowing(condition, scope, ctx, true);
         apply_in_array_narrowing(condition, scope, ctx, true);
@@ -8123,6 +8128,7 @@ fn apply_condition_narrowing_inverse<'b>(
         // Type guard, null, phpstan-assert, and in_array narrowing
         // operate on the full condition expression.
         apply_type_guard_narrowing_inverse(condition, scope);
+        apply_class_string_guard_narrowing(condition, scope, ctx, false);
         apply_null_narrowing_inverse(condition, scope, ctx);
         apply_phpstan_assert_condition_narrowing(condition, scope, ctx, true);
         apply_in_array_narrowing(condition, scope, ctx, true);
@@ -8133,6 +8139,10 @@ fn apply_condition_narrowing_inverse<'b>(
 
     // Inverse type guard narrowing: `if (is_object($x))` in else → exclude object.
     apply_type_guard_narrowing_inverse(condition, scope);
+
+    // Inverse class-string guard narrowing: `if (!is_a($x, Class::class, true))`
+    // guard clause → after it, `$x` is a class-string of `Class`.
+    apply_class_string_guard_narrowing(condition, scope, ctx, false);
 
     // Inverse null narrowing: `if ($x === null)` after guard → remove null.
     apply_null_narrowing_inverse(condition, scope, ctx);
@@ -8619,6 +8629,73 @@ fn apply_type_guard_on_operands(condition: &Expression<'_>, scope: &mut ScopeSta
     }
 }
 
+/// Apply `is_a($x, Class::class, true)` / `class_exists($x)` (and the
+/// other `*_exists()` forms) class-string narrowing.
+///
+/// When the guard's effective truth value is `true`, narrows string-like
+/// (and `mixed`) entries in `$x`'s type to `class-string<Class>` (or
+/// bare `class-string` for the generic `*_exists()` forms, which don't
+/// name a specific class).  Negation is resolved by
+/// `try_extract_class_string_guard`, so passing `truthy = false` here
+/// from a guard-clause inverse correctly re-derives the truthy narrowing
+/// for a negated condition (`if (!is_a(...)) { throw; }`).
+///
+/// Object-typed entries (with `class_info` set) are left untouched —
+/// `is_a()`'s object side is already narrowed by the existing
+/// instanceof-style handling, which operates independently on the
+/// class-bearing entries.
+fn apply_class_string_guard_narrowing<'b>(
+    condition: &'b Expression<'b>,
+    scope: &mut ScopeState,
+    ctx: &ForwardWalkCtx<'_>,
+    truthy: bool,
+) {
+    let operands = collect_and_chain_operands(condition);
+    let mut var_names: Vec<String> = scope.locals.keys().map(|k| k.to_string()).collect();
+    for key in collect_condition_property_keys(condition) {
+        if !var_names.contains(&key) {
+            var_names.push(key);
+        }
+    }
+    for operand in &operands {
+        for var_name in &var_names {
+            if let Some((target, negated)) =
+                narrowing::try_extract_class_string_guard(operand, var_name)
+            {
+                let effective_truthy = if negated { !truthy } else { truthy };
+                if !effective_truthy {
+                    continue;
+                }
+                let mut results = scope.get(var_name).to_vec();
+                if results.is_empty() {
+                    continue;
+                }
+                let resolved_fqn = target
+                    .as_deref()
+                    .map(|name| crate::util::resolve_name_via_loader(name, ctx.class_loader));
+                let class_string_type = match &resolved_fqn {
+                    Some(fqn) => PhpType::parse(&format!("class-string<{}>", fqn)),
+                    None => PhpType::parse("class-string"),
+                };
+                let mut changed = false;
+                for rt in results.iter_mut() {
+                    if rt.class_info.is_some() {
+                        continue;
+                    }
+                    if rt.type_string.is_subtype_of(&PhpType::string()) || rt.type_string.is_mixed()
+                    {
+                        rt.type_string = class_string_type.clone();
+                        changed = true;
+                    }
+                }
+                if changed {
+                    scope.set(var_name, results);
+                }
+            }
+        }
+    }
+}
+
 fn apply_null_narrowing_truthy<'b>(
     condition: &'b Expression<'b>,
     scope: &mut ScopeState,
@@ -8669,6 +8746,14 @@ fn apply_null_narrowing_truthy<'b>(
     if let Some(var_name) = extract_not_empty_var(condition) {
         seed_synthetic_key_if_needed(&var_name, scope, ctx);
         strip_null_from_scope(&var_name, scope);
+    }
+    // Bare truthy check: `if ($x) { ... }` — $x is truthy in the
+    // then-body, so strip null and false from its type.
+    if let Some(var_name) =
+        expr_to_var_name(condition).or_else(|| narrowing::expr_to_subject_key(condition))
+    {
+        seed_synthetic_key_if_needed(&var_name, scope, ctx);
+        strip_falsy_from_scope(&var_name, scope);
     }
 }
 
@@ -9360,6 +9445,11 @@ fn collect_condition_property_keys_inner(expr: &Expression<'_>, keys: &mut Vec<S
                         | "is_callable"
                         | "is_null"
                         | "is_scalar"
+                        | "is_a"
+                        | "class_exists"
+                        | "interface_exists"
+                        | "enum_exists"
+                        | "trait_exists"
                 );
                 if is_type_guard && let Some(first_arg) = func_call.argument_list.arguments.first()
                 {
@@ -9483,8 +9573,15 @@ fn collect_condition_var_names_inner(expr: &Expression<'_>, names: &mut Vec<Stri
                 Expression::Identifier(ident) => bytes_to_str(ident.value()),
                 _ => return,
             };
-            if (func_name == "is_a" || func_name == "get_class")
-                && let Some(first_arg) = func_call.argument_list.arguments.first()
+            if matches!(
+                func_name,
+                "is_a"
+                    | "get_class"
+                    | "class_exists"
+                    | "interface_exists"
+                    | "enum_exists"
+                    | "trait_exists"
+            ) && let Some(first_arg) = func_call.argument_list.arguments.first()
             {
                 let arg_expr = match first_arg {
                     Argument::Positional(pos) => pos.value,

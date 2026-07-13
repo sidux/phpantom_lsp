@@ -4567,6 +4567,141 @@ if (is_object($data)) {
 }
 
 #[test]
+fn no_diagnostic_after_is_object_guard_on_real_union() {
+    let php = r#"<?php
+class Thing {
+    public function bar(): void {}
+}
+function test(string|Thing $file): void {
+    if (is_object($file)) {
+        $file->bar();
+    }
+}
+"#;
+    let backend = Backend::new_test();
+    backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(
+        diags.is_empty(),
+        "expected no diagnostics after is_object() guard on a real union, got: {diags:?}"
+    );
+}
+
+#[test]
+fn no_scalar_member_access_after_is_object_guard_on_plain_string() {
+    // When upstream type inference produced a plain `string` type for a
+    // variable that can, at runtime, also be an object (e.g. a foreach
+    // element whose type was under-inferred), an `is_object()` guard
+    // must still stop `scalar_member_access` on the guarded access —
+    // trust the runtime check over the incomplete static type.
+    let php = r#"<?php
+function test(string $file): void {
+    if (is_object($file)) {
+        $file->getPathname();
+    }
+}
+"#;
+    let backend = Backend::new_test();
+    backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+    let diags = collect(&backend, "file:///test.php", php);
+    let scalar_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == Some(NumberOrString::String("scalar_member_access".to_string())))
+        .collect();
+    assert!(
+        scalar_diags.is_empty(),
+        "should not flag scalar_member_access on $file->getPathname() inside is_object() guard, got: {scalar_diags:?}"
+    );
+}
+
+#[test]
+fn no_diagnostic_for_isset_on_missing_property() {
+    let php = r#"<?php
+class Item {
+    public string $name = '';
+}
+
+function test(Item $item): void {
+    if (isset($item->maybeDynamic)) {
+        echo 'ok';
+    }
+}
+"#;
+    let backend = Backend::new_test();
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(
+        diags.is_empty(),
+        "isset() should suppress unknown-property diagnostics, got: {diags:?}"
+    );
+}
+
+#[test]
+fn no_diagnostic_for_empty_on_missing_property() {
+    let php = r#"<?php
+class Item {
+    public string $name = '';
+}
+
+function test(Item $item): void {
+    if (empty($item->maybeDynamic)) {
+        echo 'ok';
+    }
+}
+"#;
+    let backend = Backend::new_test();
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(
+        diags.is_empty(),
+        "empty() should suppress unknown-property diagnostics, got: {diags:?}"
+    );
+}
+
+#[test]
+fn no_scalar_member_access_for_isset_on_union_with_stdclass() {
+    let php = r#"<?php
+class Item {
+    public string $name = '';
+}
+
+function test(Item|\stdClass $item): void {
+    if (isset($item->maybeDynamic)) {
+        echo 'ok';
+    }
+}
+"#;
+    let backend = Backend::new_test();
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(
+        diags.is_empty(),
+        "isset() on a union with stdClass should not flag the other union members, got: {diags:?}"
+    );
+}
+
+#[test]
+fn still_flags_bare_access_to_missing_property_outside_isset() {
+    // Sanity check: isset()'s suppression must not leak to a sibling
+    // bare access on the same property.
+    let php = r#"<?php
+class Item {
+    public string $name = '';
+}
+
+function test(Item $item): void {
+    if (isset($item->maybeDynamic)) {
+        echo 'ok';
+    }
+    echo $item->maybeDynamic;
+}
+"#;
+    let backend = Backend::new_test();
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(
+        diags.iter().any(|d| d.message.contains("maybeDynamic")),
+        "bare access outside isset() should still be flagged, got: {diags:?}"
+    );
+}
+
+#[test]
 fn no_diagnostic_after_is_object_guard_with_negated_early_return() {
     let php = r#"<?php
 function test(mixed $data): void {

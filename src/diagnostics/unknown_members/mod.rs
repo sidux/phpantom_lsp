@@ -88,7 +88,10 @@ use crate::symbol_map::SymbolKind;
 use crate::types::{AccessKind, ClassInfo, ClassLikeKind};
 use crate::virtual_members::resolve_class_fully_cached;
 
-use super::helpers::{compute_existence_guards, find_innermost_enclosing_class, make_diagnostic};
+use super::helpers::{
+    compute_existence_guards, compute_isset_empty_argument_ranges, find_innermost_enclosing_class,
+    is_offset_in_ranges, make_diagnostic,
+};
 
 /// Diagnostic code used for unknown-member diagnostics so that code
 /// actions can match on it.
@@ -262,6 +265,11 @@ impl Backend {
         // ── Compute existence guards ────────────────────────────────────
         let existence_guards = compute_existence_guards(content);
 
+        // ── Compute isset()/empty() argument ranges ─────────────────────
+        // Member/array access inside these constructs never triggers a
+        // runtime error even when the accessed member doesn't exist.
+        let isset_empty_ranges = compute_isset_empty_argument_ranges(content);
+
         // ── Parse cache for this diagnostic pass ────────────────────────
         // The file content is immutable during a single diagnostic pass.
         // Activating the thread-local parse cache means every call to
@@ -312,6 +320,13 @@ impl Backend {
 
             // ── Skip members guarded by method_exists() ───────────────
             if existence_guards.is_method_guarded(member_name, span.start) {
+                continue;
+            }
+
+            // ── Skip accesses inside isset()/empty() ──────────────────
+            // `isset($x->prop)` and `empty($x->prop)` never error or warn
+            // even when `prop` doesn't exist — that is their purpose.
+            if is_offset_in_ranges(span.start, &isset_empty_ranges) {
                 continue;
             }
 

@@ -555,6 +555,77 @@ fn try_extract_is_a<'b>(expr: &'b Expression<'b>, var_name: &str) -> Option<PhpT
     }
 }
 
+/// Detect a class-string narrowing guard on `var_name`:
+///
+///   - `is_a($var, ClassName::class, true)` — the `allow_string` third
+///     argument lets `$var` be a class-string as well as an object, so
+///     a string-typed `$var` narrows to `class-string<ClassName>`
+///     rather than an instance of `ClassName`.
+///   - `class_exists($var)`, `interface_exists($var)`, `enum_exists($var)`,
+///     `trait_exists($var)` — confirms `$var` names *some* declared
+///     class-like, narrowing a string to the generic `class-string`
+///     (the target class is not known statically).
+///
+/// Returns `Some((target, negated))` where `target` is `Some(name)` for
+/// `is_a()` with a resolvable second argument, or `None` for the generic
+/// `*_exists()` forms.  `negated` is `true` when the guard is wrapped in
+/// `!`.
+pub(in crate::completion) fn try_extract_class_string_guard(
+    expr: &Expression<'_>,
+    var_name: &str,
+) -> Option<(Option<String>, bool)> {
+    match expr {
+        Expression::Parenthesized(inner) => {
+            try_extract_class_string_guard(inner.expression, var_name)
+        }
+        Expression::UnaryPrefix(prefix) if prefix.operator.is_not() => {
+            try_extract_class_string_guard(prefix.operand, var_name)
+                .map(|(target, negated)| (target, !negated))
+        }
+        Expression::Call(Call::Function(func_call)) => {
+            let func_name = match func_call.function {
+                Expression::Identifier(ident) => bytes_to_str(ident.value()),
+                _ => return None,
+            };
+            let args: Vec<_> = func_call.argument_list.arguments.iter().collect();
+            match func_name {
+                "is_a" => {
+                    if args.len() < 3 {
+                        return None;
+                    }
+                    if expr_to_subject_key(argument_value(args[0])).as_deref() != Some(var_name) {
+                        return None;
+                    }
+                    if !argument_value(args[2]).is_true() {
+                        return None;
+                    }
+                    let target = extract_class_string_from_expr(argument_value(args[1]));
+                    Some((target, false))
+                }
+                "class_exists" | "interface_exists" | "enum_exists" | "trait_exists" => {
+                    if args.is_empty() {
+                        return None;
+                    }
+                    if expr_to_subject_key(argument_value(args[0])).as_deref() != Some(var_name) {
+                        return None;
+                    }
+                    Some((None, false))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract the value expression from a positional or named argument.
+fn argument_value<'b>(arg: &'b Argument<'b>) -> &'b Expression<'b> {
+    match arg {
+        Argument::Positional(pos) => pos.value,
+        Argument::Named(named) => named.value,
+    }
+}
+
 /// Detect `get_class($var) === ClassName::class` (or `==`) and
 /// `$var::class === ClassName::class` (or `==`).
 ///
@@ -1841,6 +1912,7 @@ fn type_matches_guard(ty: &PhpType, kind: TypeGuardKind) -> bool {
 /// `null|list<Request>|Request`, the result is narrowed to
 /// `list<Request>`.
 pub(crate) fn apply_type_guard_inclusion(kind: TypeGuardKind, results: &mut Vec<ResolvedType>) {
+    let had_types = !results.is_empty();
     for rt in results.iter_mut() {
         let filtered = filter_type_by_guard(&rt.type_string, kind, true);
         if let Some(narrowed) = filtered {
@@ -1849,6 +1921,20 @@ pub(crate) fn apply_type_guard_inclusion(kind: TypeGuardKind, results: &mut Vec<
     }
     // Remove entries that became empty (no union member matched).
     results.retain(|rt| !rt.type_string.is_empty_sentinel());
+
+    // When the guard's assertion fully contradicts every statically known
+    // candidate — e.g. `is_object($file)` where `$file` was inferred as
+    // plain `string` because upstream inference (a foreach over a custom
+    // iterator) missed a possible member — trust the runtime check over
+    // the incomplete static type instead of silently discarding all type
+    // information.  Only fires when *every* entry was eliminated; a
+    // single stale/duplicate entry among several valid ones is dropped
+    // as before.
+    if had_types && results.is_empty() {
+        results.push(ResolvedType::from_type_string(guard_kind_to_narrowed_type(
+            kind,
+        )));
+    }
 }
 
 /// Narrow `results` to only the union members that do NOT match the
@@ -1881,6 +1967,14 @@ fn filter_type_by_guard(ty: &PhpType, kind: TypeGuardKind, keep_matching: bool) 
     // correctly narrows to `string`.
     if let Some(expanded) = expand_pseudo_type_for_guard(ty) {
         return filter_type_by_guard(&expanded, kind, keep_matching);
+    }
+
+    // `is_numeric()` also returns true for numeric strings, not just
+    // `int`/`float`.  Narrow string-like members to `numeric-string`
+    // instead of dropping them or widening to bare `int|float`, so the
+    // narrowed type stays a subtype of the original `string`.
+    if kind == TypeGuardKind::Numeric && keep_matching {
+        return Some(narrow_to_numeric_inclusive(ty));
     }
 
     match ty {
@@ -1963,4 +2057,47 @@ fn expand_pseudo_type_for_guard(ty: &PhpType) -> Option<PhpType> {
         "numeric" | "number" => Some(PhpType::Union(vec![PhpType::int(), PhpType::float()])),
         _ => None,
     }
+}
+
+/// Narrow a type to what `is_numeric()` guarantees, keeping string-like
+/// members within `numeric-string` rather than widening them to `int|float`
+/// or dropping them.
+fn narrow_to_numeric_inclusive(ty: &PhpType) -> PhpType {
+    match ty {
+        PhpType::Union(members) => {
+            let narrowed: Vec<PhpType> = members
+                .iter()
+                .filter_map(narrow_single_type_to_numeric)
+                .collect();
+            match narrowed.len() {
+                0 => PhpType::empty_sentinel(),
+                1 => narrowed.into_iter().next().unwrap(),
+                _ => PhpType::Union(narrowed),
+            }
+        }
+        // `null` never satisfies `is_numeric()`; narrow the inner type only.
+        PhpType::Nullable(inner) => {
+            narrow_single_type_to_numeric(inner).unwrap_or_else(PhpType::empty_sentinel)
+        }
+        other => narrow_single_type_to_numeric(other).unwrap_or_else(PhpType::empty_sentinel),
+    }
+}
+
+/// Narrow a single (non-union) type to what `is_numeric()` guarantees.
+/// Returns `None` when the type can never be numeric (e.g. an object).
+fn narrow_single_type_to_numeric(ty: &PhpType) -> Option<PhpType> {
+    if ty.is_mixed() {
+        return Some(PhpType::Union(vec![
+            PhpType::int(),
+            PhpType::float(),
+            PhpType::parse("numeric-string"),
+        ]));
+    }
+    if type_matches_guard(ty, TypeGuardKind::Numeric) {
+        return Some(ty.clone());
+    }
+    if ty.is_subtype_of(&PhpType::string()) {
+        return Some(PhpType::parse("numeric-string"));
+    }
+    None
 }

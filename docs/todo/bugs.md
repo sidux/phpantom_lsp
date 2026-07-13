@@ -303,32 +303,3 @@ rajmundtoth0\AuditDriver\Services\CountParams, got array{...}"
 (luxplus-backoffice `app/Services/Audit/AuditService.php:44,59`).
 Resolve local and imported type aliases during docblock type
 parsing.
-
-## B81. Guard-function narrowing gaps (`is_object`, `is_a`, `isset` on unions, truthiness, `is_numeric`)
-
-**Severity: Low-Medium (~8 errors across projects) · Confirmed from output**
-
-Assorted guard forms that PHPStan reconciles and we do not:
-
-1. `isset($item->prop)` on a union that includes `stdClass` still
-   flags the property as not found on the other union members —
-   the check must pass when any candidate allows dynamic
-   properties, and `isset()` itself guards the access
-   (luxplus-website `app/Features/Carts/Services/SalesCampaignGroupDiscountService.php:200-205`).
-2. `if (is_object($file))` does not stop `scalar_member_access` on
-   the object branch (pdepend `tests/php/PDepend/AbstractTestCase.php:752`;
-   the foreach union feeding it is B68).
-3. `is_a($x, Extension::class, true)` / `class_exists($x)` do not
-   narrow a `string` to `class-string<...>`
-   (pdepend `src/DependencyInjection/PdependExtension.php:87`,
-   luxplus-backoffice `app/Services/ScheduledJobsService.php:139`).
-4. `if ($var)` truthiness does not strip `null` from a
-   `string|null` produced by an earlier branch reassignment
-   (luxplus-backoffice `app/Http/Controllers/Excel/InvoiceAnalyzerController.php:57`).
-5. `is_numeric($s)` on a string narrows to bare `numeric`, which
-   then fails a `string` parameter — the narrowed type must stay
-   within the original (`numeric-string`)
-   (luxplus-backoffice `app/Domain/UpdateFromSheet/Services/ProductPriceSheetService.php:378`).
-
-Same structural home as the T20 reconciliation engine — prefer
-fixing these in the reconciliation layer over one-off patches.

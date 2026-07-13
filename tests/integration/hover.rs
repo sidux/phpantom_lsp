@@ -9294,6 +9294,26 @@ function test(int|string $x): void {
 }
 
 #[test]
+fn hover_bare_truthy_check_strips_null() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+function test(?string $x): void {
+    if ($x) {
+        $x;
+    }
+}
+"#;
+    let hover = hover_at(&backend, uri, content, 2, 8).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("string") && !text.contains("null"),
+        "inside `if ($x)`, $x should be string (null stripped), got: {}",
+        text
+    );
+}
+
+#[test]
 fn hover_array_shape_key_null_guard_clause() {
     let backend = create_test_backend();
     let uri = "file:///test.php";
@@ -9342,6 +9362,112 @@ function test(): void {
     assert!(
         text.contains("ClassResolvesBack") && !text.contains("ClassResolvesBackChild"),
         "after instanceof + reassignment, $a should be ClassResolvesBack, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_is_numeric_on_string_narrows_to_numeric_string() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+function test(string $s): void {
+    if (is_numeric($s)) {
+        $s;
+    }
+}
+"#;
+    let hover = hover_at(&backend, uri, content, 3, 8).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("numeric-string"),
+        "is_numeric($s) on a string should narrow to numeric-string, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_is_numeric_on_mixed_keeps_numeric_string_option() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @param mixed $s
+ */
+function test($s): void {
+    if (is_numeric($s)) {
+        $s;
+    }
+}
+"#;
+    let hover = hover_at(&backend, uri, content, 6, 8).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("numeric-string"),
+        "is_numeric() on mixed should include numeric-string, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_is_a_allow_string_narrows_string_to_class_string() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Extension {}
+function test(string $x): void {
+    if (is_a($x, Extension::class, true)) {
+        $x;
+    }
+}
+"#;
+    let hover = hover_at(&backend, uri, content, 4, 8).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("class-string<Extension>"),
+        "is_a($x, Extension::class, true) should narrow string to class-string<Extension>, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_class_exists_narrows_string_to_class_string() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+function test(string $x): void {
+    if (class_exists($x)) {
+        $x;
+    }
+}
+"#;
+    let hover = hover_at(&backend, uri, content, 3, 8).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("class-string") && !text.contains("class-string<"),
+        "class_exists($x) should narrow string to bare class-string, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_guard_clause_negated_is_a_allow_string_narrows_to_class_string() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Extension {}
+function test(string $x): void {
+    if (!is_a($x, Extension::class, true)) {
+        throw new \RuntimeException('nope');
+    }
+    $x;
+}
+"#;
+    let hover = hover_at(&backend, uri, content, 6, 4).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("class-string<Extension>"),
+        "guard clause on !is_a(..., true) should narrow $x to class-string<Extension> after, got: {}",
         text
     );
 }
