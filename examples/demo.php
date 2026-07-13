@@ -2552,6 +2552,24 @@ class ArrayAccessDemo
 }
 
 
+// ── Indexing an ArrayAccess Object ───────────────────────────────────────────
+// `$obj[$key]` on a class implementing ArrayAccess natively resolves through
+// offsetGet(), whether the value type comes from a generic docblock
+// annotation or from offsetGet()'s own declared return type.
+
+class ArrayAccessObjectDemo
+{
+    public function demo(): void
+    {
+        $pens = new ScaffoldingPenArrayAccess();
+        $pens[0]->write();                // resolves via offsetGet(): Pen
+
+        $shapes = new ScaffoldingGenericArrayAccess([new Pen()]);
+        $shapes[0]->write();              // resolves via @implements \ArrayAccess<int, T>, T bound to Pen
+    }
+}
+
+
 // ── Closure / Arrow-Function Members ────────────────────────────────────────
 
 class ClosureMembersDemo
@@ -4443,6 +4461,33 @@ class ScaffoldingArrayAccess
     public function fetchAll(): array { return []; }
 }
 
+class ScaffoldingPenArrayAccess implements \ArrayAccess
+{
+    /** @var Pen[] */
+    private array $items = [];
+
+    public function offsetExists(mixed $offset): bool { return isset($this->items[$offset]); }
+    public function offsetGet(mixed $offset): Pen { return $this->items[$offset] ?? new Pen(); }
+    public function offsetSet(mixed $offset, mixed $value): void { $this->items[$offset] = $value; }
+    public function offsetUnset(mixed $offset): void { unset($this->items[$offset]); }
+}
+
+/**
+ * @template T of Pen
+ * @implements \ArrayAccess<int, T>
+ */
+class ScaffoldingGenericArrayAccess implements \ArrayAccess
+{
+    /** @param T[] $items */
+    public function __construct(private array $items) {}
+
+    public function offsetExists(mixed $offset): bool { return isset($this->items[$offset]); }
+    /** @return T */
+    public function offsetGet(mixed $offset) { return $this->items[$offset]; }
+    public function offsetSet(mixed $offset, mixed $value): void { $this->items[$offset] = $value; }
+    public function offsetUnset(mixed $offset): void { unset($this->items[$offset]); }
+}
+
 class ScaffoldingFormatter
 {
     public function __invoke(): Pen { return new Pen(); }
@@ -5628,6 +5673,13 @@ function runDemoAssertions(): void
         $tool = new $toolClass();
         assert($tool instanceof Pen || $tool instanceof Pencil, 'class-string must instantiate Pen|Pencil');
     }
+
+    // ── Indexing an ArrayAccess Object ───────────────────────────────────
+    $penAccess = new ScaffoldingPenArrayAccess();
+    assert($penAccess[0] instanceof Pen, 'ArrayAccess[0] must resolve via offsetGet(): Pen');
+
+    $genericAccess = new ScaffoldingGenericArrayAccess([new Pen()]);
+    assert($genericAccess[0] instanceof Pen, 'ArrayAccess<int, T>[0] must resolve T bound to Pen');
 
     // ── Fluent Model chains (static return) ─────────────────────────────
     $userObj = new User('Bob', 'bob@example.com');

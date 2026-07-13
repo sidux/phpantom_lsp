@@ -605,3 +605,73 @@ async fn test_property_generic_array_string_literal_key_access() {
     assert_has_member(&items, "contains");
     assert_has_member(&items, "count");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Indexing an object implementing `ArrayAccess` uses `offsetGet`
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── Native ArrayAccess implementer, no docblock generics at all ────────
+
+#[tokio::test]
+async fn test_array_access_object_offset_get_no_generics() {
+    // $list[0]-> on a class that implements ArrayAccess natively (no
+    // @implements ArrayAccess<K, V> docblock) should resolve through
+    // offsetGet()'s declared return type.
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_array_access_no_generics.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Node {\n",
+        "    public function getImage(): string { return ''; }\n",
+        "}\n",
+        "class NodeList implements ArrayAccess {\n",
+        "    public function offsetExists(mixed $offset): bool { return false; }\n",
+        "    public function offsetGet(mixed $offset): Node { return new Node(); }\n",
+        "    public function offsetSet(mixed $offset, mixed $value): void {}\n",
+        "    public function offsetUnset(mixed $offset): void {}\n",
+        "}\n",
+        "$list = new NodeList();\n",
+        "$list[0]->\n",
+    );
+
+    let result = complete_at(&backend, &uri, text, 11, 10).await;
+    let items = unwrap_items(result);
+    assert_has_member(&items, "getImage");
+}
+
+// ─── ArrayAccess<K, T> where T is the class's own unbound @template ─────
+
+#[tokio::test]
+async fn test_array_access_own_template_self_reference_resolves_to_bound() {
+    // Mirrors pdepend's ASTArtifactList: `@template T of Node` combined
+    // with `@implements ArrayAccess<int|string, T>` where `T` refers to
+    // the class's own template parameter, not a parent's. With no
+    // instantiation-site generic annotation, `T` must resolve to its
+    // declared bound (`Node`) rather than leaking through as a literal
+    // type named "T".
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_array_access_own_template.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Node {\n",
+        "    public function getImage(): string { return ''; }\n",
+        "}\n",
+        "/**\n",
+        " * @template T of Node\n",
+        " * @implements ArrayAccess<int|string, T>\n",
+        " */\n",
+        "class NodeList implements ArrayAccess {\n",
+        "    public function offsetExists(mixed $offset): bool { return false; }\n",
+        "    /** @return T */\n",
+        "    public function offsetGet(mixed $offset) {}\n",
+        "    public function offsetSet(mixed $offset, mixed $value): void {}\n",
+        "    public function offsetUnset(mixed $offset): void {}\n",
+        "}\n",
+        "$list = new NodeList([]);\n",
+        "$list[0]->\n",
+    );
+
+    let result = complete_at(&backend, &uri, text, 16, 10).await;
+    let items = unwrap_items(result);
+    assert_has_member(&items, "getImage");
+}

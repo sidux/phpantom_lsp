@@ -448,13 +448,3 @@ $variables = implode(', ', array_map(fn (string $v): string => "\${$v}", $variab
 Uses of a variable inside the RHS of its own reassignment must
 resolve against the pre-assignment scope
 (bladestan `src/ValueObject/AbstractInlinedElement.php:43`).
-
-## B87. Indexing an `ArrayAccess` object does not use `offsetGet`
-
-**Severity: Low (1 error, pdepend) · Confirmed from output**
-
-`$iterator = new ASTArtifactList([]); $iterator[0]->getImage();`
-fails ("type of '$iterator[]' could not be resolved") — bracket
-indexing on an object implementing `ArrayAccess<K, V>` should
-resolve to `V` (or the `offsetGet` return type)
-(pdepend `tests/php/PDepend/Source/AST/ASTArtifactListTest.php:221`).

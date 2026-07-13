@@ -10,6 +10,7 @@
 ///
 /// These functions are self-contained: they receive a [`VarResolutionCtx`]
 /// and push resolved [`ResolvedType`] values into a results vector.
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::php_type::PhpType;
@@ -71,9 +72,9 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
     for (name, args) in &class.implements_generics {
         let short = short_name(name);
         if ITERABLE_IFACE_NAMES.contains(&short) && !args.is_empty() {
-            let value = args.last().unwrap();
-            if !is_unbounded_template_placeholder(value) {
-                return Some(value.clone());
+            let value = resolve_own_template_arg(args.last().unwrap(), class);
+            if !is_unbounded_template_placeholder(&value) {
+                return Some(value);
             }
         }
     }
@@ -88,9 +89,9 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
             && let Some(iface) = class_loader(name)
             && is_transitive_iterable(&iface, class_loader)
         {
-            let value = args.last().unwrap();
-            if !is_unbounded_template_placeholder(value) {
-                return Some(value.clone());
+            let value = resolve_own_template_arg(args.last().unwrap(), class);
+            if !is_unbounded_template_placeholder(&value) {
+                return Some(value);
             }
         }
     }
@@ -99,9 +100,9 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
     //    like `@extends Collection<int, User>`.
     for (_, args) in &class.extends_generics {
         if !args.is_empty() {
-            let value = args.last().unwrap();
-            if !is_unbounded_template_placeholder(value) {
-                return Some(value.clone());
+            let value = resolve_own_template_arg(args.last().unwrap(), class);
+            if !is_unbounded_template_placeholder(&value) {
+                return Some(value);
             }
         }
     }
@@ -111,14 +112,56 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
     //    a generic annotation. `SimpleXMLElement` is the prototypical
     //    example: it implements `Iterator` with `current(): static`, so
     //    iterating it yields instances of the iterated class itself.
-    if class_implements_iterator(class, class_loader)
+    if class_directly_implements(class, class_loader, "Iterator")
         && let Some(method) = class.get_method("current")
         && let Some(return_type) = &method.return_type
     {
         return Some(return_type.replace_self(&class.fqn()));
     }
 
+    // 4. Fall back to the `offsetGet()` return type when the class
+    //    implements `ArrayAccess` directly without a usable generic
+    //    annotation (e.g. an unbound `@template` self-reference, or no
+    //    docblock generics at all). Mirrors the `current()` fallback
+    //    above: `$obj[$k]` invokes `offsetGet`, so its declared return
+    //    type is the most precise answer available.
+    if class_directly_implements(class, class_loader, "ArrayAccess")
+        && let Some(method) = class.get_method("offsetGet")
+        && let Some(return_type) = &method.return_type
+    {
+        return Some(return_type.replace_self(&class.fqn()));
+    }
+
     None
+}
+
+/// Resolve a generic argument that references the class's own `@template`
+/// parameter (e.g. `T` in `@implements ArrayAccess<int, T>` declared on a
+/// class with `@template T of SomeBound`) to its upper bound.
+///
+/// `implements_generics` / `extends_generics` store a class's generic
+/// annotations exactly as written; when an annotation references the same
+/// class's own template parameter (rather than a concrete type or a
+/// parent's template parameter, which are substituted elsewhere), nothing
+/// else resolves it. Without this, the raw template name (e.g. `"T"`)
+/// would leak through as if it were a real, unrelated class name.
+fn resolve_own_template_arg(value: &PhpType, class: &ClassInfo) -> PhpType {
+    if class.template_params.is_empty() {
+        return value.clone();
+    }
+    let subs: HashMap<String, PhpType> = class
+        .template_params
+        .iter()
+        .map(|param| {
+            let bound = class
+                .template_param_bounds
+                .get(param)
+                .cloned()
+                .unwrap_or_else(PhpType::mixed);
+            (param.to_string(), bound)
+        })
+        .collect();
+    value.substitute(&subs)
 }
 
 /// Check whether a generic argument is an unbounded template parameter
@@ -137,20 +180,21 @@ fn is_unbounded_template_placeholder(ty: &PhpType) -> bool {
 }
 
 /// Check whether `class`, or an ancestor reached by walking the `extends`
-/// chain, directly declares `implements Iterator`.
+/// chain, directly declares `implements <iface_name>`.
 ///
 /// Only the `extends` chain is walked (not the interface-extends-interface
-/// chain used by [`is_transitive_iterable`]) because `Iterator` is always
-/// implemented by a concrete class, never re-declared through another
-/// interface.
-fn class_implements_iterator(
+/// chain used by [`is_transitive_iterable`]) because `Iterator` and
+/// `ArrayAccess` are always implemented by a concrete class, never
+/// re-declared through another interface.
+fn class_directly_implements(
     class: &ClassInfo,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    iface_name: &str,
 ) -> bool {
     if class
         .interfaces
         .iter()
-        .any(|i| short_name(i).eq_ignore_ascii_case("Iterator"))
+        .any(|i| short_name(i).eq_ignore_ascii_case(iface_name))
     {
         return true;
     }
@@ -168,7 +212,7 @@ fn class_implements_iterator(
         if parent
             .interfaces
             .iter()
-            .any(|i| short_name(i).eq_ignore_ascii_case("Iterator"))
+            .any(|i| short_name(i).eq_ignore_ascii_case(iface_name))
         {
             return true;
         }
@@ -190,11 +234,11 @@ pub(in crate::completion) fn extract_iterable_key_type_from_class(
     // 1. Check implements_generics for known iterable interfaces.
     for (name, args) in &class.implements_generics {
         let short = short_name(name);
-        if ITERABLE_IFACE_NAMES.contains(&short)
-            && args.len() >= 2
-            && !is_unbounded_template_placeholder(&args[0])
-        {
-            return Some(args[0].clone());
+        if ITERABLE_IFACE_NAMES.contains(&short) && args.len() >= 2 {
+            let key = resolve_own_template_arg(&args[0], class);
+            if !is_unbounded_template_placeholder(&key) {
+                return Some(key);
+            }
         }
     }
 
@@ -203,25 +247,30 @@ pub(in crate::completion) fn extract_iterable_key_type_from_class(
         let short = short_name(name);
         if !ITERABLE_IFACE_NAMES.contains(&short)
             && args.len() >= 2
-            && !is_unbounded_template_placeholder(&args[0])
             && let Some(iface) = class_loader(name)
             && is_transitive_iterable(&iface, class_loader)
         {
-            return Some(args[0].clone());
+            let key = resolve_own_template_arg(&args[0], class);
+            if !is_unbounded_template_placeholder(&key) {
+                return Some(key);
+            }
         }
     }
 
     // 2. Check extends_generics.
     for (_, args) in &class.extends_generics {
-        if args.len() >= 2 && !is_unbounded_template_placeholder(&args[0]) {
-            return Some(args[0].clone());
+        if args.len() >= 2 {
+            let key = resolve_own_template_arg(&args[0], class);
+            if !is_unbounded_template_placeholder(&key) {
+                return Some(key);
+            }
         }
     }
 
     // 3. Fall back to the `key()` return type when the class implements
     //    `Iterator` directly without a generic annotation. Mirrors the
     //    `current()` fallback in `extract_iterable_element_type_from_class`.
-    if class_implements_iterator(class, class_loader)
+    if class_directly_implements(class, class_loader, "Iterator")
         && let Some(method) = class.get_method("key")
         && let Some(return_type) = &method.return_type
     {
