@@ -2313,6 +2313,26 @@ public function test(): void {}
 }
 
 #[test]
+fn no_diagnostic_for_see_tag_hash_fragment_reference() {
+    let php = r#"<?php
+class Foo {
+public function bar(): void {}
+
+/**
+ * @see Foo#bar
+ */
+public function test(): void {}
+}
+"#;
+    let backend = Backend::new_test();
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(
+        diags.is_empty(),
+        "expected no diagnostic for @see tag hash-fragment reference, got: {diags:?}"
+    );
+}
+
+#[test]
 fn no_diagnostic_for_inline_see_tag_method_reference() {
     let php = r#"<?php
 class Foo {

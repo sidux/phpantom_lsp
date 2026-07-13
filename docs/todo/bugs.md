@@ -472,16 +472,3 @@ bucket: override the pre-8.4 signature to the object shape PHP
 actually returns (`object{bucket: resource, data: string,
 datalen: int, dataLength: int}|false`, as PHPStan's function map
 does) via the stub-patch mechanism (E7), or upstream.
-
-## B89. `Class#method` docblock references parsed as class names
-
-**Severity: Low (5 errors, pdepend) · Confirmed from output**
-
-PHPDoc's legacy fragment syntax `@see ASTNode#getMetadataSize`
-(class `#` member) is looked up as the literal class name
-`PDepend\Source\AST\ASTNode#getMetadataSize` and reported as
-unknown (pdepend `src/Source/AST/ASTArrayElement.php:86`,
-`ASTClosure.php:127`, `ASTConstantDefinition.php:132`,
-`ASTFieldDeclaration.php:193`, `ASTFormalParameter.php:138`).
-Split on `#` (and `::`) in docblock references: validate the class
-part, treat the fragment as a member reference.

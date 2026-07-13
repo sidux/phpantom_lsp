@@ -1395,7 +1395,9 @@ fn extract_inline_see_symbols(docblock: &str, base_offset: u32, spans: &mut Vec<
 /// - `ClassName::method()` → `MemberAccess` (method call)
 /// - `ClassName::$property` → `MemberAccess` (static property)
 /// - `ClassName::CONSTANT` → `MemberAccess` (static constant)
-/// - `function()` → `FunctionCall` (standalone function, no `::`)
+/// - `ClassName#method()` → `MemberAccess` (legacy phpDocumentor instance
+///   member fragment syntax)
+/// - `function()` → `FunctionCall` (standalone function, no `::` or `#`)
 /// - `http://...` / `https://...` → skipped (URLs)
 fn emit_see_reference(reference: &str, file_offset: u32, spans: &mut Vec<SymbolSpan>) {
     // Skip URLs.
@@ -1475,8 +1477,41 @@ fn emit_see_reference(reference: &str, file_offset: u32, spans: &mut Vec<SymbolS
                 },
             });
         }
+    } else if let Some(sep_pos) = reference.find('#') {
+        // Legacy phpDocumentor fragment syntax: `Class#member` refers to
+        // an instance property or method, unlike `Class::member`.
+        let class_part = &reference[..sep_pos];
+        let member_part = &reference[sep_pos + 1..];
+
+        if class_part.is_empty() || member_part.is_empty() {
+            return;
+        }
+
+        let clean_class = class_part.trim_start_matches('\\');
+        let is_self_like = self_static_parent_kind(clean_class).is_some();
+        if !is_self_like && !is_navigable_type(clean_class) {
+            return;
+        }
+
+        let class_start = file_offset;
+        let class_end = file_offset + class_part.len() as u32 - prefix_len;
+        emit_identifier_span(class_part, class_start, class_end, spans);
+
+        let member_start = file_offset + sep_pos as u32 + 1 - prefix_len;
+        let member_end = member_start + member_part.len() as u32;
+        spans.push(SymbolSpan {
+            start: member_start,
+            end: member_end,
+            kind: SymbolKind::MemberAccess {
+                subject_text: clean_class.to_string(),
+                member_name: member_part.to_string(),
+                is_static: false,
+                is_method_call: false,
+                is_docblock_reference: true,
+            },
+        });
     } else {
-        // No `::` — either a class name or a standalone function.
+        // No `::` or `#` — either a class name or a standalone function.
         // If it looks like a class (starts with uppercase or `\`),
         // emit as ClassReference; otherwise skip.
         let clean = reference.trim_start_matches('\\');

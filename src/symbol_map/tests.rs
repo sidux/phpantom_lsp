@@ -3230,6 +3230,49 @@ fn see_tag_member_method() {
 }
 
 #[test]
+fn see_tag_member_hash_fragment() {
+    let php = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @see Order#getTotal\n",
+        " */\n",
+        "class Foo {}\n",
+    );
+    let map = parse_and_extract(php);
+
+    // The class part should produce a ClassReference.
+    let class_offset = php.find("Order").unwrap() as u32;
+    let hit = map.lookup(class_offset);
+    assert!(hit.is_some(), "Should find Order from @see Order#getTotal");
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Order");
+    } else {
+        panic!("Expected ClassReference for Order");
+    }
+
+    // The member part should produce a MemberAccess, not part of the class name.
+    let member_offset = php.find("getTotal").unwrap() as u32;
+    let hit = map.lookup(member_offset);
+    assert!(
+        hit.is_some(),
+        "Should find getTotal from @see Order#getTotal"
+    );
+    if let SymbolKind::MemberAccess {
+        ref subject_text,
+        ref member_name,
+        is_static,
+        ..
+    } = hit.unwrap().kind
+    {
+        assert_eq!(subject_text, "Order");
+        assert_eq!(member_name, "getTotal");
+        assert!(!is_static, "@see `#` fragments are instance members");
+    } else {
+        panic!("Expected MemberAccess for getTotal");
+    }
+}
+
+#[test]
 fn see_tag_member_property() {
     let php = concat!(
         "<?php\n",
