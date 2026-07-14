@@ -970,7 +970,16 @@ impl Backend {
             // that should resolve via namespace context, the direct
             // lookup will miss (no global class with that name) and
             // we fall through to full resolution.
-            if let Some(cls) = self.find_or_load_class(stripped) {
+            //
+            // This early lookup deliberately excludes the Laravel alias
+            // table (it uses the alias-free `find_or_load_class_typed`).
+            // A bare name like `Request` must first get a chance to
+            // resolve against the current namespace in `resolve_class_name`
+            // below, so a same-namespace project class wins over a global
+            // facade alias of the same short name.  The alias table is
+            // still consulted as a genuine last resort by
+            // `resolve_class_name`'s final global lookup.
+            if let Some(cls) = self.find_or_load_class_typed(&PhpType::parse(stripped)) {
                 return Some(cls);
             }
             // When the name is namespace-qualified (e.g. "App\IteratorAggregate")
@@ -979,7 +988,7 @@ impl Backend {
             // file namespace to an unqualified global class name.
             if stripped.contains('\\') {
                 let short = crate::util::short_name(stripped);
-                if let Some(cls) = self.find_or_load_class(short) {
+                if let Some(cls) = self.find_or_load_class_typed(&PhpType::parse(short)) {
                     return Some(cls);
                 }
             }

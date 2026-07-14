@@ -232,3 +232,39 @@ class Svc {
         "unknown binding must not resolve to a concrete class, got: {labels:?}"
     );
 }
+
+/// A project class whose short name collides with a global facade alias
+/// (`Cache`) resolves to the project class when referenced unqualified in
+/// the same namespace, not the facade. The alias table is only a fallback
+/// reached after namespace-aware resolution misses, so a same-namespace
+/// class always wins.
+#[tokio::test]
+async fn same_namespace_class_wins_over_facade_alias() {
+    let local_cache = "\
+<?php
+namespace App;
+class Cache {
+    public function projectOnly() {}
+}
+";
+    let mut files = base_files();
+    files.push(("src/Cache.php", local_cache));
+    let content = "\
+<?php
+namespace App;
+class Svc {
+    public function make(Cache $c) {
+        $c->
+    }
+}
+";
+    let labels = complete_labels(&files, "src/Svc.php", content, 4, 12).await;
+    assert!(
+        labels.iter().any(|l| l.starts_with("projectOnly")),
+        "expected project App\\Cache::projectOnly, got: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|l| l.starts_with("forget")),
+        "must not resolve to facade Cache::forget, got: {labels:?}"
+    );
+}

@@ -1021,6 +1021,42 @@ pub(in crate::completion) fn try_apply_custom_assert_narrowing(
     }
 }
 
+/// Report whether a call expression carries an unconditional not-null
+/// assertion (`@phpstan-assert !null $param`, e.g. PHPUnit's
+/// `assertNotNull`) whose argument resolves to `ctx.var_name`.
+///
+/// The class-based [`apply_instanceof_exclusion`] cannot remove the `null`
+/// pseudo-type (it isn't a class), so callers use this to strip `null` from
+/// a subject's [`ResolvedType`] list directly.  Returns `true` when such an
+/// assertion applies to the current subject.
+pub(in crate::completion) fn call_asserts_not_null(
+    expr: &Expression<'_>,
+    ctx: &VarResolutionCtx<'_>,
+) -> bool {
+    let expr = match expr {
+        Expression::Parenthesized(inner) => inner.expression,
+        other => other,
+    };
+    let Expression::Call(call) = expr else {
+        return false;
+    };
+    let Some(info) = extract_call_assertions(call, ctx) else {
+        return false;
+    };
+    info.assertions.iter().any(|assertion| {
+        assertion.kind == AssertionKind::Always
+            && assertion.negated
+            && assertion.asserted_type.is_null()
+            && find_assertion_arg_variable(
+                info.argument_list,
+                &assertion.param_name,
+                info.parameters,
+            )
+            .as_deref()
+                == Some(ctx.var_name)
+    })
+}
+
 /// If `asserted_type` is a template parameter name, resolve it to a
 /// concrete type using the call-site arguments and template bindings.
 ///

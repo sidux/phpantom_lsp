@@ -5504,3 +5504,43 @@ $svc->getConnection()->customMethod();
         "expected no diagnostics for arbitrary methods on SoapClient subclass, got: {diags:?}",
     );
 }
+
+/// `$m->prop = null;` records the property as exactly `null`.  A following
+/// not-null assertion (`@phpstan-assert !null`, e.g. PHPUnit's
+/// `assertNotNull`) must strip that tracked `null` so the subsequent member
+/// access is not flagged as a scalar member access on `null`.  Class-based
+/// exclusion alone cannot remove the `null` pseudo-type.
+#[test]
+fn not_null_assert_strips_tracked_null_on_property() {
+    let php = r#"<?php
+class Clock {
+    public function toString(): string { return ''; }
+}
+class Model {
+    public ?Clock $at = null;
+    public function save(): void {}
+}
+class Helper {
+    /** @phpstan-assert !null $actual */
+    public static function assertNotNull(mixed $actual): void {}
+}
+class Demo {
+    public function run(Model $m): void {
+        $m->at = null;
+        $m->save();
+        Helper::assertNotNull($m->at);
+        echo $m->at->toString();
+    }
+}
+"#;
+    let backend = Backend::new_test();
+    let diags = collect(&backend, "file:///test.php", php);
+    let scalar_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == Some(NumberOrString::String("scalar_member_access".to_string())))
+        .collect();
+    assert!(
+        scalar_diags.is_empty(),
+        "assertNotNull should strip the tracked null, got: {scalar_diags:?}"
+    );
+}

@@ -5666,6 +5666,22 @@ fn process_assert_narrowing<'b>(
             narrowing::apply_type_guard_inclusion(narrowing::TypeGuardKind::Object, &mut results);
         }
 
+        // A not-null assertion (`@phpstan-assert !null $x`, e.g. PHPUnit's
+        // `assertNotNull`) removes the `null` pseudo-type, which the
+        // class-based exclusion above cannot express.  Strip null from the
+        // subject's resolved types directly so a value that was tracked as
+        // exactly `null` (e.g. after `$obj->prop = null;`) no longer reads
+        // as null after the assertion.
+        if narrowing::call_asserts_not_null(expr, &var_ctx) {
+            results.retain_mut(|rt| match rt.type_string.non_null_type() {
+                Some(non_null) => {
+                    rt.type_string = non_null;
+                    true
+                }
+                None => rt.type_string != PhpType::null(),
+            });
+        }
+
         if resolved_types_differ(&results, &before) {
             if results.is_empty() {
                 // Narrowing removed all types (e.g. assert($x instanceof
