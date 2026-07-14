@@ -3912,6 +3912,31 @@ class Repo {
     );
 }
 
+/// A property assigned `new stdClass()` resolves to stdClass when read
+/// again, so hovering a later read of the property path shows stdClass.
+#[test]
+fn hover_nested_stdclass_property_resolves() {
+    let backend = create_test_backend_with_stdclass_stub();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+function test(): void {
+    $settings = new stdClass();
+    $settings->cache = new stdClass();
+    $x = $settings->cache;
+}
+"#;
+
+    // Hover on `$x`, assigned from the read `$settings->cache` (line 4).
+    // The read resolves to stdClass via the assignment two lines up.
+    let hover = hover_at(&backend, uri, content, 4, 5).expect("expected hover on $x");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("stdClass"),
+        "a variable assigned from a property that was assigned new stdClass() should resolve to stdClass, got: {}",
+        text
+    );
+}
+
 /// A user-defined class with a `@link` tag should display the URL in hover.
 #[test]
 fn hover_class_with_link_tag() {

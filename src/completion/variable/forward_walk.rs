@@ -1894,6 +1894,17 @@ impl ScopeState {
         self.locals.remove(&atom(var_name));
     }
 
+    /// Remove synthetic property/array-access keys rooted at `var_name`
+    /// (e.g. `$s->cache`, `$s["k"]`).  Called when the base variable is
+    /// reassigned: the previous object identity no longer holds, so any
+    /// type tracked for one of its properties is stale.
+    pub fn invalidate_dependent_keys(&mut self, var_name: &str) {
+        let prop_prefix = format!("{var_name}->");
+        let arr_prefix = format!("{var_name}[");
+        self.locals
+            .retain(|key, _| !key.starts_with(&prop_prefix) && !key.starts_with(&arr_prefix));
+    }
+
     /// Merge another scope into `self`.
     ///
     /// For each variable:
@@ -4220,6 +4231,42 @@ fn process_assignment_expr<'b>(
             return;
         }
 
+        // Property assignment: `$var->prop = expr;` (and null-safe
+        // `$var?->prop = expr;`).  Record the assigned type under the
+        // property-path key (e.g. `$settings->cache`) so that a later
+        // read of that path resolves through the assignment rather than
+        // the declaring class's declared property hints.  This is what
+        // lets nested object property chains resolve, most notably on
+        // `stdClass` which has no declared properties:
+        //
+        //     $s = new stdClass();
+        //     $s->cache = new stdClass();
+        //     $s->cache->ttl = 1;   // `$s->cache` now resolves to stdClass
+        //
+        // The key contains `->`, so it is treated as a synthetic
+        // narrowing entry and stripped at loop boundaries — matching the
+        // conservative behaviour of condition-based property narrowing.
+        if matches!(
+            assignment.lhs,
+            Expression::Access(Access::Property(_) | Access::NullSafeProperty(_))
+        ) {
+            // Skip when the cursor is inside the RHS so that lookups
+            // within the RHS see the pre-assignment state.
+            let rhs_span = assignment.rhs.span();
+            if ctx.cursor_offset >= rhs_span.start.offset
+                && ctx.cursor_offset <= rhs_span.end.offset
+            {
+                return;
+            }
+            if let Some(key) = narrowing::expr_to_subject_key(assignment.lhs) {
+                let rhs_types = resolve_rhs_with_scope(assignment.rhs, scope, ctx);
+                if !rhs_types.is_empty() {
+                    scope.set(&key, rhs_types);
+                }
+            }
+            return;
+        }
+
         // Simple variable assignment: `$var = expr;`
         let lhs_name = match assignment.lhs {
             Expression::Variable(Variable::Direct(dv)) => bytes_to_str(dv.name).to_string(),
@@ -4257,6 +4304,12 @@ fn process_assignment_expr<'b>(
                 }
             }
         }
+        // Reassigning the variable replaces its object identity, so any
+        // property/array-access key rooted at it (seeded by an earlier
+        // assignment or condition narrowing) is now stale.  Drop them
+        // after resolving the RHS, so `$x = $x->foo` still reads the old
+        // key while resolving.
+        scope.invalidate_dependent_keys(&lhs_name);
         if !rhs_types.is_empty() {
             scope.set(&lhs_name, rhs_types);
         } else if !scope.contains(&lhs_name) {

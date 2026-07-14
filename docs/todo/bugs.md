@@ -181,23 +181,3 @@ never binds, so the return value is unresolved
 (pdepend `src/Source/Language/PHP/AbstractPHPParser.php`
 `reduceUnaryExpression` / `stripTrailingComments` call sites:
 `$expressions[]`, `end($tokens)->type`).
-
-## B74. Nested `stdClass` property chains are unresolved
-
-**Severity: Medium (~8 errors, pdepend) · Confirmed from output**
-
-```php
-$settings = new stdClass();
-$settings->cache = new stdClass();
-$settings->cache->ttl = $config['cache']['ttl'];
-// "Cannot verify property 'ttl' — type of '$settings->cache' could not be resolved"
-```
-
-T24 (`docs/todo/type-inference.md`) suppressed member checks on
-variables typed `stdClass`, but a *property of* a `stdClass` is not
-covered: the subject `$settings->cache` fails to resolve even
-though it was assigned `new stdClass()` two lines up
-(pdepend `src/DependencyInjection/PdependExtension.php:127-135`).
-Track property assignments on `stdClass` values (PHPStan models
-this exactly), or at minimum resolve `stdClass` property reads to
-`stdClass`-typed values assigned in the same scope.

@@ -327,6 +327,12 @@ class TypeGuardNarrowingDemo
         if (is_object($payload) && property_exists($payload, 'name')) {
             echo $payload->name;                  // no diagnostic
         }
+
+        // A property assigned `new stdClass()` resolves back to stdClass,
+        // so a nested object graph built up field by field type-checks.
+        $settings = new \stdClass();
+        $settings->cache = new \stdClass();       // $settings->cache : stdClass
+        $settings->cache->ttl = 3600;             // no diagnostic on ->ttl
     }
 }
 

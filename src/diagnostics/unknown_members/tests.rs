@@ -1096,6 +1096,58 @@ echo $obj->whatever;
     assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
 }
 
+#[test]
+fn no_diagnostic_for_nested_stdclass_property_chain() {
+    // A property assigned `new stdClass()` resolves to stdClass when
+    // read again, so a further property access on it is not flagged.
+    let php = r#"<?php
+function test(): void {
+$settings = new stdClass();
+$settings->cache = new stdClass();
+$settings->cache->ttl = 3600;
+}
+"#;
+    let backend = Backend::new_test();
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+}
+
+#[test]
+fn no_diagnostic_for_deeply_nested_stdclass_property_chain() {
+    let php = r#"<?php
+function test(): void {
+$root = new stdClass();
+$root->a = new stdClass();
+$root->a->b = new stdClass();
+$root->a->b->c = 1;
+}
+"#;
+    let backend = Backend::new_test();
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+}
+
+#[test]
+fn stdclass_property_key_invalidated_on_base_reassignment() {
+    // Reassigning `$s` drops the stale `$s->cache` type, so `$s->cache`
+    // resolves against the new object (a typed class here) rather than
+    // the stdClass assigned before the reassignment.
+    let php = r#"<?php
+class Holder { public ?Holder $cache = null; public int $ttl = 0; }
+function test(): void {
+$s = new stdClass();
+$s->cache = new stdClass();
+$s = new Holder();
+echo $s->cache->ttl;
+}
+"#;
+    let backend = Backend::new_test();
+    let diags = collect(&backend, "file:///test.php", php);
+    // `$s->cache` is now `?Holder`, which has a `ttl` property — no
+    // diagnostic, and crucially not resolved as the stale stdClass.
+    assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+}
+
 // ── PHPDoc property on child class ──────────────────────────────
 
 #[test]
