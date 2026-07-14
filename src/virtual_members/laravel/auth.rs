@@ -152,13 +152,19 @@ fn project_auth_implementors(
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) -> Vec<String> {
     // Resolve implementors first so its internal index reads are released
-    // before we take the `fqn_uri_index` read guard below.
+    // before we take the `fqn_uri_index` read guard below.  `project_only`
+    // keeps the scan from loading and parsing every class in the vendor
+    // tree: the only implementors we keep are project-local ones (the
+    // `/vendor/` filter below), and vendor classes are already parsed
+    // during indexing, so restricting the scan up front avoids a
+    // multi-second full-vendor parse on large Laravel apps.
     let implementors = backend.find_implementors(
         "Authenticatable",
         AUTHENTICATABLE_FQN,
         class_loader,
         false,
         false,
+        true,
     );
     let uri_index = backend.fqn_uri_index.read();
     implementors
