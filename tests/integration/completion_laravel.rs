@@ -791,6 +791,51 @@ class User extends Model {
     );
 }
 
+// ─── Differently-cased relation access still chains ─────────────────────────
+
+#[tokio::test]
+async fn test_relationship_property_access_is_case_insensitive() {
+    // PHP method names are case-insensitive, and Eloquent's `__get()`
+    // magic accessor resolves relations via `method_exists()`, so
+    // `$user->profile` and `$user->PROFILE` resolve the same relationship.
+    let profile_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Profile extends Model {
+    public function getBio(): string { return ''; }
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\HasOne;
+class User extends Model {
+    /** @return HasOne<\\App\\Models\\Profile, $this> */
+    public function profile(): HasOne { return $this->hasOne(Profile::class); }
+    public function test() {
+        $user = new User();
+        $user->PROFILE->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Profile.php", profile_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    // "$user->PROFILE->" at line 9, character 24
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 9, 24).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"getBio"),
+        "Differently-cased relation access should still chain to Profile::getBio, got: {:?}",
+        methods
+    );
+}
+
 // ─── $this-> shows relationship properties ──────────────────────────────────
 
 #[tokio::test]

@@ -225,6 +225,7 @@ use accessors::{
 };
 pub(crate) use where_property::where_property_method_to_column;
 
+pub(crate) use relationships::class_has_relation_method_ci;
 pub(crate) use relationships::classify_relationship_typed;
 pub(crate) use relationships::count_property_to_relationship_method;
 pub use relationships::infer_relationship_from_body;

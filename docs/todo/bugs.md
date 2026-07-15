@@ -199,28 +199,3 @@ that already handles the helper-function form (luxplus-website
 `app/View/Components/ProductDiscovery/ProductDiscoveryModal.php`,
 fixed in the test project by switching to `app()->make()` pending this
 fix; see `analyze-triage.md`).
-
-## B75. Eloquent relation property access is case-sensitive, unlike the underlying PHP method call
-
-**Severity: Low (~2 errors, luxplus-website) · Confirmed with fixture**
-
-```php
-class Order extends Model
-{
-    public function orderProducts(): HasMany { /* ... */ }
-}
-
-$order->orderProducts;   // resolves
-$order->orderproducts;   // "could not be resolved"
-```
-
-PHP method names are case-insensitive, so Eloquent's `__get()` magic
-accessor correctly calls `orderProducts()` regardless of the case used
-at the call site, and the relation resolves at runtime either way.
-PHPantom's Laravel relation-property resolution only matches the exact
-declared case, so a differently-cased (but functionally identical)
-property access is reported as unresolved. Match relation properties
-case-insensitively, the same way direct method calls already are
-(luxplus-website
-`app/Http/Resources/OrderDetailedResource.php:146-147`, via
-`Order::orderProducts()` accessed as `$order->orderproducts`).

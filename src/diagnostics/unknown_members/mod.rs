@@ -974,8 +974,16 @@ pub(crate) fn member_exists(
         return false;
     }
 
-    // Instance property access.
-    class.properties.iter().any(|p| p.name == member_name)
+    // Instance property access (case-sensitive, per PHP semantics).
+    if class.properties.iter().any(|p| p.name == member_name) {
+        return true;
+    }
+
+    // Eloquent relation properties are the exception: `$model->orderProducts`
+    // flows through `__get()` → `isRelation()` → `method_exists()`, all of
+    // which are case-insensitive, so a differently-cased access like
+    // `$model->orderproducts` resolves the same relationship at runtime.
+    crate::virtual_members::laravel::class_has_relation_method_ci(class, member_name)
 }
 
 /// Check whether the class has a magic method that would handle the

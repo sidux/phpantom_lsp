@@ -745,6 +745,20 @@ pub(crate) fn resolve_property_type_hint(
         return Some(replace_self_in_property_type(hint, class));
     }
 
+    // Eloquent relation properties resolve case-insensitively: access like
+    // `$model->orderproducts` flows through `__get()` → `isRelation()` →
+    // `method_exists()`, so a relation-backed virtual property matches the
+    // relationship regardless of the case used at the access site.
+    if crate::virtual_members::laravel::class_has_relation_method_ci(&merged, prop_name)
+        && let Some(hint) = merged
+            .properties
+            .iter()
+            .find(|p| p.is_virtual && p.name.eq_ignore_ascii_case(prop_name))
+            .and_then(|p| p.type_hint.clone())
+    {
+        return Some(replace_self_in_property_type(hint, class));
+    }
+
     // Fallback: if the class has a `__get` method with method-level
     // template parameters and an IndexAccess return type (e.g.
     // `@template K as key-of<TData>` / `@return TData[K]`), infer K

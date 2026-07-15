@@ -62,6 +62,13 @@ class Demo
         $bakery->warmth;              // $appends (no cast/attr)    → mixed
         // MUST NOT appear: secret_ingredient (private $attributes field)
 
+        // Relation properties resolve case-insensitively, matching Laravel's
+        // magic accessor, which dispatches relations through a
+        // case-insensitive method lookup. Both spellings resolve to the same
+        // relationship, so a differently-cased access is not flagged.
+        $bakery->headbaker->getName(); // HasOne (lower-case)       → Baker
+        $bakery->MasterRecipe;         // BelongsToMany (mixed)     → Collection<BakeryRecipe>
+
         // BelongsTo relationship property + method call with covariant $this
         $post = new BlogPost();
         $post->author;                // relationship BelongsTo     → BlogAuthor
