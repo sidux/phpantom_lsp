@@ -1339,6 +1339,25 @@ class ClassStringVarDemo
         $found = $userClass::findByEmail('test@example.com');
         $found->getEmail();                       // resolves User from class-string static call
     }
+
+    /**
+     * A `class-string<Pen>` variable that passes through a
+     * `class_exists()` guard keeps its `<Pen>` type argument, so
+     * `new $className()` still resolves to `Pen`.
+     */
+    public function guardedInstantiation(mixed $rawName): object
+    {
+        /** @var class-string<Pen> */
+        $className = (string) $rawName;
+
+        if (!class_exists($className)) {
+            throw new \RuntimeException('missing');
+        }
+
+        $pen = new $className();
+        $pen->write();                            // resolves Pen despite the class_exists() guard
+        return $pen;
+    }
 }
 
 
@@ -5749,6 +5768,10 @@ function runDemoAssertions(): void
     $pencilTool = new TernaryNarrowingDemo(new Pencil());
     assert($pencilTool->toolLabel() === null, 'ternary else-branch yields null (Pencil is not a Pen)');
     assert($pencilTool->repeatedCall() === null, 'ternary else-branch yields null for repeated call');
+
+    // ── class-string guard keeps its type argument ─────────────────────
+    $guarded = (new ClassStringVarDemo())->guardedInstantiation(Pen::class);
+    assert($guarded instanceof Pen, 'new $className() resolves to Pen after a class_exists() guard');
 
     // ── Pseudo-type class-name collision ────────────────────────────────
     $num = new Number('42');

@@ -8855,6 +8855,16 @@ fn apply_class_string_guard_narrowing<'b>(
                     if rt.class_info.is_some() {
                         continue;
                     }
+                    // Never widen a type that is already at least as
+                    // specific as the guard's result. The generic
+                    // `*_exists()` forms narrow to bare `class-string`; a
+                    // variable already typed `class-string<Foo>` must keep
+                    // its type argument rather than be downgraded (a bare
+                    // `class-string` is a supertype, so `new $var` could no
+                    // longer recover the concrete class).
+                    if rt.type_string.is_subtype_of(&class_string_type) {
+                        continue;
+                    }
                     if rt.type_string.is_subtype_of(&PhpType::string()) || rt.type_string.is_mixed()
                     {
                         rt.type_string = class_string_type.clone();
