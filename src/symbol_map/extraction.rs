@@ -3562,38 +3562,73 @@ fn try_emit_array_callable_span(
 }
 
 /// If `argument_list` belongs to a `compact()` call, emit one
-/// [`SymbolKind::CompactVariable`] span per direct string-literal argument.
+/// [`SymbolKind::CompactVariable`] span per string-literal variable name,
+/// including names inside (possibly nested) array-literal arguments.
 fn try_emit_compact_string_spans(
     argument_list: &ArgumentList<'_>,
     content: &str,
     spans: &mut Vec<SymbolSpan>,
 ) {
     for arg in argument_list.arguments.iter() {
-        let Expression::Literal(literal::Literal::String(s)) = arg.value() else {
-            continue;
-        };
-        let inner_start = s.span.start.offset + 1;
-        let inner_end = s.span.end.offset - 1;
-        if inner_start >= inner_end || inner_end as usize > content.len() {
-            continue;
-        }
+        emit_compact_name_spans(arg.value(), content, spans);
+    }
+}
 
-        let name = if let Some(value) = s.value {
-            bytes_to_str(value)
-        } else {
-            &content[inner_start as usize..inner_end as usize]
-        };
-        if name.is_empty() {
-            continue;
-        }
+/// Emit [`SymbolKind::CompactVariable`] spans for one `compact()` argument:
+/// a string literal names a variable directly, and an array literal is
+/// descended into recursively so `compact(['a', ['b']])` covers both names.
+fn emit_compact_name_spans(expr: &Expression<'_>, content: &str, spans: &mut Vec<SymbolSpan>) {
+    match expr {
+        Expression::Literal(literal::Literal::String(s)) => {
+            let inner_start = s.span.start.offset + 1;
+            let inner_end = s.span.end.offset - 1;
+            if inner_start >= inner_end || inner_end as usize > content.len() {
+                return;
+            }
 
-        spans.push(SymbolSpan {
-            start: inner_start,
-            end: inner_end,
-            kind: SymbolKind::CompactVariable {
-                name: name.to_string(),
-            },
-        });
+            let name = if let Some(value) = s.value {
+                bytes_to_str(value)
+            } else {
+                &content[inner_start as usize..inner_end as usize]
+            };
+            if name.is_empty() {
+                return;
+            }
+
+            spans.push(SymbolSpan {
+                start: inner_start,
+                end: inner_end,
+                kind: SymbolKind::CompactVariable {
+                    name: name.to_string(),
+                },
+            });
+        }
+        Expression::Array(arr) => {
+            for elem in arr.elements.iter() {
+                emit_compact_name_elem_spans(elem, content, spans);
+            }
+        }
+        Expression::LegacyArray(arr) => {
+            for elem in arr.elements.iter() {
+                emit_compact_name_elem_spans(elem, content, spans);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Emit spans for one element of an array passed to `compact()`. Keys are
+/// ignored; values are variable names or nested arrays.
+fn emit_compact_name_elem_spans(
+    elem: &ArrayElement<'_>,
+    content: &str,
+    spans: &mut Vec<SymbolSpan>,
+) {
+    match elem {
+        ArrayElement::KeyValue(kv) => emit_compact_name_spans(kv.value, content, spans),
+        ArrayElement::Value(v) => emit_compact_name_spans(v.value, content, spans),
+        ArrayElement::Variadic(s) => emit_compact_name_spans(s.value, content, spans),
+        ArrayElement::Missing(_) => {}
     }
 }
 

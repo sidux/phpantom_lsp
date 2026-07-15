@@ -131,28 +131,3 @@ chained call is unresolved (2 errors, luxplus-backoffice
 `app/Jobs/SalesInfo/UpdateSalesInfoLocalJob.php:37`). All facts are
 declared; only the argument-shape special-casing is in the way.
 
-## B72. `compact()` with an array argument is not recognised, producing unused-variable false positives
-
-**Severity: Medium (~6 errors, luxplus-website) · Confirmed with fixture**
-
-```php
-$activeEvents = getActiveEvents();
-$showDefault = true;
-$args = compact([
-    'activeEvents',
-    'showDefault',
-]);
-```
-
-The unused-variable diagnostic treats `$activeEvents` and
-`$showDefault` as unused because the `compact()` recogniser only
-inspects direct string-literal arguments (`compact('a', 'b')`). When
-`compact()` is passed a single array of names (`compact(['a', 'b'])`,
-a form PHP supports and `compact()` documents), the array elements are
-never collected, so every variable named inside the array is falsely
-reported unused. The recogniser walks argument expressions but bottoms
-out at the array literal instead of descending into its string
-elements. Collect names from array-literal arguments (recursively, so
-nested arrays also work) in the same place string arguments are
-collected (luxplus-website
-`app/Http/Controllers/FavoriteController.php:179-190`).

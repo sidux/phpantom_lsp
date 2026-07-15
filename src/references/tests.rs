@@ -153,6 +153,31 @@ async fn test_variable_references_include_compact_string() {
     );
 }
 
+#[tokio::test]
+async fn test_variable_references_include_compact_array_string() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "function demo(): array {\n",
+        "    $user = 'alice';\n",
+        "    return compact(['user']);\n",
+        "}\n",
+    );
+
+    open_file(&backend, &uri, text).await;
+
+    let locs = find_references(&backend, &uri, 2, 6, true).await;
+    assert!(
+        locs.iter().any(|loc| {
+            loc.range.start.line == 3
+                && loc.range.start.character == 21
+                && loc.range.end.character == 25
+        }),
+        "Expected compact(['user']) string contents to be included in variable references: {locs:?}"
+    );
+}
+
 // ─── Class References ───────────────────────────────────────────────────────
 
 #[tokio::test]

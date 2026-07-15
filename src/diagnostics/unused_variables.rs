@@ -1359,6 +1359,40 @@ function foo() {
     }
 
     #[test]
+    fn compact_with_array_argument_suppresses_unused_variables() {
+        let diags = collect(
+            r#"<?php
+function foo() {
+    $activeEvents = 'a';
+    $showDefault = true;
+    $unused = 'x';
+    return compact([
+        'activeEvents',
+        'showDefault',
+    ]);
+}
+"#,
+        );
+        assert_eq!(diags.len(), 1, "got: {diags:?}");
+        assert!(diags[0].message.contains("$unused"));
+    }
+
+    #[test]
+    fn compact_with_nested_array_argument_suppresses_unused_variables() {
+        let diags = collect(
+            r#"<?php
+function foo() {
+    $a = 1;
+    $b = 2;
+    $c = 3;
+    return compact('a', ['b', ['c']]);
+}
+"#,
+        );
+        assert_eq!(diags.len(), 0, "got: {diags:?}");
+    }
+
+    #[test]
     fn compact_in_method_suppresses_unused_variable() {
         let diags = collect(
             r#"<?php
