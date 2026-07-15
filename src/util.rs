@@ -587,10 +587,9 @@ pub(crate) fn unescape_php_string_literal(raw: &str) -> Option<String> {
     let (body, double_quoted) =
         if let Some(b) = raw.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')) {
             (b, false)
-        } else if let Some(b) = raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
-            (b, true)
         } else {
-            return None;
+            let b = raw.strip_prefix('"').and_then(|r| r.strip_suffix('"'))?;
+            (b, true)
         };
 
     let mut out = String::with_capacity(body.len());
