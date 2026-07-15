@@ -938,3 +938,101 @@ fn cache_facade_non_callback_method_untouched() {
     );
     assert!(method.template_params.is_empty());
 }
+
+// ─── Testing mock() / partialMock() / spy() generics ────────────────────────
+
+/// Build a framework testing helper: `mock($abstract)` declared as
+/// returning the bare `Mockery\MockInterface` contract.
+///
+/// This is a real declared trait method (`is_virtual == false`), like
+/// the framework's `InteractsWithContainer::mock()`, not a `@method`
+/// tag.
+fn make_testing_mock(name: &str) -> MethodInfo {
+    MethodInfo {
+        return_type: Some(PhpType::Named("Mockery\\MockInterface".to_string())),
+        parameters: vec![
+            crate::test_fixtures::make_param("$abstract", Some("string"), true),
+            crate::test_fixtures::make_param("$mock", Some("\\Closure|null"), false),
+        ],
+        is_virtual: false,
+        ..MethodInfo::virtual_method(name, None)
+    }
+}
+
+#[test]
+fn testing_mock_helpers_become_generic() {
+    // Any test class inherits these from the framework base TestCase, so
+    // the patch runs regardless of the class FQN.
+    let mut class = make_class("Tests\\Feature\\ExampleTest");
+    class.methods = vec![
+        Arc::new(make_testing_mock("mock")),
+        Arc::new(make_testing_mock("partialMock")),
+        Arc::new(make_testing_mock("spy")),
+    ]
+    .into();
+
+    apply_laravel_patches(&mut class, "Tests\\Feature\\ExampleTest");
+
+    for method in class.methods.iter() {
+        assert_eq!(
+            method.return_type.as_ref().unwrap().to_string(),
+            "Mockery\\MockInterface&TMock",
+            "{} should return the mock intersection",
+            method.name
+        );
+        assert_eq!(
+            method.template_params,
+            vec![atom("TMock")],
+            "{} should declare the TMock template",
+            method.name
+        );
+        assert_eq!(
+            method.template_bindings,
+            vec![(atom("TMock"), atom("$abstract"))],
+            "{} should bind TMock from $abstract",
+            method.name
+        );
+        let abstract_param = method
+            .parameters
+            .iter()
+            .find(|p| p.name.as_str() == "$abstract")
+            .unwrap();
+        assert_eq!(
+            abstract_param.type_hint.as_ref().unwrap().to_string(),
+            "class-string<TMock>|TMock",
+            "{} should retype $abstract to bind the template",
+            method.name
+        );
+    }
+}
+
+#[test]
+fn testing_mock_helper_with_concrete_return_is_untouched() {
+    // A hand-written override that already carries the mocked class must
+    // not be rewritten.
+    let concrete = PhpType::Intersection(vec![
+        PhpType::Named("App\\Contracts\\Storage".to_string()),
+        PhpType::Named("Mockery\\MockInterface".to_string()),
+    ]);
+    let mut class = make_class("Tests\\Feature\\ExampleTest");
+    class.methods = vec![Arc::new(MethodInfo {
+        return_type: Some(concrete.clone()),
+        parameters: vec![crate::test_fixtures::make_param(
+            "$abstract",
+            Some("string"),
+            true,
+        )],
+        ..MethodInfo::virtual_method("mock", None)
+    })]
+    .into();
+
+    apply_laravel_patches(&mut class, "Tests\\Feature\\ExampleTest");
+
+    let method = class.methods.iter().next().unwrap();
+    assert_eq!(
+        method.return_type.as_ref().unwrap().to_string(),
+        concrete.to_string(),
+        "a method that already returns the intersection is left as-is"
+    );
+    assert!(method.template_params.is_empty());
+}

@@ -5547,6 +5547,59 @@ function test(mixed $value): void {
     );
 }
 
+// ─── Framework testing mock() helper resolves to the mock intersection ──────
+
+#[test]
+fn testing_mock_helper_satisfies_array_and_typed_params() {
+    // Laravel's `TestCase::mock()` is declared as returning a bare
+    // `Mockery\MockInterface`, discarding the mocked class. The patch
+    // makes it generic so `$this->mock(IRule::class)` resolves to
+    // `MockInterface&IRule`, which then satisfies both an
+    // `array<IRule>` element type and a plain `IRule` parameter. The
+    // helper is inherited from a base class, matching the real
+    // framework layout.
+    let php = r#"<?php
+namespace Mockery {
+    interface LegacyMockInterface {}
+    interface MockInterface extends LegacyMockInterface {}
+}
+namespace App {
+    interface IRule { public function check(): bool; }
+
+    class Consumer {
+        /** @param array<IRule> $rules */
+        public function __construct(array $rules) {}
+    }
+
+    class Needs {
+        public function handle(IRule $rule): void {}
+    }
+
+    class TestBase {
+        /**
+         * @param string $abstract
+         * @return \Mockery\MockInterface
+         */
+        protected function mock($abstract) {}
+    }
+
+    class ExampleTest extends TestBase {
+        public function test(): void {
+            $rule = $this->mock(IRule::class);
+            new Consumer([$rule]);
+            (new Needs())->handle($rule);
+        }
+    }
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "a mock of IRule must satisfy array<IRule> and IRule parameters: {:?}",
+        type_error_messages(&diags)
+    );
+}
+
 // ─── String literal naming a function is a valid callable ───────────────────
 
 #[test]

@@ -62,6 +62,18 @@
 //!    concrete `FilesystemAdapter`.  The patch corrects the return type
 //!    so that adapter-only assertion helpers (`assertExists()`,
 //!    `assertMissing()`, …) resolve on the faked disk.
+//!
+//! 8. **Testing `mock()` / `partialMock()` / `spy()` return types.**
+//!    The framework's `InteractsWithContainer` trait declares these as
+//!    returning a bare `Mockery\MockInterface`, discarding the mocked
+//!    class.  The patch makes them generic (`@template TMock` bound from
+//!    the `$abstract` argument, returning `MockInterface&TMock`) so that
+//!    `$this->mock(Foo::class)` resolves to the intersection.  The mock
+//!    then satisfies parameters and array element types typed as `Foo`
+//!    and keeps resolving mock-expectation chains (`shouldReceive()`,
+//!    `with()`, …).  This is dispatched unconditionally because the
+//!    helpers are inherited into every test class rather than living on
+//!    a fixed FQN.
 
 use std::sync::Arc;
 
@@ -92,6 +104,10 @@ const FILESYSTEM_CONTRACT_FQN: &str = "Illuminate\\Contracts\\Filesystem\\Filesy
 /// FQN of the concrete `FilesystemAdapter` that `Storage::fake()` and
 /// `Storage::persistentFake()` always construct at runtime.
 const FILESYSTEM_ADAPTER_FQN: &str = "Illuminate\\Filesystem\\FilesystemAdapter";
+
+/// FQN of the Mockery mock contract that Laravel's testing helpers
+/// (`mock()`, `partialMock()`, `spy()`) declare as their return type.
+const MOCK_INTERFACE_FQN: &str = "Mockery\\MockInterface";
 
 /// Apply all registered Laravel class patches to a fully-resolved class.
 ///
@@ -125,6 +141,14 @@ pub fn apply_laravel_patches(class: &mut ClassInfo, fqn: &str) {
     if fqn == STORAGE_FACADE_FQN {
         patch_storage_fake_return_types(class);
     }
+
+    // The testing mock helpers are inherited into every test class from
+    // the framework's base `TestCase` (via the `InteractsWithContainer`
+    // trait), so they cannot be dispatched by a fixed FQN.  The patch
+    // scans the merged method list by name and only rewrites methods
+    // whose signature matches the framework helper, so it is a cheap
+    // no-op for classes that do not carry them.
+    patch_testcase_mock_return_types(class);
 }
 
 /// Override `__call` and `__callStatic` return types on Eloquent Builder
@@ -404,6 +428,91 @@ fn patch_storage_fake_return_types(class: &mut ClassInfo) {
         if returns_contract {
             Arc::make_mut(method).return_type = Some(adapter.clone());
         }
+    }
+}
+
+/// Make Laravel's testing `mock()` / `partialMock()` / `spy()` helpers
+/// generic so they resolve to the intersection of the mocked class and
+/// `Mockery\MockInterface`.
+///
+/// The framework declares all three on the `InteractsWithContainer`
+/// trait as `@return \Mockery\MockInterface`, so the concrete class
+/// passed as the first argument is lost.  A mock of `Foo` really behaves
+/// as `Foo&MockInterface`: it satisfies parameters and array element
+/// types declared as `Foo`, and it still exposes the mock-expectation
+/// API (`shouldReceive()`, `allows()`, …).  Without the intersection,
+/// `$this->mock(Foo::class)` degrades to a bare `MockInterface`, which
+/// produces false-positive argument-type mismatches and breaks member
+/// resolution on the mocked class.
+///
+/// The patch rewrites the signature to the generic form Larastan uses:
+/// ```text
+/// @template TMock of object
+/// @param class-string<TMock>|TMock $abstract
+/// @return \Mockery\MockInterface&TMock
+/// ```
+/// Binding `TMock` from the `$abstract` argument (a `::class` constant or
+/// an instance) lets the shared generic-substitution pipeline produce the
+/// intersection, exactly as it already does for `Mockery::mock()`.
+///
+/// It only rewrites methods whose declared return type is the bare
+/// `Mockery\MockInterface` contract, leaving any hand-written override
+/// with a richer type untouched.
+fn patch_testcase_mock_return_types(class: &mut ClassInfo) {
+    use crate::atom::atom;
+
+    const MOCK_METHODS: &[&str] = &["mock", "partialMock", "spy"];
+    const TEMPLATE: &str = "TMock";
+
+    let abstract_hint = PhpType::parse("class-string<TMock>|TMock");
+    let mock_return = PhpType::Intersection(vec![
+        PhpType::Named(MOCK_INTERFACE_FQN.to_owned()),
+        PhpType::Named(TEMPLATE.to_owned()),
+    ]);
+
+    for method in class.methods.make_mut().iter_mut() {
+        if !MOCK_METHODS.contains(&method.name.as_str()) {
+            continue;
+        }
+        // Only rewrite a real declared helper (the framework's trait
+        // method).  A `@method mock(...)` tag on an unrelated class is a
+        // virtual member and keeps whatever return type the author
+        // wrote.
+        if method.is_virtual {
+            continue;
+        }
+        // Only rewrite the honestly-declared bare-contract form.  A
+        // hand-written override that already carries the mocked class is
+        // left untouched.
+        let returns_bare_mock = method
+            .return_type
+            .as_ref()
+            .and_then(|rt| rt.class_name())
+            .is_some_and(|n| {
+                let n = n.trim_start_matches('\\');
+                n == MOCK_INTERFACE_FQN || n == "Mockery\\LegacyMockInterface"
+            });
+        if !returns_bare_mock {
+            continue;
+        }
+        // Locate the class/instance parameter that names the mock target.
+        let abstract_name = match method.parameters.first() {
+            Some(param) => param.name,
+            None => continue,
+        };
+
+        let method = Arc::make_mut(method);
+        for param in method.parameters.iter_mut() {
+            if param.name == abstract_name {
+                param.type_hint = Some(abstract_hint.clone());
+                param.native_type_hint = None;
+                break;
+            }
+        }
+        method.template_params = vec![atom(TEMPLATE)];
+        method.template_param_bounds = Default::default();
+        method.template_bindings = vec![(atom(TEMPLATE), abstract_name)];
+        method.return_type = Some(mock_return.clone());
     }
 }
 

@@ -131,18 +131,68 @@ chained call is unresolved (2 errors, luxplus-backoffice
 `app/Jobs/SalesInfo/UpdateSalesInfoLocalJob.php:37`). All facts are
 declared; only the argument-shape special-casing is in the way.
 
-## B71. Mockery mock intersection types lost in collections and arguments
+## B72. `compact()` with an array argument is not recognised, producing unused-variable false positives
 
-**Severity: Medium (~10 errors, luxplus-backoffice) · Confirmed from output**
+**Severity: Medium (~6 errors, luxplus-website) · Confirmed with fixture**
 
-`Mockery::mock(X::class)` resolves to the intersection with `X` in
-simple assignments (B64 fixed that), but the `X` half is lost when
-mocks flow through arrays or into typed parameters:
-"Argument 1 ($failed) expects array<IFileValidationRule>, got
-list<Mockery\MockInterface>"
-(luxplus-backoffice `tests/Feature/Brands/BrandPromotionsControllerTest.php:347,385`,
-`tests/Feature/Jobs/BusinessCentral/UpdateExpiredMemberJobTest.php:25`),
-and chained expectation calls report "Method 'with' not found on
-class 'Mockery\LegacyMockInterface'"
-(`tests/Feature/Storage/*`, `$storageMock` / `$storageResultMock`
-cascades). Fix the intersection propagation, not the diagnostic.
+```php
+$activeEvents = getActiveEvents();
+$showDefault = true;
+$args = compact([
+    'activeEvents',
+    'showDefault',
+]);
+```
+
+The unused-variable diagnostic treats `$activeEvents` and
+`$showDefault` as unused because the `compact()` recogniser only
+inspects direct string-literal arguments (`compact('a', 'b')`). When
+`compact()` is passed a single array of names (`compact(['a', 'b'])`,
+a form PHP supports and `compact()` documents), the array elements are
+never collected, so every variable named inside the array is falsely
+reported unused. The recogniser walks argument expressions but bottoms
+out at the array literal instead of descending into its string
+elements. Collect names from array-literal arguments (recursively, so
+nested arrays also work) in the same place string arguments are
+collected (luxplus-website
+`app/Http/Controllers/FavoriteController.php:179-190`).
+
+## B73. A variable used only as a dynamic method name is reported unused
+
+**Severity: Low (~1 error, luxplus-backoffice) · Confirmed from output**
+
+```php
+$assertion = $cond ? 'assertSee' : 'assertDontSee';
+$response->{$assertion}($value);
+```
+
+The unused-variable diagnostic flags `$assertion` as unused even
+though it is read as the method name in `$response->{$assertion}(...)`.
+The usage scan does not treat the braced method-name selector of a
+method call as a read position, so a variable referenced only there is
+missed. Walk the method-name expression of method / null-safe-method /
+static-method calls when collecting variable reads (luxplus-backoffice
+`tests/Feature/Products/Tariffs/TariffsTest.php:73`).
+
+## B74. Mockery `shouldHaveReceived()` / `shouldReceive()` chains break on the imprecise `@return self`
+
+**Severity: Low (~2 errors, luxplus-backoffice) · Confirmed from output**
+
+```php
+$service->shouldHaveReceived('store')->with([10, 20], [])->once();
+```
+
+Mockery's `LegacyMockInterface::shouldHaveReceived()` is annotated
+`@return self`, but at runtime it returns a
+`Mockery\VerificationDirector` (and `shouldReceive()` returns
+`Mockery\Expectation`). Because the analyzer honours the declared
+`self`, the chained `->with()` resolves against the mock interface
+instead of the director/expectation and reports "Method 'with' not
+found on class 'Mockery\LegacyMockInterface'" (luxplus-backoffice
+`tests/Unit/ProductCacheService/DispatchProductCacheBatchSyncJobTest.php:24,36`).
+Correct the return types of the verification/expectation entry-point
+methods (patch Mockery's interfaces the way the Laravel testing
+helpers are patched) so expectation chains resolve. This is distinct
+from the mock-intersection propagation: even with a correct
+intersection, the declared `self` return sends the chain to the wrong
+class.
