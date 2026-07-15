@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Updated the bundled mago toolchain to 1.43.0.** The parser, docblock parser, formatter, and supporting crates are refreshed to the latest upstream release. Contributed by @enwi in https://github.com/PHPantom-dev/phpantom_lsp/pull/234.
+
 ### Fixed
 
 - **Blade files with raw `<?php ... ?>` tags no longer report false syntax errors.** PHP code embedded directly in a Blade template (outside `@php`/`@endphp`) is now recognized and passed through unmodified, so string literals that happen to start with `@` (e.g. a JSON-LD `'@context'` array key) are no longer misread as Blade directives.
