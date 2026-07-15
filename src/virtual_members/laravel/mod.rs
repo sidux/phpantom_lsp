@@ -102,7 +102,10 @@ pub(crate) use config_keys::{
     resolve_config_key_definition_fallback,
 };
 pub(crate) use env_vars::resolve_env_definition;
-pub(crate) use macros::{LaravelMacroIndex, extract_macro_registrations, inject_macros};
+pub(crate) use macros::{
+    LaravelMacroIndex, extract_macro_registrations, inject_macros, parse_installed_providers,
+    parse_provider_class_list,
+};
 
 /// Unified go-to-definition entry point for all Laravel string-key spans.
 ///

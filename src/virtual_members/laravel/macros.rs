@@ -46,6 +46,11 @@ pub(crate) struct MacroRegistration {
     /// inject both a static and an instance variant so that `Str::slug()` and
     /// `$collection->macro()` both resolve.
     pub method: MethodInfo,
+    /// Byte offset of the macro-name string literal (the `'name'` argument) in
+    /// the file the registration was found in.  Go-to-definition on a macro
+    /// call jumps here, since the synthesized method has no declaration in the
+    /// target class's own file.
+    pub name_offset: u32,
 }
 
 /// Extract every literal macro registration from a file's source.
@@ -92,6 +97,11 @@ pub(crate) fn extract_macro_registrations(
 pub(crate) struct LaravelMacroIndex {
     by_uri: HashMap<String, Vec<MacroRegistration>>,
     merged: HashMap<String, Vec<Arc<MethodInfo>>>,
+    /// Source location of each macro's `::macro('name', ...)` registration,
+    /// keyed by `(target FQN, macro name)`.  Powers go-to-definition, which
+    /// jumps to the registration call site rather than the target class's own
+    /// file (where the macro has no declaration).
+    locations: HashMap<(String, String), (String, u32)>,
 }
 
 impl LaravelMacroIndex {
@@ -127,6 +137,14 @@ impl LaravelMacroIndex {
         self.merged.get(fqn).map(Vec::as_slice)
     }
 
+    /// The source location (file URI + byte offset of the name literal) of the
+    /// `::macro('name', ...)` registration for `name` on `fqn`, if known.
+    pub(crate) fn definition(&self, fqn: &str, name: &str) -> Option<(&str, u32)> {
+        self.locations
+            .get(&(fqn.to_string(), name.to_string()))
+            .map(|(uri, offset)| (uri.as_str(), *offset))
+    }
+
     /// Every class FQN that has at least one macro (used to evict stale
     /// resolved-class cache entries when the index changes).
     pub(crate) fn target_fqns(&self) -> Vec<String> {
@@ -138,9 +156,11 @@ impl LaravelMacroIndex {
     /// (same name + staticness on the same target) keep the first seen.
     fn rebuild_merged(&mut self) {
         let mut merged: HashMap<String, Vec<Arc<MethodInfo>>> = HashMap::new();
-        for regs in self.by_uri.values() {
+        let mut locations: HashMap<(String, String), (String, u32)> = HashMap::new();
+        for (uri, regs) in self.by_uri.iter() {
             for reg in regs {
                 let bucket = merged.entry(reg.target.clone()).or_default();
+                let mut added = false;
                 for is_static in [false, true] {
                     let exists = bucket
                         .iter()
@@ -148,13 +168,22 @@ impl LaravelMacroIndex {
                     if exists {
                         continue;
                     }
+                    added = true;
                     let mut method = reg.method.clone();
                     method.is_static = is_static;
                     bucket.push(Arc::new(method));
                 }
+                // First registration for a (target, name) wins its location so
+                // it stays consistent with the first-wins merge above.
+                if added {
+                    locations
+                        .entry((reg.target.clone(), reg.method.name.to_string()))
+                        .or_insert_with(|| (uri.clone(), reg.name_offset));
+                }
             }
         }
         self.merged = merged;
+        self.locations = locations;
     }
 }
 
@@ -216,7 +245,9 @@ fn build_registration(
     let target = resolve_target_fqn(smc.class, resolved)?;
 
     let mut args = smc.argument_list.arguments.iter();
-    let name = macro_name(args.next()?.value())?;
+    let name_arg = args.next()?.value();
+    let name = macro_name(name_arg)?;
+    let name_offset = name_arg.span().start.offset;
     let (parameter_list, return_type_hint) = closure_signature(args.next()?.value())?;
 
     let parameters =
@@ -227,7 +258,11 @@ fn build_registration(
     method.parameters = parameters;
     method.native_return_type = return_type;
 
-    Some(MacroRegistration { target, method })
+    Some(MacroRegistration {
+        target,
+        method,
+        name_offset,
+    })
 }
 
 /// Resolve the class written before `::macro` to a fully-qualified name via
@@ -267,6 +302,123 @@ fn macro_name(expr: &Expression<'_>) -> Option<String> {
         }
     }
     None
+}
+
+/// Collect the Laravel service-provider FQNs that installed vendor packages
+/// register via `extra.laravel.providers` in `vendor/composer/installed.json`.
+///
+/// These are the classes Laravel's package auto-discovery boots, and the
+/// precise, bounded set of vendor files where `::macro()` calls live.  Scanning
+/// these (rather than the whole vendor tree) keeps macro discovery cheap.
+pub(crate) fn parse_installed_providers(installed_json: &str) -> Vec<String> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(installed_json) else {
+        return Vec::new();
+    };
+    // installed.json is either a top-level array (Composer 1) or
+    // `{ "packages": [...] }` (Composer 2).
+    let packages = json
+        .as_array()
+        .or_else(|| json.get("packages").and_then(|p| p.as_array()));
+    let Some(packages) = packages else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for package in packages {
+        let Some(providers) = package
+            .pointer("/extra/laravel/providers")
+            .and_then(|v| v.as_array())
+        else {
+            continue;
+        };
+        for provider in providers {
+            if let Some(fqn) = provider.as_str() {
+                out.push(fqn.trim_start_matches('\\').to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Collect service-provider FQNs registered in a PHP provider-list file.
+///
+/// Handles both `bootstrap/providers.php` (Laravel 11+, a bare
+/// `return [Foo::class, ...];`) and `config/app.php` (Laravel ≤10, a
+/// `'providers' => [...]` entry, possibly built via
+/// `ServiceProvider::defaultProviders()->merge([...])`).  When a `providers`
+/// array key is present its `::class` entries are collected; otherwise every
+/// `::class` in the file is collected.
+pub(crate) fn parse_provider_class_list(content: &str) -> Vec<String> {
+    if memchr::memmem::find(content.as_bytes(), b"::class").is_none() {
+        return Vec::new();
+    }
+
+    let arena = Bump::new();
+    let file_id = FileId::new(b"input.php");
+    let program = parse_file_content(&arena, file_id, content.as_bytes());
+    let resolved = NameResolver::new(&arena).resolve(program);
+    let owned = OwnedResolvedNames::from_resolved(&resolved);
+
+    let mut out = Vec::new();
+    if let Some(providers_value) = find_return_array_entry(program, "providers") {
+        collect_class_consts(Node::Expression(providers_value), &owned, &mut out);
+    } else {
+        collect_class_consts(Node::Program(program), &owned, &mut out);
+    }
+    out
+}
+
+/// The value expression of a top-level `return [ 'key' => … ]` array entry.
+fn find_return_array_entry<'ast, 'arena>(
+    program: &'ast Program<'arena>,
+    key: &str,
+) -> Option<&'ast Expression<'arena>> {
+    for stmt in program.statements.iter() {
+        if let Statement::Return(ret) = stmt
+            && let Some(Expression::Array(arr)) = ret.value
+        {
+            for (k, v) in arr.elements.iter().filter_map(|e| match e {
+                ArrayElement::KeyValue(kv) => Some((kv.key, kv.value)),
+                _ => None,
+            }) {
+                if matches!(
+                    k,
+                    Expression::Literal(Literal::String(s))
+                        if s.value.is_some_and(|val| bytes_to_str(val) == key)
+                ) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Recursively collect the FQN of every `Something::class` constant reachable
+/// from `node`, resolving short names via the file's `use` statements.
+/// `self`/`static`/`parent` are skipped (no concrete FQN).
+fn collect_class_consts(node: Node<'_, '_>, resolved: &OwnedResolvedNames, out: &mut Vec<String>) {
+    if let Node::ClassConstantAccess(cca) = node
+        && let ClassLikeConstantSelector::Identifier(id) = &cca.constant
+        && bytes_to_str(id.value).eq_ignore_ascii_case("class")
+        && let Expression::Identifier(ident) = cca.class
+    {
+        let raw = bytes_to_str(ident.value());
+        if !matches!(
+            raw.to_ascii_lowercase().as_str(),
+            "self" | "static" | "parent"
+        ) {
+            let offset = ident.span().start.offset;
+            let fqn = resolved
+                .get(offset)
+                .map(|f| f.trim_start_matches('\\').to_string())
+                .or_else(|| (!raw.is_empty()).then(|| raw.trim_start_matches('\\').to_string()));
+            if let Some(fqn) = fqn {
+                out.push(fqn);
+            }
+        }
+    }
+    node.visit_children(|child| collect_class_consts(child, resolved, out));
 }
 
 /// Extract the parameter list and return-type hint of the closure/arrow-fn

@@ -1881,12 +1881,16 @@ impl Backend {
     }
 
     /// Build the Laravel macro index by scanning the project's own source
-    /// directories for `Target::macro('name', closure)` registrations.
+    /// directories, plus the service-provider files of installed vendor
+    /// packages, for `Target::macro('name', closure)` registrations.
     ///
-    /// Only project (PSR-4 source) files are scanned; vendor-registered
-    /// macros keep resolving through the concrete class's `__call`.  Called
-    /// once after indexing for Laravel projects.  Files are byte-prefiltered
-    /// for `macro(` so only candidates are parsed.
+    /// Project code is walked via the PSR-4 source directories.  Vendor macros
+    /// are recovered from the service providers packages register (via
+    /// `extra.laravel.providers` in `installed.json`) plus any providers the
+    /// app registers in `bootstrap/providers.php` / `config/app.php`, rather
+    /// than re-reading the whole vendor tree.  Called once after indexing for
+    /// Laravel projects.  Files are byte-prefiltered for `macro(` so only
+    /// candidates are parsed.
     fn build_laravel_macro_index(&self) {
         let php_version = Some(*self.php_version.lock());
         let vendor = self.vendor_dir_paths.lock().clone();
@@ -1901,6 +1905,21 @@ impl Backend {
         }
 
         let mut index = crate::virtual_members::laravel::LaravelMacroIndex::default();
+
+        // Scan a single file's content into the index, keyed by its URI.
+        let scan_content = |index: &mut crate::virtual_members::laravel::LaravelMacroIndex,
+                            uri: String,
+                            content: &str| {
+            if memchr::memmem::find(content.as_bytes(), b"macro(").is_none() {
+                return;
+            }
+            let regs =
+                crate::virtual_members::laravel::extract_macro_registrations(content, php_version);
+            if !regs.is_empty() {
+                index.set_file(uri, regs);
+            }
+        };
+
         for dir in dirs {
             if !dir.is_dir() {
                 continue;
@@ -1909,26 +1928,91 @@ impl Backend {
                 let Ok(bytes) = std::fs::read(&file) else {
                     continue;
                 };
+                // Byte pre-filter before the UTF-8 conversion so non-candidate
+                // files are skipped as cheaply as possible.
                 if memchr::memmem::find(&bytes, b"macro(").is_none() {
                     continue;
                 }
                 let Ok(content) = String::from_utf8(bytes) else {
                     continue;
                 };
-                let regs = crate::virtual_members::laravel::extract_macro_registrations(
-                    &content,
-                    php_version,
-                );
-                if !regs.is_empty() {
-                    index.set_file(crate::util::path_to_uri(&file), regs);
-                }
+                scan_content(&mut index, crate::util::path_to_uri(&file), &content);
             }
         }
+
+        // Vendor- and app-registered service providers: scan each provider's
+        // source file for macro registrations.
+        for fqn in self.laravel_provider_fqns() {
+            let Some(uri) = self.resolve_class_uri(&fqn) else {
+                continue;
+            };
+            if index.has_uri(&uri) {
+                continue; // already scanned as project source
+            }
+            let Some(content) = self.get_file_content(&uri) else {
+                continue;
+            };
+            scan_content(&mut index, uri, &content);
+        }
+
         index.rebuild();
         let has_macros = !index.is_empty();
         *self.laravel_macros.write() = index;
         self.laravel_has_macros
             .store(has_macros, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Collect the FQNs of every Laravel service provider that could register a
+    /// macro: those installed vendor packages auto-discover (via
+    /// `extra.laravel.providers` in each vendor's `installed.json`) plus those
+    /// the app lists in `bootstrap/providers.php` / `config/app.php`.
+    fn laravel_provider_fqns(&self) -> Vec<String> {
+        let mut fqns: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut push = |fqns: &mut Vec<String>, fqn: String| {
+            if seen.insert(fqn.clone()) {
+                fqns.push(fqn);
+            }
+        };
+
+        for vendor_dir in self.vendor_dir_paths.lock().iter() {
+            let installed = vendor_dir.join("composer").join("installed.json");
+            if let Ok(content) = std::fs::read_to_string(&installed) {
+                for fqn in crate::virtual_members::laravel::parse_installed_providers(&content) {
+                    push(&mut fqns, fqn);
+                }
+            }
+        }
+
+        if let Some(root) = self.workspace_root.read().clone() {
+            for rel in ["bootstrap/providers.php", "config/app.php"] {
+                let path = root.join(rel);
+                let uri = crate::util::path_to_uri(&path);
+                let content = self
+                    .get_file_content(&uri)
+                    .or_else(|| std::fs::read_to_string(&path).ok());
+                if let Some(content) = content {
+                    for fqn in crate::virtual_members::laravel::parse_provider_class_list(&content)
+                    {
+                        push(&mut fqns, fqn);
+                    }
+                }
+            }
+        }
+
+        fqns
+    }
+
+    /// Resolve a class FQN to the URI of the file that declares it, loading the
+    /// class if it is not yet in the FQN → URI index.  Used to locate provider
+    /// source files for the macro scan.
+    fn resolve_class_uri(&self, fqn: &str) -> Option<String> {
+        if let Some(uri) = self.fqn_uri_index.read().get(fqn).cloned() {
+            return Some(uri);
+        }
+        // Not indexed yet: loading the class populates its FQN → URI entry.
+        self.find_or_load_class(fqn);
+        self.fqn_uri_index.read().get(fqn).cloned()
     }
 
     /// Re-scan a single file's macro registrations after an edit, keeping the

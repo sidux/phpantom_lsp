@@ -164,6 +164,145 @@ class Consumer {
 }
 
 #[tokio::test]
+async fn goto_definition_on_macro_call_jumps_to_registration() {
+    // Go-to-definition on a macro call lands on the `::macro('name', ...)`
+    // registration site, not the target class's own file (where the macro has
+    // no declaration).
+    let consumer = "\
+<?php
+namespace App;
+use Illuminate\\Support\\Collection;
+class Consumer {
+    public function go(Collection $c): float {
+        return $c->sumField('price');
+    }
+}
+";
+    let (backend, _dir) = workspace_files(consumer);
+    let provider_uri = "file:///src/Providers/AppServiceProvider.php";
+    open(&backend, provider_uri, PROVIDER_PHP).await;
+    open(&backend, "file:///src/Consumer.php", consumer).await;
+
+    let result = backend
+        .goto_definition(GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse("file:///src/Consumer.php").unwrap(),
+                },
+                position: Position {
+                    line: 5,
+                    character: 22,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .unwrap();
+
+    match result.expect("go-to-definition should resolve a macro call") {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert_eq!(location.uri, Url::parse(provider_uri).unwrap());
+            // The `Collection::macro('sumField', ...)` line in PROVIDER_PHP.
+            assert_eq!(location.range.start.line, 5);
+            assert_eq!(location.range.start.character, 26);
+        }
+        other => panic!("expected a scalar location, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn vendor_registered_macro_is_surfaced() {
+    // A macro registered in a vendor package's service provider (discovered via
+    // `extra.laravel.providers` in installed.json) is surfaced as a real
+    // method, without the provider file ever being opened.
+    let composer_json = r#"{
+        "require": { "laravel/framework": "^11.0" },
+        "autoload": {
+            "psr-4": {
+                "App\\": "src/",
+                "Illuminate\\Support\\": "vendor/illuminate/Support/"
+            }
+        }
+    }"#;
+    let installed_json = r#"{"packages": [{
+        "name": "acme/pkg",
+        "version": "1.0.0",
+        "install-path": "../acme/pkg",
+        "autoload": {"psr-4": {"Acme\\Pkg\\": ""}},
+        "extra": {"laravel": {"providers": ["Acme\\Pkg\\PkgServiceProvider"]}}
+    }]}"#;
+    let vendor_provider = "\
+<?php
+namespace Acme\\Pkg;
+use Illuminate\\Support\\Collection;
+class PkgServiceProvider {
+    public function boot(): void {
+        Collection::macro('vendorSum', function (string $field): float {
+            return 0.0;
+        });
+    }
+}
+";
+    let consumer = "\
+<?php
+namespace App;
+use Illuminate\\Support\\Collection;
+class Consumer {
+    public function go(Collection $c): void {
+        $c->
+    }
+}
+";
+    let (backend, _dir) = create_psr4_workspace(
+        composer_json,
+        &[
+            ("vendor/illuminate/Support/Collection.php", COLLECTION_PHP),
+            ("vendor/acme/pkg/PkgServiceProvider.php", vendor_provider),
+            ("vendor/composer/installed.json", installed_json),
+            ("src/Consumer.php", consumer),
+        ],
+    );
+
+    // Full indexing pass: the vendor scan indexes the provider and the macro
+    // index scans its registrations. The provider is never opened.
+    backend.initialized(InitializedParams {}).await;
+    open(&backend, "file:///src/Consumer.php", consumer).await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse("file:///src/Consumer.php").unwrap(),
+                },
+                position: Position {
+                    line: 5,
+                    character: 12,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    let items = match result.expect("completion should return results") {
+        CompletionResponse::Array(items) => items,
+        CompletionResponse::List(list) => list.items,
+    };
+    let names: Vec<&str> = items
+        .iter()
+        .filter_map(|i| i.filter_text.as_deref())
+        .collect();
+
+    assert!(
+        names.contains(&"vendorSum"),
+        "vendor-registered macro should appear in completion, got: {names:?}"
+    );
+}
+
+#[tokio::test]
 async fn macro_recognized_statically_on_target() {
     // Macros are callable statically too (Macroable::__callStatic), so the
     // synthesized static variant must resolve `Collection::sumField(...)`.

@@ -111,6 +111,126 @@ Collection::macro('doubled', function (): int { return 2; });
 }
 
 #[test]
+fn index_records_registration_source_location() {
+    let content = r#"<?php
+use Illuminate\Support\Collection;
+Collection::macro('sumPrices', function (): float { return 0.0; });
+"#;
+    let regs = extract_macro_registrations(content, None);
+    let mut index = LaravelMacroIndex::default();
+    index.set_file(
+        "file:///app/Providers/AppServiceProvider.php".to_string(),
+        regs,
+    );
+    index.rebuild();
+
+    let (uri, offset) = index
+        .definition("Illuminate\\Support\\Collection", "sumPrices")
+        .expect("macro definition location should be recorded");
+    assert_eq!(uri, "file:///app/Providers/AppServiceProvider.php");
+    // The offset points at the `'sumPrices'` string literal.
+    assert_eq!(
+        &content[offset as usize..offset as usize + 11],
+        "'sumPrices'"
+    );
+}
+
+#[test]
+fn parse_installed_providers_reads_extra_laravel_providers() {
+    let installed = r#"{
+        "packages": [
+            {
+                "name": "livewire/livewire",
+                "extra": { "laravel": { "providers": ["Livewire\\LivewireServiceProvider"] } }
+            },
+            {
+                "name": "some/plain-package"
+            },
+            {
+                "name": "spatie/laravel-permission",
+                "extra": {
+                    "laravel": {
+                        "providers": [
+                            "\\Spatie\\Permission\\PermissionServiceProvider"
+                        ]
+                    }
+                }
+            }
+        ]
+    }"#;
+    let providers = parse_installed_providers(installed);
+    assert_eq!(
+        providers,
+        vec![
+            "Livewire\\LivewireServiceProvider".to_string(),
+            "Spatie\\Permission\\PermissionServiceProvider".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn parse_installed_providers_handles_composer_1_top_level_array() {
+    let installed = r#"[
+        {
+            "name": "inertiajs/inertia-laravel",
+            "extra": { "laravel": { "providers": ["Inertia\\ServiceProvider"] } }
+        }
+    ]"#;
+    assert_eq!(
+        parse_installed_providers(installed),
+        vec!["Inertia\\ServiceProvider".to_string()]
+    );
+}
+
+#[test]
+fn parse_provider_class_list_bootstrap_providers() {
+    // Laravel 11+ bootstrap/providers.php: a bare `return [...]` of providers.
+    let content = r#"<?php
+return [
+    App\Providers\AppServiceProvider::class,
+    App\Providers\RouteServiceProvider::class,
+];
+"#;
+    assert_eq!(
+        parse_provider_class_list(content),
+        vec![
+            "App\\Providers\\AppServiceProvider".to_string(),
+            "App\\Providers\\RouteServiceProvider".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn parse_provider_class_list_config_app_providers_key() {
+    // Laravel ≤10 config/app.php: only the `providers` array is collected,
+    // not the `aliases` array.
+    let content = r#"<?php
+return [
+    'name' => 'Laravel',
+    'providers' => [
+        Illuminate\Auth\AuthServiceProvider::class,
+        App\Providers\AppServiceProvider::class,
+    ],
+    'aliases' => [
+        'App' => Illuminate\Support\Facades\App::class,
+    ],
+];
+"#;
+    let providers = parse_provider_class_list(content);
+    assert!(providers.contains(&"Illuminate\\Auth\\AuthServiceProvider".to_string()));
+    assert!(providers.contains(&"App\\Providers\\AppServiceProvider".to_string()));
+    assert!(
+        !providers.contains(&"Illuminate\\Support\\Facades\\App".to_string()),
+        "aliases entries must not be treated as providers"
+    );
+}
+
+#[test]
+fn parse_provider_class_list_empty_without_class_const() {
+    assert!(parse_provider_class_list("<?php return [];").is_empty());
+}
+
+#[test]
 fn index_removes_file_contributions_when_emptied() {
     let content = r#"<?php
 use Illuminate\Support\Collection;
