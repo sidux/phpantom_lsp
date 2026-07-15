@@ -652,6 +652,52 @@ function foo(object $message, string $type) {
     }
 
     #[test]
+    fn no_diagnostic_when_variable_is_used_as_dynamic_method_name() {
+        let diags = collect(
+            r#"<?php
+function foo(object $response, string $value, bool $cond) {
+    $assertion = $cond ? 'assertSee' : 'assertDontSee';
+    $response->{$assertion}($value);
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
+            "braced dynamic method-name selector should count as a read, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_when_variable_is_used_as_nullsafe_dynamic_method_name() {
+        let diags = collect(
+            r#"<?php
+function foo(?object $response, string $value, string $method) {
+    $response?->{$method}($value);
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
+            "null-safe dynamic method-name selector should count as a read, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_when_variable_is_used_as_static_dynamic_method_name() {
+        let diags = collect(
+            r#"<?php
+function foo(string $value, string $method) {
+    Cls::{$method}($value);
+}
+"#,
+        );
+        assert!(
+            diags.is_empty(),
+            "static dynamic method-name selector should count as a read, got: {diags:?}"
+        );
+    }
+
+    #[test]
     fn skips_unused_parameter() {
         // Parameters are intentionally not flagged until suppression
         // support is available — callbacks, interface implementations,
