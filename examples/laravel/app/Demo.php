@@ -361,4 +361,19 @@ class Demo
         // from the framework's own `Facade::defaultAliases()` table.
         \App::environment('production');                        // → App facade
     }
+
+
+    // ── Contract type-hints resolve through the concrete class ──────────
+
+    public function viewContract(\Illuminate\Contracts\View\View $view): void
+    {
+        // The View contract declares only name()/with()/getData(), but the
+        // object Laravel binds is the concrete Illuminate\View\View, which
+        // uses the Macroable trait.  PHPantom binds the concrete to the
+        // contract as a mixin, so concrete-only methods resolve and calls
+        // dispatched through Macroable's __call no longer report as unknown.
+        $view->getName();                 // concrete-only method → string
+        $view->render();                  // concrete-only method → string
+        $view->fragment('sidebar');       // concrete-only method
+    }
 }

@@ -888,6 +888,29 @@ pub(crate) fn has_require_dev(package: &ComposerPackage, dep: &str) -> bool {
     package.require_dev.contains_key(dep)
 }
 
+/// Detect whether the project depends on Laravel or a standalone
+/// Illuminate component.
+///
+/// Returns `true` when `require` or `require-dev` lists `laravel/framework`
+/// (a full Laravel application) or any `illuminate/*` package (a library or
+/// standalone use of Eloquent, the query builder, collections, etc.).
+///
+/// Laravel-specific analysis (Eloquent model members, the query-builder
+/// forwarding, config/view/route/translation key resolution, the contract
+/// to concrete-class bindings) is only useful when one of these packages is
+/// present.  Gating that work on this check means non-Laravel projects skip
+/// the parent-chain walks and post-resolution patches entirely.
+pub(crate) fn is_laravel_project(package: &ComposerPackage) -> bool {
+    package
+        .require
+        .keys()
+        .chain(package.require_dev.keys())
+        .any(|name| {
+            name.eq_ignore_ascii_case("laravel/framework")
+                || name.to_ascii_lowercase().starts_with("illuminate/")
+        })
+}
+
 pub(crate) fn explicit_dependency_names(package: &ComposerPackage) -> HashSet<String> {
     package
         .require
@@ -955,6 +978,32 @@ mod tests {
     /// Helper: parse a JSON string into a [`ComposerPackage`].
     fn pkg(json: &str) -> ComposerPackage {
         json.parse::<ComposerPackage>().unwrap()
+    }
+
+    // ── is_laravel_project ──────────────────────────────────────────
+
+    #[test]
+    fn detects_laravel_framework() {
+        let p = pkg(r#"{"require": {"php": "^8.2", "laravel/framework": "^11.0"}}"#);
+        assert!(is_laravel_project(&p));
+    }
+
+    #[test]
+    fn detects_standalone_illuminate_component() {
+        let p = pkg(r#"{"require": {"illuminate/database": "^11.0"}}"#);
+        assert!(is_laravel_project(&p));
+    }
+
+    #[test]
+    fn detects_laravel_in_require_dev() {
+        let p = pkg(r#"{"require-dev": {"laravel/framework": "^11.0"}}"#);
+        assert!(is_laravel_project(&p));
+    }
+
+    #[test]
+    fn non_laravel_project_is_not_detected() {
+        let p = pkg(r#"{"require": {"php": "^8.2", "symfony/console": "^7.0"}}"#);
+        assert!(!is_laravel_project(&p));
     }
 
     // ── unescape_php_single_quoted ──────────────────────────────────

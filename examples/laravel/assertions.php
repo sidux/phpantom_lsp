@@ -235,6 +235,31 @@ check(
     !method_exists(\Illuminate\Contracts\Filesystem\Filesystem::class, 'assertExists')
 );
 
+// ─── View contract → concrete binding ────────────────────────────────────────
+
+// The object bound for the View contract is the concrete Illuminate\View\View,
+// which uses the Macroable trait (and therefore has __call). The analyzer binds
+// the concrete to the contract as a mixin so concrete-only methods resolve and
+// macro calls no longer report as unknown.
+check(
+    'Concrete View uses Macroable (has __call)',
+    method_exists(\Illuminate\View\View::class, '__call')
+);
+check(
+    'Concrete View::getName() exists',
+    method_exists(\Illuminate\View\View::class, 'getName')
+);
+check(
+    'Concrete View::fragment() exists',
+    method_exists(\Illuminate\View\View::class, 'fragment')
+);
+// The contract deliberately lacks these — this is why binding the concrete
+// as a mixin on the contract matters.
+check(
+    'View contract does NOT declare getName()',
+    !method_exists(\Illuminate\Contracts\View\View::class, 'getName')
+);
+
 // ─── Summary ────────────────────────────────────────────────────────────────
 
 echo "\n";

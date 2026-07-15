@@ -135,6 +135,31 @@ const VERIFICATION_DIRECTOR_FQN: &str = "Mockery\\VerificationDirector";
 /// `shouldHaveReceived()->methodName()`.
 const HIGHER_ORDER_MESSAGE_FQN: &str = "Mockery\\HigherOrderMessage";
 
+/// Map a core Illuminate contract to the framework's default concrete class.
+///
+/// Several Laravel contracts (interfaces under `Illuminate\Contracts\*`) are
+/// type-hinted throughout application and package code, but the object bound
+/// in the container at runtime is a concrete class that uses the `Macroable`
+/// trait (and therefore has a `__call` magic method).  Because the contract
+/// itself declares no `__call`, member access on a contract-typed value
+/// raises a false "method not found" for anything the concrete resolves
+/// dynamically (macros, forwarded calls).
+///
+/// Returning the concrete FQN here lets [`resolve_class_fully_inner`] inject
+/// it as a `@mixin` on the contract before virtual member providers run, so
+/// the concrete's members (including `__call`) merge into the contract.  This
+/// mirrors how Larastan resolves `Illuminate\Contracts\*` interfaces through
+/// the booted container, without executing any user code.
+///
+/// The map is seeded with the bindings triage has surfaced; add entries as
+/// more contracts prove to need them.
+pub(crate) fn contract_concrete_mixin(fqn: &str) -> Option<&'static str> {
+    match fqn {
+        "Illuminate\\Contracts\\View\\View" => Some("Illuminate\\View\\View"),
+        _ => None,
+    }
+}
+
 /// Apply all registered Laravel class patches to a fully-resolved class.
 ///
 /// Called from [`resolve_class_fully_inner`] after virtual members have

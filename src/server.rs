@@ -349,13 +349,17 @@ impl LanguageServer for Backend {
                 }
             }
 
-            if let Some(ref tok) = progress_token {
-                self.progress_report(tok, 90, Some("Warming Laravel completions".to_string()))
-                    .await;
-            }
-            let warmed = self.warm_laravel_completion_cache();
-            if warmed > 0 {
-                tracing::info!("PHPantom: warmed {} Laravel completion classes", warmed);
+            // Warm the Eloquent Builder resolution cache only for Laravel
+            // projects; a non-Laravel workspace has nothing to warm.
+            if self.resolved_class_cache.read().is_laravel() {
+                if let Some(ref tok) = progress_token {
+                    self.progress_report(tok, 90, Some("Warming Laravel completions".to_string()))
+                        .await;
+                }
+                let warmed = self.warm_laravel_completion_cache();
+                if warmed > 0 {
+                    tracing::info!("PHPantom: warmed {} Laravel completion classes", warmed);
+                }
             }
 
             if let Some(ref tok) = progress_token {
@@ -1885,6 +1889,15 @@ impl Backend {
                 .await;
         }
 
+        // Classify the project so Laravel-specific resolution (Eloquent
+        // members, config/view/route keys, contract bindings, patches) is
+        // skipped when no Laravel/Illuminate dependency is present.
+        let is_laravel = composer_json
+            .as_ref()
+            .map(composer::is_laravel_project)
+            .unwrap_or(false);
+        self.resolved_class_cache.write().set_laravel(is_laravel);
+
         let (mappings, vendor_dir) = match &composer_json {
             Some(pkg) => {
                 let mappings = composer::extract_psr4_mappings_from_package(pkg);
@@ -2109,6 +2122,11 @@ impl Backend {
         let mut skip_dirs: HashSet<PathBuf> = HashSet::new();
         let sub_count = subprojects.len();
 
+        // The workspace is treated as Laravel when any subproject depends on
+        // Laravel/Illuminate, so Laravel-specific resolution runs there while
+        // pure non-Laravel workspaces skip it.
+        let mut any_laravel = false;
+
         for (sub_idx, (sub_root, vendor_dir)) in subprojects.iter().enumerate() {
             // Report per-subproject progress.  Reserve 10..80 for the
             // subproject loop, leaving 80..95 for the loose-file scan.
@@ -2132,6 +2150,13 @@ impl Backend {
                 .await;
             }
             skip_dirs.insert(sub_root.clone());
+
+            if !any_laravel
+                && let Some(pkg) = composer::read_composer_package(sub_root)
+                && composer::is_laravel_project(&pkg)
+            {
+                any_laravel = true;
+            }
 
             // ── PSR-4 mappings ──────────────────────────────────────
             let (mappings, _) = composer::parse_composer_json(sub_root);
@@ -2183,6 +2208,8 @@ impl Backend {
                 }
             }
         }
+
+        self.resolved_class_cache.write().set_laravel(any_laravel);
 
         // Re-sort PSR-4 mappings by prefix length descending so
         // longest-prefix-first matching works.
@@ -2248,6 +2275,10 @@ impl Backend {
             )
             .await;
         }
+
+        // No composer.json means no Laravel/Illuminate dependency, so
+        // Laravel-specific resolution is disabled.
+        self.resolved_class_cache.write().set_laravel(false);
 
         let skip_dirs = HashSet::new();
         let scan = classmap_scanner::scan_workspace_fallback_full(root, &skip_dirs);

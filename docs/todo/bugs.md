@@ -315,9 +315,9 @@ fixtures once the actual code path is confirmed. Likely affects every
 Laravel project's `FormRequest`/`Notification`/other `Request`
 subclasses that call `$this->user()`, not just this one.
 
-## B75. Laravel's `Macroable::macro()` runtime method registration is not recognized
+## B75. Laravel's `Macroable::macro()` registrations lack real signatures
 
-**Severity: Medium (~2 errors confirmed in luxplus-backoffice, likely undercounts other Laravel projects) · Confirmed against the real project**
+**Severity: Low (signature quality only; the false positives are resolved) · The contract → concrete binding that killed the confirmed diagnostics has shipped; what remains is precise macro signatures, which is nice-to-have.**
 
 ```php
 // vendor/livewire/livewire/src/Features/SupportPageComponents/SupportPageComponents.php
@@ -325,78 +325,41 @@ View::macro('extends', function ($view, $params = []) { ... });
 
 // app/View/Components/Manufacturers/ListManufacturers.php
 $view = view('components.manufacturers.list-manufacturers', [...]);
-$view->extends('layouts.default');   // "Method 'extends' not found on class 'Illuminate\Contracts\View\View'"
+$view->extends('layouts.default');   // resolves via the concrete's __call
 ```
 
 Laravel's `Illuminate\Support\Traits\Macroable` trait lets any class
 that uses it register new methods at runtime via
-`SomeClass::macro('name', $closure)`, called from anywhere (a service
-provider's `boot()`, a package's own bootstrap code, etc.). We have no
-support for scanning `::macro()` registrations and synthesizing a
-virtual method from the closure's signature, so any subsequent call to
-a macro-added method is reported unknown. This is not limited to one
-package or method name — Livewire, several first-party Laravel
-components, and many third-party packages (and plenty of app-level
-`AppServiceProvider::boot()` code) register macros on `Collection`,
-`Builder`, `Str`, `Stringable`, `Response`, `View`, `Request`, and
-others via the same trait.
+`SomeClass::macro('name', $closure)`, typically from a service
+provider's `boot()` or a package's bootstrap code.
 
-Grep confirms there is currently zero handling of this anywhere in
-`src/` (`grep -rn 'macro' src/ --include='*.rs'` finds only an
-unrelated comment). This is a bigger feature than a single bug fix —
-it needs a project+vendor-wide scan for `X::macro('name', function
-(...) {...})` / `X::macro('name', fn(...) => ...)` call expressions
-(static call on any class using `Macroable`, or the trait itself),
-extracting the closure's parameter and return types, and injecting a
-virtual method onto `X`'s `ClassInfo` (with `$this` inside the closure
-bound to an instance of `X`, per `Macroable::__call`'s
-`Closure::bind`). Likely belongs in `virtual_members/` alongside the
-existing PHPDoc and Laravel providers, gated the same way (checked
-once per class, cached). File a proper design/estimate before
-starting — this is not a quick fix.
+The confirmed false positives (`extends` not found on the
+`Illuminate\Contracts\View\View` contract) are now resolved: core
+contracts are bound to their default concrete class as a mixin (see
+`contract_concrete_mixin` in `virtual_members/laravel/patches.rs`), so
+the concrete's `Macroable`-provided `__call` merges into the contract
+and `diagnostics/unknown_members` suppresses the diagnostic. Add more
+contract → concrete entries to that map as triage surfaces them.
 
-## B76. `Storage::disk()` / `cloud()` declare the `Filesystem` contract instead of the concrete adapter they always build
-
-**Severity: Medium-High (38 errors, luxplus-backoffice) · Confirmed against the real project and framework source**
-
-```php
-Storage::fake('cdn');
-// ...
-Storage::disk('cdn')->assertExists($recent);   // "Method 'assertExists' not found on class 'Illuminate\Contracts\Filesystem\Filesystem'"
-Storage::disk('cdn')->download(...);           // same, 'download' not found
-```
-
-Every one of `FilesystemManager`'s driver-creation methods —
-`createLocalDriver` (via `LocalFilesystemAdapter`), `createFtpDriver`,
-`createSftpDriver` (both return `FilesystemAdapter` directly), and
-`createS3Driver` (`AwsS3V3Adapter`) — either returns
-`Illuminate\Filesystem\FilesystemAdapter` directly or a subclass of
-it (`LocalFilesystemAdapter extends FilesystemAdapter`,
-`AwsS3V3Adapter extends FilesystemAdapter`). So `disk()`/`cloud()` (on
-both `FilesystemManager` and the `Storage` facade's `@method` tags)
-always return a `FilesystemAdapter` in practice, but are declared as
-returning only the `Contracts\Filesystem\Filesystem`/`Cloud`
-interfaces — which don't declare `assertExists()`, `assertMissing()`,
-or `download()` (all only on the concrete adapter).
-
-**This is not a new problem in kind — it is the identical situation
-already fixed for `Storage::fake()`/`persistentFake()`** in
-`virtual_members/laravel/patches.rs`
-(`patch_storage_fake_return_types`, dispatched from
-`apply_laravel_patches`), whose own doc comment states the exact
-reasoning: "This is a declared-type correction (the runtime type is
-always the adapter), not container-binding resolution." `disk()` and
-`cloud()` just were never added to that patch's method-name check.
-The fix is almost certainly as simple as extending
-`patch_storage_fake_return_types` (or renaming it and adding `"disk"`
-and `"cloud"` alongside `"fake"`/`"persistentFake"` in its method-name
-match) — verify `cloud()`'s contract (`Illuminate\Contracts\Filesystem\Cloud`)
-is a compatible supertype of `FilesystemAdapter` before applying the
-same unconditional override there too.
-
-A custom driver registered via `Storage::extend()` with a
-non-`FilesystemAdapter`-based implementation would be missed by this
-patch (the override would be wrong for that one driver name), but
-this is the same acceptable tradeoff the project already made for
-`fake()`/`persistentFake()` — a declared fact that's true for every
-built-in driver, overridden the same way.
+**Remaining (larger, do when demand shows): best-effort static macro
+scan for real signatures.** At index time, byte-prefilter project +
+vendor for the substring `::macro(` (same technique as
+`classmap_scanner`) and parse only matching files. Handle only the
+literal pattern `Target::macro('name', function (...) {...})` /
+`Target::macro('name', fn (...) => ...)` where `Target` resolves via
+use statements to a class using `Macroable`, or to a facade whose
+root class is statically determinable (facade docblock `@see` tag, or
+the alias table in `virtual_members/laravel/aliases.rs`). Extract the
+closure's parameter/return types (native + docblock), and inject a
+virtual method onto the target's `ClassInfo` with `$this` bound to
+the target (per `Macroable::__call`'s `Closure::bind`). Out of scope:
+`Macroable::mixin()`, variable/computed targets, and string/array
+callables — those keep falling through to `__call` (which is the
+current, gracefully-degraded behaviour). Results are computed once at
+index time and cached; per-request cost is a map lookup, so LSP
+latency is unaffected. The value over the current `__call` fallback is
+signature quality: real parameter/return types on hover, signature
+help, and macro names in completion, instead of `__call`'s `mixed`.
+If two registrations target the same class and name, first wins
+(runtime is last-wins, but collisions are vanishingly rare and either
+choice is defensible).
