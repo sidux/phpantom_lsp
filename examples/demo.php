@@ -1037,6 +1037,19 @@ class ForeachArrayAccessDemo
         $inferred = [new Pen(), new Marker()];
         $inferred[0]->write();                    // element type inferred from literal
     }
+
+    /**
+     * An inline `@var` refines a broadly-typed parameter (here `mixed`)
+     * before iterating it, so the loop variable resolves to the element
+     * type even though the parameter itself carries no useful type.
+     */
+    public function demoRetypedParam(mixed $pens): void
+    {
+        /** @var iterable<Pen> $pens */
+        foreach ($pens as $pen) {
+            $pen->write();                        // Pen from the inline @var retype
+        }
+    }
 }
 
 // ── Foreach By-Reference ────────────────────────────────────────────────────

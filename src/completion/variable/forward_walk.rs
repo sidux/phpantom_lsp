@@ -6686,16 +6686,28 @@ fn process_foreach<'b>(foreach: &'b Foreach<'b>, scope: &mut ScopeState, ctx: &F
     // check for @var annotations for each one.
     let foreach_offset = foreach.foreach.span().start.offset as usize;
     if let Expression::Variable(Variable::Direct(dv)) = foreach.expression {
-        let var_name = format!("${}", bytes_to_str(dv.name));
-        if scope.get(bytes_to_str(dv.name)).is_empty()
-            && let Some(var_type) =
-                crate::docblock::find_var_raw_type_in_source(ctx.content, foreach_offset, &var_name)
+        // `bytes_to_str(dv.name)` already includes the leading `$`, which
+        // is how scope keys and `find_var_raw_type_in_source` expect it.
+        let var_name = bytes_to_str(dv.name);
+        if let Some(var_type) =
+            crate::docblock::find_var_raw_type_in_source(ctx.content, foreach_offset, var_name)
         {
-            let resolved = resolve_type_to_resolved_types(
-                &crate::util::resolve_php_type_names(&var_type, ctx.class_loader),
-                ctx,
-            );
-            scope.set(bytes_to_str(dv.name), resolved);
+            let php_type = crate::util::resolve_php_type_names(&var_type, ctx.class_loader);
+            // An explicit inline `@var` seeds an empty scope entry, and it
+            // also refines a non-informative pre-existing type such as a
+            // `mixed` closure/function parameter or a bare `array`.  Without
+            // the second case, a `mixed` parameter would occupy the scope
+            // slot and shadow the developer's `@var iterable<T> $x`
+            // annotation, leaving the loop variable untyped.
+            let current = scope.get(var_name);
+            let should_apply = current.is_empty()
+                || current.iter().all(|rt| {
+                    crate::docblock::should_override_type_typed(&php_type, &rt.type_string)
+                });
+            if should_apply {
+                let resolved = resolve_type_to_resolved_types(&php_type, ctx);
+                scope.set(var_name, resolved);
+            }
         }
     } else {
         // For complex expressions like `$users->active()->byName()`,

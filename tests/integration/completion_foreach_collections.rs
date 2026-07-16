@@ -861,3 +861,43 @@ async fn test_foreach_new_directory_iterator() {
         labels
     );
 }
+
+// ─── Inline `@var` retype of a `mixed` param before foreach ─────────────────
+
+/// A `mixed` closure parameter that is retyped by an inline
+/// `/** @var iterable<Subscription> $subscriptions */` immediately before a
+/// `foreach` should let the loop variable resolve to `Subscription`.  The
+/// `mixed` parameter previously occupied the scope slot and shadowed the
+/// annotation, leaving `$subscription` untyped.
+#[tokio::test]
+async fn test_foreach_inline_var_retypes_mixed_param() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///foreach_inline_var_mixed.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Subscription {\n",
+        "    public int $user_id;\n",
+        "    public function getUserId(): int {}\n",
+        "}\n",
+        "$check = function (mixed $subscriptions): bool {\n",
+        "    /** @var iterable<Subscription> $subscriptions */\n",
+        "    foreach ($subscriptions as $subscription) {\n",
+        "        $subscription->\n",
+        "    }\n",
+        "    return true;\n",
+        "};\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 8, 23).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("user_id")),
+        "Should include 'user_id' from Subscription after inline @var retype. Got: {:?}",
+        labels
+    );
+    assert!(
+        labels.iter().any(|l| l.starts_with("getUserId")),
+        "Should include 'getUserId' from Subscription after inline @var retype. Got: {:?}",
+        labels
+    );
+}
