@@ -632,6 +632,29 @@ class SimpleXmlIterationDemo
 }
 
 
+// ── SPL Wrapper Iterators (FilterIterator, DirectoryIterator) ───────────────
+
+class SplWrapperIterationDemo
+{
+    public function demo(): void
+    {
+        // `PhpFileFilter` is `@extends FilterIterator<int, SplFileInfo,
+        // \Iterator<int, SplFileInfo>>`. The value type is the middle
+        // argument (SplFileInfo), not the trailing inner-iterator argument.
+        $files = new PhpFileFilter(new \ArrayIterator([new \SplFileInfo(__FILE__)]));
+        foreach ($files as $file) {
+            $file->getRealPath();                 // FilterIterator<_, SplFileInfo, _> → SplFileInfo
+        }
+
+        // Directly-constructed SPL iterator: the value type comes from
+        // `DirectoryIterator::current()`.
+        foreach (new \DirectoryIterator(__DIR__) as $entry) {
+            $entry->isFile();                     // DirectoryIterator → current(): DirectoryIterator
+        }
+    }
+}
+
+
 // ── Inherited Docblock Types ────────────────────────────────────────────────
 
 class InheritedDocblockDemo
@@ -3966,6 +3989,23 @@ class ConvertToClosureDemo
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 // ┃  SCAFFOLDING — Supporting definitions below this line.              ┃
 
+// ── SPL wrapper-iterator scaffolding ───────────────────────────────────────────
+
+/**
+ * A FilterIterator subclass with a three-argument generic annotation
+ * (`<TKey, TValue, TIterator>`). The iterated value type is the middle
+ * argument.
+ *
+ * @extends \FilterIterator<int, \SplFileInfo, \Iterator<int, \SplFileInfo>>
+ */
+class PhpFileFilter extends \FilterIterator
+{
+    public function accept(): bool
+    {
+        return $this->current() instanceof \SplFileInfo;
+    }
+}
+
 // ── Member-existence narrowing scaffolding ─────────────────────────────────────
 
 // Response object whose extra fields are populated dynamically at runtime, so
@@ -6904,6 +6944,16 @@ function runDemoAssertions(): void
     $xmlDemo = new SimpleXmlIterationDemo();
     $xmlChild = $xmlDemo->firstChild();
     assert($xmlChild instanceof \SimpleXMLElement, 'SimpleXMLElement::children() foreach element must be SimpleXMLElement');
+
+    // ── SPL wrapper iterators ───────────────────────────────────────────
+    $filter = new PhpFileFilter(new \ArrayIterator([new \SplFileInfo(__FILE__)]));
+    foreach ($filter as $splFile) {
+        assert($splFile instanceof \SplFileInfo, 'FilterIterator<_, SplFileInfo, _> foreach element must be SplFileInfo');
+    }
+    foreach (new \DirectoryIterator(__DIR__) as $dirEntry) {
+        assert($dirEntry instanceof \DirectoryIterator, 'DirectoryIterator foreach element must be DirectoryIterator');
+        break;
+    }
 
     echo "All assertions passed.\n";
 }

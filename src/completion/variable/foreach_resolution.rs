@@ -71,8 +71,10 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
     // 1. Check implements_generics for known iterable interfaces.
     for (name, args) in &class.implements_generics {
         let short = short_name(name);
-        if ITERABLE_IFACE_NAMES.contains(&short) && !args.is_empty() {
-            let value = resolve_own_template_arg(args.last().unwrap(), class);
+        if ITERABLE_IFACE_NAMES.contains(&short)
+            && let Some(arg) = iterable_value_arg(args)
+        {
+            let value = resolve_own_template_arg(arg, class);
             if !is_unbounded_template_placeholder(&value) {
                 return Some(value);
             }
@@ -85,11 +87,11 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
     for (name, args) in &class.implements_generics {
         let short = short_name(name);
         if !ITERABLE_IFACE_NAMES.contains(&short)
-            && !args.is_empty()
+            && let Some(arg) = iterable_value_arg(args)
             && let Some(iface) = class_loader(name)
             && is_transitive_iterable(&iface, class_loader)
         {
-            let value = resolve_own_template_arg(args.last().unwrap(), class);
+            let value = resolve_own_template_arg(arg, class);
             if !is_unbounded_template_placeholder(&value) {
                 return Some(value);
             }
@@ -99,8 +101,8 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
     // 2. Check extends_generics — common for collection subclasses
     //    like `@extends Collection<int, User>`.
     for (_, args) in &class.extends_generics {
-        if !args.is_empty() {
-            let value = resolve_own_template_arg(args.last().unwrap(), class);
+        if let Some(arg) = iterable_value_arg(args) {
+            let value = resolve_own_template_arg(arg, class);
             if !is_unbounded_template_placeholder(&value) {
                 return Some(value);
             }
@@ -133,6 +135,24 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
     }
 
     None
+}
+
+/// Select the generic argument that describes the iterated **value** type.
+///
+/// Iterable generics follow the `<TKey, TValue>` convention, so the value
+/// is the *second* argument whenever two or more are present. This matters
+/// for the SPL wrapper iterators
+/// (`IteratorIterator`/`FilterIterator`/`AppendIterator`), which add a
+/// third `TIterator` argument: `@extends FilterIterator<int, SplFileInfo,
+/// \Iterator<int, SplFileInfo>>` has its value type (`SplFileInfo`) in the
+/// middle, not last. With a single argument (e.g. `IteratorAggregate<User>`)
+/// that lone argument is the value. Returns `None` for an empty list.
+fn iterable_value_arg(args: &[PhpType]) -> Option<&PhpType> {
+    if args.len() >= 2 {
+        Some(&args[1])
+    } else {
+        args.last()
+    }
 }
 
 /// Resolve a generic argument that references the class's own `@template`
@@ -180,22 +200,26 @@ fn is_unbounded_template_placeholder(ty: &PhpType) -> bool {
 }
 
 /// Check whether `class`, or an ancestor reached by walking the `extends`
-/// chain, directly declares `implements <iface_name>`.
+/// chain, implements `<iface_name>` — either directly or through an
+/// interface that transitively extends it.
 ///
-/// Only the `extends` chain is walked (not the interface-extends-interface
-/// chain used by [`is_transitive_iterable`]) because `Iterator` and
-/// `ArrayAccess` are always implemented by a concrete class, never
-/// re-declared through another interface.
+/// The transitive check matters for SPL classes like `DirectoryIterator`,
+/// which declare `implements SeekableIterator` (and `SeekableIterator`
+/// extends `Iterator`) rather than naming `Iterator` outright. Without it,
+/// the `current()`/`key()` fallbacks below never fire for such classes.
 fn class_directly_implements(
     class: &ClassInfo,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     iface_name: &str,
 ) -> bool {
-    if class
-        .interfaces
-        .iter()
-        .any(|i| short_name(i).eq_ignore_ascii_case(iface_name))
-    {
+    let implements_here = |class: &ClassInfo| {
+        class.interfaces.iter().any(|i| {
+            short_name(i).eq_ignore_ascii_case(iface_name)
+                || interface_extends_named(i, class_loader, iface_name)
+        })
+    };
+
+    if implements_here(class) {
         return true;
     }
 
@@ -209,14 +233,54 @@ fn class_directly_implements(
         let Some(parent) = class_loader(&name) else {
             break;
         };
-        if parent
-            .interfaces
-            .iter()
-            .any(|i| short_name(i).eq_ignore_ascii_case(iface_name))
-        {
+        if implements_here(&parent) {
             return true;
         }
         parent_name = parent.parent_class.as_ref().map(|a| a.to_string());
+    }
+    false
+}
+
+/// Check whether the interface named `iface_name` transitively extends the
+/// interface `target` by walking its interface-extends chain.
+fn interface_extends_named(
+    iface_name: &str,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    target: &str,
+) -> bool {
+    let mut visited = std::collections::HashSet::new();
+    interface_extends_named_inner(iface_name, class_loader, target, &mut visited)
+}
+
+fn interface_extends_named_inner(
+    iface_name: &str,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    target: &str,
+    visited: &mut std::collections::HashSet<String>,
+) -> bool {
+    if !visited.insert(iface_name.to_string()) {
+        return false;
+    }
+    let Some(iface) = class_loader(iface_name) else {
+        return false;
+    };
+    // Interfaces record the interfaces they extend in `interfaces`, and
+    // (for interface-extends-interface with generics) also in
+    // `extends_generics`. Interface `parent_class` covers a rare additional
+    // extends form. Check every parent name for a match or recurse.
+    let parents = iface
+        .interfaces
+        .iter()
+        .map(|i| i.to_string())
+        .chain(iface.extends_generics.iter().map(|(n, _)| n.to_string()))
+        .chain(iface.parent_class.iter().map(|p| p.to_string()));
+    for parent in parents {
+        if short_name(&parent).eq_ignore_ascii_case(target) {
+            return true;
+        }
+        if interface_extends_named_inner(&parent, class_loader, target, visited) {
+            return true;
+        }
     }
     false
 }

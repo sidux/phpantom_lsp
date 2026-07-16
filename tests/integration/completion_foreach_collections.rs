@@ -791,3 +791,73 @@ async fn test_foreach_simplexmlelement_resolves_via_current_method() {
         labels
     );
 }
+
+// ─── Foreach over an SPL wrapper-iterator subclass (3 generic params) ────────
+
+/// A class extending `FilterIterator` with
+/// `@extends FilterIterator<int, SplFileInfo, \Iterator<int, SplFileInfo>>`
+/// has three generic arguments: `TKey`, `TValue`, `TIterator`. The value
+/// type is the *second* argument (`SplFileInfo`), not the last (the inner
+/// iterator). Iterating an instance should resolve the value variable to
+/// `SplFileInfo`, exposing `getRealPath()`.
+#[tokio::test]
+async fn test_foreach_filter_iterator_subclass_three_generic_params() {
+    let backend = create_test_backend_with_full_stubs();
+    let uri = Url::parse("file:///foreach_filter_iterator.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @extends FilterIterator<int, SplFileInfo, \\Iterator<int, SplFileInfo>>\n",
+        " */\n",
+        "class FileIterator extends FilterIterator {\n",
+        "    public function accept(): bool { return true; }\n",
+        "}\n",
+        "function process(FileIterator $files): void {\n",
+        "    foreach ($files as $file) {\n",
+        "        $file->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 9, 15).await;
+    let labels: Vec<String> = items.iter().map(|i| i.label.clone()).collect();
+
+    assert!(
+        labels.iter().any(|l| l.starts_with("getRealPath")),
+        "Should include 'getRealPath' from SplFileInfo when iterating a FilterIterator<_, SplFileInfo, _> subclass. Got: {:?}",
+        labels
+    );
+}
+
+// ─── Foreach over a directly-constructed SPL iterator ───────────────────────
+
+/// `foreach (new DirectoryIterator(...) as $file)` should type `$file` as
+/// `DirectoryIterator` (via the `current()` docblock return type), exposing
+/// `SplFileInfo` members like `isFile()` and `getPathname()`.
+#[tokio::test]
+async fn test_foreach_new_directory_iterator() {
+    let backend = create_test_backend_with_full_stubs();
+    let uri = Url::parse("file:///foreach_directory_iterator.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "function process(string $dir): void {\n",
+        "    foreach (new DirectoryIterator($dir) as $file) {\n",
+        "        $file->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 3, 15).await;
+    let labels: Vec<String> = items.iter().map(|i| i.label.clone()).collect();
+
+    assert!(
+        labels.iter().any(|l| l.starts_with("isFile")),
+        "Should include 'isFile' when iterating new DirectoryIterator(...). Got: {:?}",
+        labels
+    );
+    assert!(
+        labels.iter().any(|l| l.starts_with("getPathname")),
+        "Should include 'getPathname' when iterating new DirectoryIterator(...). Got: {:?}",
+        labels
+    );
+}

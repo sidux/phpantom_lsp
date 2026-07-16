@@ -38,32 +38,3 @@ other parser feature tests: `$pair[]`, `$children[]`,
 `$elements[]`). This is the same symptom as the previously fixed
 B58 — either the fix regressed or it never covered the
 `@var`-annotation path; the old fix's tests should be extended.
-
-## B68. Foreach over an Iterator subclass ignores the inherited generic value type
-
-**Severity: Medium (~5 errors, pdepend) · Confirmed from output**
-
-```php
-/** @extends FilterIterator<int, SplFileInfo, \Iterator<int, SplFileInfo>> */
-class Iterator extends FilterIterator { ... }
-
-foreach ($fileIterator as $file) {
-    $file->getRealPath();  // "Method 'getRealPath' not found on class 'PDepend\Input\Iterator'"
-}
-```
-
-Iterating an object that implements `Iterator`/`IteratorAggregate`
-should use the value type from the class's inherited generic
-iterator parameters (or the `current()` return type as fallback).
-Instead the element is typed as the iterator class itself, or not
-at all. Also fails for direct SPL iteration
-(`foreach (new DirectoryIterator(...) as $file)`, pdepend
-`tests/php/PDepend/ParserRegressionTest.php:80`).
-
-Note: the ~12 luxplus-backoffice paginator errors
-(`foreach (ProductGroup::paginate(25) as $productGroup)`) initially
-filed here were *not* this bug — they were a framework docblock gap
-(`Builder::paginate()` declared an unparameterized
-`LengthAwarePaginator`), now corrected so the paginators resolve
-their element type through `IteratorAggregate`. This bug is only
-the SPL / direct-iteration case above.

@@ -1436,15 +1436,18 @@ impl PhpType {
                     Some(inner.as_ref())
                 }
             }
-            PhpType::Generic(name, args) if !args.is_empty() => {
-                let value = if Self::short_name_of(name) == "Generator" {
-                    // Generator<TKey, TValue, TSend, TReturn>: value is
-                    // the 2nd param (index 1). When only one param is
-                    // given, treat it as the value type.
-                    args.get(1).or(args.last())
+            PhpType::Generic(_, args) if !args.is_empty() => {
+                // Iterables follow the `<TKey, TValue>` convention: the value
+                // is the *second* generic argument whenever two or more are
+                // present. This covers `array<K, V>`, `Collection<K, V>`,
+                // `Iterator<K, V>`, `Generator<TKey, TValue, TSend, TReturn>`,
+                // and the SPL wrapper iterators
+                // (`IteratorIterator`/`FilterIterator`/`AppendIterator`) that
+                // append a third `TIterator` argument. With a single argument
+                // (e.g. `list<User>`) that lone argument is the value.
+                let value = if args.len() >= 2 {
+                    Some(&args[1])
                 } else {
-                    // Default: last generic parameter (works for array,
-                    // list, iterable, Collection, etc.).
                     args.last()
                 };
                 match value {
