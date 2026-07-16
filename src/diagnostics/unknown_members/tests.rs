@@ -5544,3 +5544,85 @@ class Demo {
         "assertNotNull should strip the tracked null, got: {scalar_diags:?}"
     );
 }
+
+/// A `@var array{First, Second}` annotation on an assignment must let
+/// integer-indexed access resolve each positional entry to its own type,
+/// so member access on `$pair[0]` / `$pair[1]` verifies against the right
+/// class instead of reporting the subject type as unresolved.
+#[test]
+fn positional_shape_var_annotation_resolves_int_index_element() {
+    let php = r#"<?php
+class Label {
+public function labelOnly(): void {}
+}
+class Stmt {
+public function stmtOnly(): void {}
+}
+class Node {
+/** @return Node[] */
+public function getChildren(): array { return []; }
+}
+function test(Node $n): void {
+/** @var array{Label, Stmt} $pair */
+$pair = $n->getChildren();
+$pair[0]->labelOnly();
+$pair[1]->stmtOnly();
+}
+"#;
+    let backend = Backend::new_test();
+    backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(
+        diags.is_empty(),
+        "positional shape entries should resolve to their own type, got: {diags:?}"
+    );
+}
+
+/// The same positional-shape resolution must work for a multiline
+/// `@var array{...}` block with a trailing comma, and it must resolve
+/// each entry to the correct class (so a method that only exists on the
+/// wrong entry is still flagged).
+#[test]
+fn positional_shape_multiline_var_annotation_resolves_int_index_element() {
+    let php = r#"<?php
+class Label {
+public function labelOnly(): void {}
+}
+class Stmt {
+public function stmtOnly(): void {}
+}
+class Node {
+/** @return Node[] */
+public function getChildren(): array { return []; }
+}
+function test(Node $n): void {
+/**
+ * @var array{
+ *     Label,
+ *     Stmt,
+ * } $pair
+ */
+$pair = $n->getChildren();
+$pair[0]->labelOnly();
+$pair[1]->stmtOnly();
+}
+"#;
+    let backend = Backend::new_test();
+    backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(
+        diags.is_empty(),
+        "multiline positional shape entries should resolve, got: {diags:?}"
+    );
+
+    // A method that only exists on the *other* entry must still be flagged,
+    // proving each index resolves to its own distinct type.
+    let php_wrong = php.replace("$pair[0]->labelOnly();", "$pair[0]->stmtOnly();");
+    let diags_wrong = collect(&backend, "file:///test2.php", &php_wrong);
+    assert!(
+        diags_wrong
+            .iter()
+            .any(|d| d.message.contains("stmtOnly") && d.message.contains("Label")),
+        "calling Stmt's method on $pair[0] (a Label) should be flagged, got: {diags_wrong:?}"
+    );
+}

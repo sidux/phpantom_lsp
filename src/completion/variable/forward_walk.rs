@@ -4240,25 +4240,48 @@ fn resolve_type_to_resolved_types(
     }
 }
 
+/// Strip the `/**`…`*/` wrapper from a docblock and collapse its
+/// line-continuation markers into a single space-joined string.
+///
+/// This flattens type strings that span multiple lines (e.g. a
+/// `array{...}` shape written across several ` * ` lines) so they can be
+/// parsed as one token sequence instead of retaining the leading `*`
+/// markers, which [`PhpType::parse`] cannot interpret.
+fn flatten_docblock_inner(doc_text: &str) -> Option<String> {
+    let inner = doc_text.strip_prefix("/**")?.strip_suffix("*/")?;
+    Some(
+        inner
+            .lines()
+            .map(|l| l.trim().trim_start_matches('*').trim())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
 /// Parse ALL `@var Type $varName` pairs from a docblock.  Returns an
-/// empty vec when none are found.  Handles multi-line docblocks like:
+/// empty vec when none are found.  Handles multi-line docblocks with one
+/// annotation per line as well as a single annotation whose type spans
+/// several lines:
 /// ```text
 /// /**
 ///  * @var App                      $app
 ///  * @var array{indexName: string} $params
 ///  */
 /// ```
-fn parse_all_inline_var_docblocks(
-    doc_text: &str,
-    _ctx: &ForwardWalkCtx<'_>,
-) -> Vec<(String, PhpType)> {
-    let inner = match doc_text
-        .strip_prefix("/**")
-        .and_then(|s| s.strip_suffix("*/"))
-    {
+/// ```text
+/// /**
+///  * @var array{
+///  *     Label,
+///  *     Stmt,
+///  * } $pair
+///  */
+/// ```
+fn parse_var_docblock_pairs(doc_text: &str) -> Vec<(String, PhpType)> {
+    let inner = match flatten_docblock_inner(doc_text) {
         Some(s) => s,
         None => return vec![],
     };
+    let inner = inner.as_str();
 
     let mut results = Vec::new();
 
@@ -4291,69 +4314,49 @@ fn parse_all_inline_var_docblocks(
     results
 }
 
+/// Parse ALL `@var Type $varName` pairs from a docblock preceding an
+/// assignment or expression.
+fn parse_all_inline_var_docblocks(
+    doc_text: &str,
+    _ctx: &ForwardWalkCtx<'_>,
+) -> Vec<(String, PhpType)> {
+    parse_var_docblock_pairs(doc_text)
+}
+
 /// Parse ALL `@var Type $varName` annotations from a docblock.
-/// Supports both single-line (`/** @var Type $var */`) and multi-line
-/// docblocks with multiple `@var` tags.
+/// Supports single-line (`/** @var Type $var */`), one-annotation-per-line
+/// multi-line docblocks, and annotations whose type spans several lines
+/// (e.g. a multi-line `array{...}` shape).
 fn parse_all_var_docblock_annotations(doc_text: &str) -> Vec<(String, PhpType)> {
-    let mut results = Vec::new();
-    // Strip `/**` and `*/`
-    let inner = match doc_text
-        .strip_prefix("/**")
-        .and_then(|s| s.strip_suffix("*/"))
-    {
-        Some(s) => s,
-        None => return results,
-    };
-    // Scan each line for `@var`
-    for line in inner.lines() {
-        let trimmed = line.trim().trim_start_matches('*').trim();
-        if let Some(rest) = trimmed.strip_prefix("@var") {
-            let rest = rest.trim_start();
-            // Find the `$` that starts the variable name.
-            if let Some(dollar_pos) = rest.find('$') {
-                if dollar_pos == 0 {
-                    // `@var $var Type` format — skip.
-                    continue;
-                }
-                let type_str = rest[..dollar_pos].trim();
-                let var_part = &rest[dollar_pos..];
-                let var_name = var_part.split_whitespace().next().unwrap_or("");
-                if !type_str.is_empty() && !var_name.is_empty() {
-                    let php_type = PhpType::parse(type_str);
-                    results.push((var_name.to_string(), php_type));
-                }
-            }
-        }
-    }
-    results
+    parse_var_docblock_pairs(doc_text)
 }
 
 /// Parse `/** @var Type */` (without variable name) and return the PhpType.
 fn parse_inline_var_docblock_no_var(doc_text: &str, _ctx: &ForwardWalkCtx<'_>) -> Option<PhpType> {
-    let inner = doc_text.strip_prefix("/**")?.strip_suffix("*/")?.trim();
+    // Flatten line-continuation markers so a `array{...}` shape spread
+    // across several lines is parsed as one type string.
+    let inner = flatten_docblock_inner(doc_text)?;
+    let inner = inner.trim().strip_prefix("@var")?.trim();
 
-    let inner = inner
-        .strip_prefix("@var")
-        .or_else(|| inner.strip_prefix("* @var"))?;
-    let inner = inner.trim();
-
-    // For multi-line docblocks, only take the type from the first line.
-    // Additional lines may contain other tags like @psalm-suppress that
-    // would corrupt the type string.
-    let inner = inner.lines().next().unwrap_or(inner).trim();
-    // Strip trailing `*` that may remain from `* @var Type  *` formatting.
-    let inner = inner.trim_end_matches('*').trim();
+    // Stop at the next docblock tag so trailing tags (e.g. `@psalm-suppress`)
+    // do not corrupt the type string.
+    let type_str = match inner.find(" @") {
+        Some(pos) => inner[..pos].trim(),
+        None => inner,
+    };
+    // Strip a trailing `*` that may remain from `* @var Type *` formatting.
+    let type_str = type_str.trim_end_matches('*').trim();
 
     // If there's a `$` it has a variable name — not the no-var form.
-    if inner.contains('$') {
+    if type_str.contains('$') {
         return None;
     }
 
-    if inner.is_empty() {
+    if type_str.is_empty() {
         return None;
     }
 
-    Some(PhpType::parse(inner))
+    Some(PhpType::parse(type_str))
 }
 
 /// Process assignment expressions, updating the scope.

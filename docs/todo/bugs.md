@@ -21,20 +21,3 @@ were reclassified as intended
 diagnostics per the declared-types philosophy there. The closure
 literal-return shape gap is filed as T31 in
 `docs/todo/type-inference.md`.
-
-## B67. Positional array-shape indexing does not resolve the element type
-
-**Severity: Medium-High (~20 errors, pdepend) · Confirmed with fixture**
-
-```php
-/** @var array{Label, Stmt} $pair */
-$pair = $n->getChildren();
-$pair[0]->getImage();   // "type of '$pair[]' could not be resolved"
-```
-
-Both single-line and multiline `@var array{...}` shapes fail
-(pdepend `tests/.../PHP81/MatchExpressionTest.php` and several
-other parser feature tests: `$pair[]`, `$children[]`,
-`$elements[]`). This is the same symptom as the previously fixed
-B58 — either the fix regressed or it never covered the
-`@var`-annotation path; the old fix's tests should be extended.

@@ -1640,6 +1640,17 @@ class DestructuringShapeDemo
         $pair[0]->write();                 // Pen (positional index 0)
         $pair[1]->sketch();                // Pencil (positional index 1)
 
+        // Positional shape spread across multiple docblock lines
+        /**
+         * @var array{
+         *     Pen,
+         *     Pencil,
+         * } $multiline
+         */
+        $multiline = getUnknownValue();
+        $multiline[0]->write();            // Pen (positional index 0)
+        $multiline[1]->sketch();           // Pencil (positional index 1)
+
         // list() syntax
         /** @var array{recipe: Recipe, servings: int} $meal */
         $meal = getUnknownValue();
