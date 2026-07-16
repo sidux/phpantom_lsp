@@ -977,6 +977,29 @@ fn test_path_repo_psr4_skips_package_outside_workspace() {
 }
 
 #[test]
+fn test_path_repo_psr4_skips_package_inside_vendor() {
+    let ws = TestWorkspace::new(r#"{ "autoload": { "psr-4": { "App\\": "app/" } } }"#);
+    // A path repo whose canonical location resolves back inside vendor/ —
+    // because the symlink was materialised into a real copy, or its target
+    // is itself in vendor — is an ordinary vendored dependency, not project
+    // code.  It must not be added to the PSR-4 mappings, or the diagnostics
+    // pass would walk and analyse the entire dependency as user source.
+    ws.create_php_file("vendor/luxplus/shared/src/.gitkeep", "");
+    write_installed_json(
+        &ws,
+        r#"{
+            "name": "luxplus/shared",
+            "dist": { "type": "path" },
+            "transport-options": { "symlink": true },
+            "install-path": "../luxplus/shared",
+            "autoload": { "psr-4": { "Luxplus\\Shared\\": "src/" } }
+        }"#,
+    );
+
+    assert!(extract_path_repo_psr4_mappings(ws.root(), "vendor").is_empty());
+}
+
+#[test]
 fn test_path_repo_psr4_no_installed_json() {
     let ws = TestWorkspace::new(r#"{ "autoload": { "psr-4": { "App\\": "app/" } } }"#);
     assert!(extract_path_repo_psr4_mappings(ws.root(), "vendor").is_empty());

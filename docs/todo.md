@@ -25,6 +25,25 @@ within the same impact tier.
 
 | #   | Item                                                                                                                  | Impact     | Effort |
 | --- | --------------------------------------------------------------------------------------------------------------------- | ---------- | ------ |
+| B98 | [Full-project analyze nondeterministically fails to resolve closure parameters](todo/bugs.md#b98-full-project-analyze-nondeterministically-fails-to-resolve-closure-parameters-that-resolve-in-single-file-runs) | Medium | Medium |
+| B91 | [Narrowing guards don't apply to array-index subject expressions](todo/bugs.md#b91-narrowing-guards-do-not-apply-to-array-index-subject-expressions) | Medium | Medium |
+| B97 | [Dynamic-key array element access doesn't resolve the element type](todo/bugs.md#b97-array-element-access-with-a-dynamic-non-literal-key-does-not-resolve-the-element-type) | Medium | Medium |
+| B99 | [`array<T>\|false` union loses the array's element type](todo/bugs.md#b99-an-arraytfalse-union-loses-the-arrays-element-type) | Medium | Low |
+| B102 | [Conditional return types with `static<...>` branches don't resolve](todo/bugs.md#b102-conditional-return-types-with-static-generic-branches-do-not-resolve) | Medium | Low-Medium |
+| B103 | [`return $this` in a trait method resolves to the trait, not the using class](todo/bugs.md#b103-return-this-in-a-trait-method-resolves-to-the-trait-instead-of-the-using-class) | Medium | Low-Medium |
+| B107 | [`@phpstan-require-extends` not used for `$this` in trait bodies](todo/bugs.md#b107-phpstan-require-extends-is-not-used-to-resolve-this-members-inside-trait-bodies) | Medium | Low-Medium |
+| B101 | [Guard-branch reassignment discards the other path's type when partially unresolved](todo/bugs.md#b101-reassignment-inside-a-guard-branch-discards-the-other-paths-type-when-the-initial-type-is-partially-unresolved) | Medium | Medium |
+| B92 | [Assert narrowing can't override list-destructured variables with unresolvable RHS](todo/bugs.md#b92-assert-narrowing-cannot-override-variables-assigned-by-list-destructuring-from-an-unresolvable-rhs) | Medium | Low-Medium |
+| B94 | [Closure param declared union overridden by inferred collection element type](todo/bugs.md#b94-a-closure-parameters-declared-union-type-is-overridden-by-the-inferred-collection-element-type) | Medium | Low-Medium |
+| B95 | [`isset($obj->prop)` guards and `property_exists()` ternaries don't prove the property](todo/bugs.md#b95-issetobj-prop-guards-and-property_exists-ternaries-do-not-prove-the-property-on-a-single-typed-subject) | Medium | Low-Medium |
+| B96 | [`reduce()` return template not bound from the closure's inferred return](todo/bugs.md#b96-reduces-return-template-is-not-bound-from-the-closures-inferred-return-type) | Medium | Medium |
+| B104 | [`instanceof` left of `&&` doesn't narrow an untyped closure param](todo/bugs.md#b104-instanceof-on-the-left-of--does-not-narrow-an-untyped-closure-parameter-on-the-right) | Low-Medium | Low |
+| B108 | [Leading-backslash docblock type resolved through a same-short-name import](todo/bugs.md#b108-a-leading-backslash-docblock-type-is-resolved-through-a-same-short-name-import) | Low-Medium | Low |
+| B100 | [Leading-backslash global function calls don't resolve in chains](todo/bugs.md#b100-leading-backslash-global-function-calls-do-not-resolve-in-member-chains) | Low | Low |
+| B105 | [Inline `@var` retype of a closure's `mixed` param ignored before `foreach`](todo/bugs.md#b105-an-inline-var-retype-of-a-closures-mixed-parameter-is-ignored-before-foreach) | Low | Low |
+| B106 | [`assertTrue(property_exists(...))` doesn't prove the property](todo/bugs.md#b106-asserttrueproperty_exists-does-not-prove-the-property-exists) | Low | Low |
+| B93 | [`for`-init assignment invisible to the loop's condition/update clauses](todo/bugs.md#b93-a-for-loops-init-clause-assignment-is-invisible-to-the-condition-and-update-clauses) | Low | Low |
+| B90 | [Mixin type argument doesn't follow the substitution chain when it's an inherited template parameter](todo/bugs.md#b90-a-mixins-type-argument-does-not-follow-the-substitution-chain-when-it-is-itself-an-inherited-template-parameter) | Low | Low |
 | L18 | [`Storage::disk()` return type — resolve from config, don't guess](todo/laravel.md#l18-storagedisk-return-type-is-genuinely-polymorphic--resolve-from-config-dont-guess) | Medium-High | Low-Medium  |
 | L19 | [Redis client (phpredis/predis) — resolve from config, don't guess](todo/laravel.md#l19-redis-connection-client-is-chosen-by-config-phpredis-vs-predis--resolve-from-config-dont-guess) | Medium      | Low-Medium  |
 | X4  | [Full background indexing](todo/indexing.md#x4-full-background-indexing) (workspace symbols, fast find-references)                                              | Medium      | High        |

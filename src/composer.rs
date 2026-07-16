@@ -193,8 +193,12 @@ pub(crate) fn get_bin_dir(package: &ComposerPackage) -> String {
 ///    vendor, not copied.  A copied path-repo is effectively a snapshot
 ///    and should be treated as a regular vendor package.
 /// 3. The canonicalized (symlink-resolved) package root is a subdirectory
-///    of the workspace root.  A symlink pointing outside the project
-///    (e.g. a shared library on disk) is not project code.
+///    of the workspace root but is **not** inside `vendor/`.  A symlink
+///    pointing outside the project (e.g. a shared library on disk) is not
+///    project code; neither is a package whose canonical path resolves
+///    back inside `vendor/` — that is an ordinary vendored dependency,
+///    already covered by the vendor classmap and service-provider scan,
+///    and must not be walked by the diagnostics pass as user source.
 ///
 /// Their `autoload.psr-4` entries and `install-path` fields are combined
 /// to produce absolute directory mappings that can be appended to the
@@ -230,6 +234,9 @@ pub fn extract_path_repo_psr4_mappings(
     let canonical_root = workspace_root
         .canonicalize()
         .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let canonical_vendor = vendor_path
+        .canonicalize()
+        .unwrap_or_else(|_| vendor_path.clone());
     let mut mappings = Vec::new();
 
     for package in packages {
@@ -269,8 +276,20 @@ pub fn extract_path_repo_psr4_mappings(
             continue;
         }
 
-        // Condition 3: the resolved path must be inside the workspace.
-        if !pkg_root.starts_with(&canonical_root) {
+        // Condition 3: the resolved path must be inside the workspace but
+        // NOT inside the vendor directory.  Path repositories are project
+        // code only when they are symlinked *out* of vendor (e.g. the
+        // internachi/modular pattern, where modules live under
+        // `app-modules/` and are symlinked into vendor).  A package whose
+        // canonical path resolves back inside `vendor/` — because the
+        // symlink target is itself in vendor, or the symlink was
+        // materialised into a real copy — is an ordinary vendored
+        // dependency.  It is already covered by the vendor classmap for
+        // resolution and by the service-provider scan for macros, so
+        // adding its PSR-4 mapping here would only cause the diagnostics
+        // pass to walk and analyse the whole dependency as if it were the
+        // user's own source.
+        if !pkg_root.starts_with(&canonical_root) || pkg_root.starts_with(&canonical_vendor) {
             continue;
         }
 
