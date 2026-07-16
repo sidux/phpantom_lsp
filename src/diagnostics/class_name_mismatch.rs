@@ -1,6 +1,7 @@
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::composer;
 use crate::types::{ClassInfo, ClassLikeKind};
 use crate::util::offset_to_position;
 
@@ -24,14 +25,25 @@ pub(crate) fn class_name_mismatch_diagnostic(
     content: &str,
 ) -> Option<Diagnostic> {
     let file_path = Url::parse(uri).ok().and_then(|u| u.to_file_path().ok())?;
-    let file_stem = file_path.file_stem().and_then(|s| s.to_str())?;
+
+    // Only files that fall under a PSR-4 mapping are required to name their
+    // single class after the file. Standalone scripts, non-autoloaded files,
+    // and projects without a `composer.json` have no such constraint, so we
+    // gate the check on PSR-4 membership exactly like the namespace check.
+    let workspace_root = backend.workspace_root().read().clone()?;
+    let mappings = backend.psr4_mappings().read().clone();
+    if mappings.is_empty() {
+        return None;
+    }
+    let (_, expected_name) =
+        composer::resolve_namespace_from_path(&mappings, &workspace_root, &file_path)?;
 
     let classes = backend.parse_php(content);
     if classes.len() != 1 {
         return None;
     }
     let class = &classes[0];
-    if class.name == file_stem {
+    if class.name == expected_name {
         return None;
     }
 
@@ -44,7 +56,7 @@ pub(crate) fn class_name_mismatch_diagnostic(
         source: Some("phpantom".to_string()),
         message: format!(
             "Class name `{}` does not match filename `{}`",
-            class.name, file_stem,
+            class.name, expected_name,
         ),
         ..Default::default()
     })

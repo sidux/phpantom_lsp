@@ -99,6 +99,7 @@ mod diag_forward_walk_complex_expr;
 mod diag_timing;
 mod diagnostics_compound_narrowing;
 mod diagnostics_deprecated;
+mod diagnostics_psr4_mismatch;
 mod diagnostics_type_errors;
 mod diagnostics_undefined_variables;
 mod diagnostics_unknown_members;

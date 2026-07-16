@@ -146,16 +146,15 @@
 //! sees results incrementally: fast diagnostics first, then slow,
 //! then PHPStan/PHPCS/Mago as each completes.
 //!
-//! **Pull mode:** Only fast diagnostics (syntax errors, unused
-//! imports, unused variables) are pushed via `publishDiagnostics` so
-//! the editor sees them instantly.  The full merged set is cached in
-//! `diag_last_full` with a bumped `resultId`.  The pull handler
-//! (`textDocument/diagnostic`) returns this cached set.  If the
-//! cache is missing (e.g. the file was just opened), the pull
+//! **Pull mode:** Nothing is pushed via `publishDiagnostics`.  The
+//! merged set is cached in `diag_last_full` with a bumped `resultId`
+//! and the editor is asked to re-pull via `workspace/diagnostic/refresh`.
+//! The pull handler (`textDocument/diagnostic`) returns this cached set.
+//! If the cache is missing (e.g. the file was just opened), the pull
 //! handler triggers computation directly instead of returning empty
-//! results.  Pushing the full set in pull mode would duplicate every
-//! slow and external diagnostic because editors merge pushed and
-//! pulled sets additively.
+//! results.  Pushing anything in pull mode would duplicate native
+//! diagnostics because editors that support pull keep pushed and
+//! pulled sets in separate namespaces and merge them additively.
 //!
 //! External tool workers (PHPStan, PHPCS, Mago) use their own
 //! debounce timers in both modes because they are expensive.
@@ -651,23 +650,18 @@ impl Backend {
     ///
     /// Called from the background diagnostic worker after debouncing.
     ///
-    /// **Phase 1 (instant, both modes):** Run fast collectors (syntax
-    /// errors, deprecated, unused imports), merge with *cached* slow
-    /// and PHPStan results, and push via `publishDiagnostics`.  The
-    /// editor shows strikethrough and dimming within milliseconds.
+    /// **Phase 1 (instant):** Run fast collectors (syntax errors,
+    /// deprecated, unused imports) and assemble them with *cached* slow
+    /// and PHPStan results.  In push mode the merged set is published;
+    /// in pull mode it is cached and a `workspace/diagnostic/refresh` is
+    /// sent so the editor re-pulls.  Either way the editor shows
+    /// strikethrough and dimming within milliseconds.
     ///
-    /// **Phase 2 (background, mode-dependent):**
-    ///
-    /// - **Pull mode:** Compute slow diagnostics, build the full set
-    ///   (fast + fresh slow + cached PHPStan), cache it in
-    ///   `diag_last_full`, bump the `resultId`, and send
-    ///   `workspace/diagnostic/refresh`.  The editor re-pulls and
-    ///   gets the complete set.  Push always serves cached slow, so
-    ///   no second push is needed.
-    ///
-    /// - **Push mode (fallback):** Compute slow diagnostics, then
-    ///   push the full set (fast + fresh slow + cached PHPStan),
-    ///   replacing the Phase 1 snapshot.
+    /// **Phase 2 (background):** Compute slow diagnostics, rebuild the
+    /// full set (fast + fresh slow + cached PHPStan), and deliver it the
+    /// same way: push mode publishes the complete set, replacing the
+    /// Phase 1 snapshot; pull mode caches it, bumps the `resultId`, and
+    /// sends another `workspace/diagnostic/refresh`.
     pub(crate) async fn publish_diagnostics_for_file(&self, uri_str: &str, content: &str) {
         if self.should_skip_diagnostics(uri_str) {
             return;
@@ -758,13 +752,13 @@ impl Backend {
     /// **Push mode:** The merged set is published via
     /// `textDocument/publishDiagnostics`.
     ///
-    /// **Pull mode:** Only fast diagnostics (syntax errors, unused
-    /// imports, unused variables) are pushed so the editor sees them
-    /// instantly.  The full merged set is cached in `diag_last_full`
-    /// with a bumped `resultId` so the next pull response returns it.
-    /// Editors that support pull diagnostics merge pushed and pulled
-    /// sets additively, so pushing the full set would duplicate every
-    /// slow and external diagnostic.
+    /// **Pull mode:** Nothing is pushed.  The full merged set is cached
+    /// in `diag_last_full` with a bumped `resultId` so the next pull
+    /// response returns it; the caller triggers
+    /// `workspace/diagnostic/refresh` so the editor re-pulls.  Editors
+    /// that support pull diagnostics merge pushed and pulled sets
+    /// additively, so pushing anything here would duplicate native
+    /// diagnostics.
     pub(crate) async fn assemble_and_push(&self, uri_str: &str) {
         let client = match &self.client {
             Some(c) => c,

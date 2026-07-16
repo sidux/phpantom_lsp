@@ -1079,10 +1079,16 @@ impl LanguageServer for Backend {
     async fn code_action_resolve(&self, action: CodeAction) -> Result<CodeAction> {
         let (resolved, republish_uri) = self.resolve_code_action(action);
 
-        // If a PHPStan quickfix was resolved, reassemble and push
-        // diagnostics so the cleared diagnostic disappears immediately.
+        // If a PHPStan quickfix was resolved, reassemble diagnostics so the
+        // cleared diagnostic disappears immediately. In pull mode nothing is
+        // pushed, so ask the editor to re-pull the freshly cached set.
         if let Some(uri_str) = republish_uri {
             self.assemble_and_push(&uri_str).await;
+            if self.supports_pull_diagnostics.load(Ordering::Acquire)
+                && let Some(client) = &self.client
+            {
+                let _ = client.workspace_diagnostic_refresh().await;
+            }
         }
 
         Ok(resolved)
