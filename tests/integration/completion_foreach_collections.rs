@@ -901,3 +901,124 @@ async fn test_foreach_inline_var_retypes_mixed_param() {
         labels
     );
 }
+
+// ─── Inline `@var` seeds the base variable of a method-chain iterable ───────
+
+/// When the foreach iterable is a method chain (`$users->active()`) and the
+/// base variable is only typed by an inline `/** @var ... $users */`
+/// docblock, the annotation should seed the base variable so the chain
+/// resolves and the loop variable gets the element type.
+#[tokio::test]
+async fn test_foreach_chain_iterable_base_var_seeded_from_inline_var() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///foreach_chain_inline_var.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $name;\n",
+        "    public function getName(): string {}\n",
+        "}\n",
+        "class UserCollection {\n",
+        "    /** @return list<User> */\n",
+        "    public function active(): array {}\n",
+        "}\n",
+        "/** @var UserCollection $users */\n",
+        "foreach ($users->active() as $u) {\n",
+        "    $u->\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 11, 8).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("name")),
+        "Should include 'name' from User via @var-seeded chain base. Got: {:?}",
+        labels
+    );
+    assert!(
+        labels.iter().any(|l| l.starts_with("getName")),
+        "Should include 'getName' from User via @var-seeded chain base. Got: {:?}",
+        labels
+    );
+}
+
+/// An inline `@var` retypes a `mixed` parameter used as the base of a
+/// method-chain iterable, mirroring the direct-variable case: a broad
+/// pre-existing type does not shadow the explicit annotation.
+#[tokio::test]
+async fn test_foreach_chain_iterable_inline_var_retypes_mixed_param() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///foreach_chain_inline_var_mixed.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $name;\n",
+        "    public function getName(): string {}\n",
+        "}\n",
+        "class UserCollection {\n",
+        "    /** @return list<User> */\n",
+        "    public function active(): array {}\n",
+        "}\n",
+        "function process(mixed $users): void {\n",
+        "    /** @var UserCollection $users */\n",
+        "    foreach ($users->active() as $u) {\n",
+        "        $u->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 12, 12).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("getName")),
+        "Should include 'getName' from User after inline @var retype of chain base. Got: {:?}",
+        labels
+    );
+}
+
+/// When the base variable of a method-chain iterable already has a type
+/// from an assignment, a preceding inline `@var` naming a different class
+/// is an explicit developer override and wins, matching the
+/// direct-variable branch's semantics.
+#[tokio::test]
+async fn test_foreach_chain_iterable_inline_var_overrides_assignment_type() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///foreach_chain_var_override.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Admin {\n",
+        "    public string $email;\n",
+        "    public function ban(): void {}\n",
+        "}\n",
+        "class Member {\n",
+        "    public string $nickname;\n",
+        "}\n",
+        "class AdminCollection {\n",
+        "    /** @return list<Admin> */\n",
+        "    public function items(): array {}\n",
+        "}\n",
+        "class MemberCollection {\n",
+        "    /** @return list<Member> */\n",
+        "    public function items(): array {}\n",
+        "}\n",
+        "function loadAdmins(): AdminCollection {}\n",
+        "$users = loadAdmins();\n",
+        "/** @var MemberCollection $users */\n",
+        "foreach ($users->items() as $u) {\n",
+        "    $u->\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 20, 8).await;
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.starts_with("nickname")),
+        "Should include 'nickname' from Member (explicit @var override wins). Got: {:?}",
+        labels
+    );
+    assert!(
+        !labels.iter().any(|l| l.starts_with("ban")),
+        "Should NOT include 'ban' from Admin (the @var overrode the assignment type). Got: {:?}",
+        labels
+    );
+}

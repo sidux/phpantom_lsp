@@ -22,7 +22,7 @@ diagnostics per the declared-types philosophy there. The closure
 literal-return shape gap is filed as T31 in
 `docs/todo/type-inference.md`.
 
-The B91–B106 batch below comes from the 2026-07-16 full re-triage of
+The B91–B104 batch below comes from the 2026-07-16 full re-triage of
 the three remaining non-clean projects (PDepend, Luxplus Website,
 Luxplus Backoffice). Together they account for every remaining
 analyze error in those projects (42 errors after the same sweep's
@@ -323,11 +323,3 @@ $response->assertViewHas('faqs', fn($faqs) => $faqs instanceof Collection && $fa
 ```
 
 Backoffice `FaqsControllerTest.php:156`.
-
-## B106. `foreach` over a method chain always re-seeds the base variable from a preceding `@var`
-
-**Severity: Low · Found while fixing the inline-`@var`-before-`foreach` case**
-
-When the foreach iterable is a complex expression (`foreach ($users->active()->byName() as $u)`), the walker tries to seed the base variable (`$users`) from an inline `/** @var ... $users */` only when `$users` is not already known. The guard looks the base variable up in scope with the leading `$` stripped (`scope.get("users")`), but scope keys retain the `$` (`$users`), so the guard is always "empty" and the docblock is applied unconditionally, overwriting any type the base variable already had. In practice this is usually benign (a `@var` is an explicit developer override), but it can clobber a more precise type inferred from an assignment.
-
-The fix is to look the base variable up with its `$` intact, matching the direct-variable branch and the scope key convention. See `process_foreach` in `src/completion/variable/forward_walk.rs` (the `else` branch handling complex iterable expressions).

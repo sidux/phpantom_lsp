@@ -1050,6 +1050,19 @@ class ForeachArrayAccessDemo
             $pen->write();                        // Pen from the inline @var retype
         }
     }
+
+    /**
+     * The same inline `@var` retype works when the iterable is a method
+     * chain: the annotation types the base variable, the chain resolves
+     * through it, and the loop variable gets the element type.
+     */
+    public function demoRetypedChainBase(mixed $holder): void
+    {
+        /** @var ScaffoldingConcreteHolder $holder */
+        foreach ($holder->getPens() as $pen) {
+            $pen->write();                        // Pen via the @var-typed chain base
+        }
+    }
 }
 
 // ── Foreach By-Reference ────────────────────────────────────────────────────

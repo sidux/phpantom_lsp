@@ -6718,19 +6718,30 @@ fn process_foreach<'b>(foreach: &'b Foreach<'b>, scope: &mut ScopeState, ctx: &F
             // Extract the base variable (e.g. "$users" from "$users->active()->byName()")
             if let Some(base_end) = expr_text.find("->").or_else(|| expr_text.find("::")) {
                 let base_var = expr_text[..base_end].trim();
-                if let Some(scope_key) = base_var.strip_prefix('$')
-                    && scope.get(scope_key).is_empty()
+                // Scope keys retain the leading `$` (e.g. "$users"), so the
+                // lookup and the insert must both use the `$`-prefixed name,
+                // matching the direct-variable branch above.
+                if base_var.starts_with('$')
                     && let Some(var_type) = crate::docblock::find_var_raw_type_in_source(
                         ctx.content,
                         foreach_offset,
                         base_var,
                     )
                 {
-                    let resolved = resolve_type_to_resolved_types(
-                        &crate::util::resolve_php_type_names(&var_type, ctx.class_loader),
-                        ctx,
-                    );
-                    scope.set(scope_key, resolved);
+                    let php_type = crate::util::resolve_php_type_names(&var_type, ctx.class_loader);
+                    // As in the direct-variable branch: seed an unknown base
+                    // variable, or refine a non-informative pre-existing type
+                    // (e.g. a `mixed` parameter), but never clobber a more
+                    // precise type inferred from an assignment.
+                    let current = scope.get(base_var);
+                    let should_apply = current.is_empty()
+                        || current.iter().all(|rt| {
+                            crate::docblock::should_override_type_typed(&php_type, &rt.type_string)
+                        });
+                    if should_apply {
+                        let resolved = resolve_type_to_resolved_types(&php_type, ctx);
+                        scope.set(base_var, resolved);
+                    }
                 }
             }
         }
