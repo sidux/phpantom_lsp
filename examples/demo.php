@@ -275,6 +275,13 @@ class CompoundNarrowingDemo
         }
         $items[0]->crush();                       // element narrowed to Rock
     }
+
+    public function arrow(): callable
+    {
+        // An untyped arrow-function parameter narrowed by an earlier `&&`
+        // conjunct is visible to the member access in a later conjunct.
+        return fn($specimen) => $specimen instanceof Rock && $specimen->crush() === 'smash!';
+    }
 }
 
 

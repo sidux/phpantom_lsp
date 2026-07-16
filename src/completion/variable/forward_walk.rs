@@ -524,6 +524,18 @@ fn walk_closures_in_expr<'b>(
             record_scope_snapshot(body_span.start.offset, &arrow_scope);
             record_scope_snapshot(body_span.end.offset, &arrow_scope);
 
+            // The arrow body is a single return-value expression, so
+            // apply the same `&&` / `||` / match / ternary narrowing that
+            // a `return $x instanceof Foo && $x->bar()` statement would
+            // get.  Without this, a member access on a parameter narrowed
+            // by an earlier conjunct (e.g. `fn($x) => $x instanceof Foo
+            // && $x->bar()`) sees the un-narrowed parameter type.
+            record_and_chain_snapshots(arrow.expression, &arrow_scope, ctx);
+            record_or_chain_snapshots(arrow.expression, &arrow_scope, ctx);
+            if is_diagnostic_scope_active() {
+                record_match_ternary_snapshots(arrow.expression, &arrow_scope, ctx);
+            }
+
             // Restore the outer scope after the arrow body (same
             // reasoning as for closures above).
             record_scope_snapshot(body_span.end.offset + 1, outer_scope);
@@ -10161,6 +10173,12 @@ fn try_enter_closure_expr<'b>(
                     &filtered_inferred,
                     ctx,
                 );
+                // The arrow body is a single return-value expression, so
+                // apply the same cursor narrowing that `walk_body_forward`
+                // applies to a statement body.  This narrows a parameter
+                // referenced after an earlier `&&` conjunct (e.g.
+                // `fn($x) => $x instanceof Foo && $x->bar()`).
+                apply_cursor_ternary_narrowing(arrow.expression, scope, ctx);
                 // The body is a single expression.  Recurse into it
                 // to find nested closures/arrow functions that may
                 // contain the cursor (e.g. a closure passed as an

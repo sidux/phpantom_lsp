@@ -22,7 +22,7 @@ diagnostics per the declared-types philosophy there. The closure
 literal-return shape gap is filed as T31 in
 `docs/todo/type-inference.md`.
 
-The B91–B104 batch below comes from the 2026-07-16 full re-triage of
+The B91–B103 batch below comes from the 2026-07-16 full re-triage of
 the three remaining non-clean projects (PDepend, Luxplus Website,
 Luxplus Backoffice). Together they account for every remaining
 analyze error in those projects (42 errors after the same sweep's
@@ -312,14 +312,3 @@ so members of the using class (including its other traits and magic
 `Testable` shape, breaking every multi-step Livewire test assertion
 chain. Backoffice `ShowReorderListTest.php:78`,
 `ProductListTest.php:30`.
-
-## B104. `instanceof` on the left of `&&` does not narrow an untyped closure parameter on the right
-
-**Severity: Low-Medium (2 errors, luxplus-backoffice) · Reproduced with fixture**
-
-```php
-$response->assertViewHas('faqs', fn($faqs) => $faqs instanceof Collection && $faqs->contains($faq1));
-// "type of '$faqs' could not be resolved" on the contains() call
-```
-
-Backoffice `FaqsControllerTest.php:156`.

@@ -75,6 +75,30 @@ async fn or_guard_property_completion() {
     );
 }
 
+/// An untyped arrow-function parameter narrowed by an earlier `&&`
+/// conjunct offers the narrowed type's members for completion.
+#[tokio::test]
+async fn arrow_fn_param_and_instanceof_completion() {
+    let text = concat!(
+        "<?php\n",
+        "class Collection {\n",
+        "    public function contains($x): bool { return true; }\n",
+        "}\n",
+        "class C {\n",
+        "    public function m(): void {\n",
+        "        $cb = fn($faqs) => $faqs instanceof Collection && $faqs->\n",
+        "    }\n",
+        "}\n",
+    );
+    // Line 6 (0-indexed), after `$faqs->` = column of the last `->`.
+    let methods = completion_methods(text, 6, 65).await;
+    assert!(
+        methods.iter().any(|m| m == "contains"),
+        "Completion after `$faqs instanceof Collection && $faqs->` should \
+         offer Collection methods, got: {methods:?}"
+    );
+}
+
 /// Integer-index guard clause narrows the element for completion.
 #[tokio::test]
 async fn integer_index_guard_completion() {

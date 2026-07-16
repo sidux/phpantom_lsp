@@ -2944,6 +2944,83 @@ class Svc {
     );
 }
 
+/// `fn($x) => $x instanceof Foo && $x->method()` — an untyped arrow
+/// function parameter narrowed by an earlier `&&` conjunct must be
+/// visible to the member access in a later conjunct.  This mirrors the
+/// production `analyse` path where the forward-walker scope cache is
+/// built before diagnostics run.
+#[test]
+fn arrow_fn_param_narrowed_by_and_instanceof_scope_cache() {
+    let php = r#"<?php
+class Collection {
+    public function contains($x): bool { return true; }
+}
+class Svc {
+    public function run(): void {
+        $faq1 = 1;
+        $cb = fn($faqs) => $faqs instanceof Collection && $faqs->contains($faq1);
+    }
+}
+"#;
+    let backend = Backend::new_test();
+    backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+    backend.update_ast("file:///test.php", php);
+
+    let _scope_guard = crate::completion::variable::forward_walk::with_diagnostic_scope_cache();
+    {
+        let file_ctx = backend.file_context("file:///test.php");
+        let class_loader = backend.class_loader(&file_ctx);
+        let function_loader_cl = backend.function_loader(&file_ctx);
+        let constant_loader_cl = backend.constant_loader();
+        let loaders = crate::completion::resolver::Loaders {
+            function_loader: Some(&function_loader_cl),
+            constant_loader: Some(&constant_loader_cl),
+        };
+        let local_classes: Vec<std::sync::Arc<crate::types::ClassInfo>> = backend
+            .uri_classes_index
+            .read()
+            .get("file:///test.php")
+            .cloned()
+            .unwrap_or_default();
+        crate::completion::variable::forward_walk::build_diagnostic_scopes(
+            php,
+            &local_classes,
+            &class_loader,
+            loaders,
+            Some(&backend.resolved_class_cache),
+        );
+    }
+
+    let mut diags = Vec::new();
+    backend.collect_unknown_member_diagnostics("file:///test.php", php, &mut diags);
+    assert!(
+        diags.is_empty(),
+        "arrow-fn param narrowed by `&&` instanceof should resolve, got: {diags:?}"
+    );
+}
+
+#[test]
+fn arrow_fn_param_narrowed_by_and_instanceof_fresh_path() {
+    let php = r#"<?php
+class Collection {
+    public function contains($x): bool { return true; }
+}
+class Svc {
+    public function run(): void {
+        $faq1 = 1;
+        $cb = fn($faqs) => $faqs instanceof Collection && $faqs->contains($faq1);
+    }
+}
+"#;
+    let backend = Backend::new_test();
+    backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+    let diags = collect(&backend, "file:///test.php", php);
+    assert!(
+        diags.is_empty(),
+        "arrow-fn param narrowed by `&&` instanceof should resolve (fresh path), got: {diags:?}"
+    );
+}
+
 /// Direct instantiation inside foreach body (no var-to-var).
 #[test]
 fn no_false_positive_null_init_foreach_direct_reassign() {
