@@ -3128,7 +3128,7 @@ impl Backend {
             function_loader: ctx.function_loader,
             scope_var_resolver: Some(&param_aware_resolver),
             is_in_static_method: ctx.is_in_static_method,
-            preserve_static: false,
+            preserve_static: ctx.preserve_static,
         };
         Self::resolve_arg_text_to_type(body, &param_ctx)
     }
@@ -3182,7 +3182,9 @@ fn resolve_chain_declared_return(text: &str, ctx: &ResolutionCtx<'_>) -> Option<
         super::resolver::resolve_target_classes_expr(base, crate::types::AccessKind::Arrow, ctx);
 
     for rt in &base_results {
-        let ci = rt.class_info.as_ref()?;
+        let Some(ci) = rt.class_info.as_ref() else {
+            continue;
+        };
 
         // Try the raw class first — its return types preserve template
         // parameter names (e.g. `TValue`) that full resolution replaces
