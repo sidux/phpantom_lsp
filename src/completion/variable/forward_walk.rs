@@ -7794,6 +7794,18 @@ fn process_for<'b>(for_stmt: &'b For<'b>, scope: &mut ScopeState, ctx: &ForwardW
         seed_pass_by_ref_in_condition(cond_expr, scope, ctx);
     }
 
+    // Record a snapshot at each condition expression so that member
+    // accesses in the condition clause (which live on the `for` line,
+    // before any body statement) see the variables bound by the init
+    // clause.  Without this, a diagnostic on the condition would only
+    // find the pre-`for` snapshot and treat init-clause variables as
+    // unresolved.
+    if is_diagnostic_scope_active() {
+        for cond_expr in for_stmt.conditions.iter() {
+            record_scope_snapshot(cond_expr.span().start.offset, scope);
+        }
+    }
+
     let pre_loop_scope = scope.clone();
 
     // When the cursor is inside the loop body (completion path), discovery
@@ -7857,6 +7869,18 @@ fn process_for<'b>(for_stmt: &'b For<'b>, scope: &mut ScopeState, ctx: &ForwardW
             ForBody::ColonDelimited(body) => {
                 walk_body_forward(body.statements.iter(), scope, walk_ctx);
             }
+        }
+    }
+
+    // Record a snapshot at each increment expression so that member
+    // accesses in the update clause (e.g. `$p = $p->next()`, also on the
+    // `for` line) see the variables bound by the init clause and the loop
+    // body.  The increments run after the body, so `scope` here reflects
+    // both; recording before the post-loop merge keeps the in-loop types
+    // rather than the widened post-loop union.
+    if is_diagnostic_scope_active() {
+        for increment in for_stmt.increments.iter() {
+            record_scope_snapshot(increment.span().start.offset, scope);
         }
     }
 

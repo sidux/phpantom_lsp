@@ -2231,3 +2231,58 @@ class Controller {
         relevant.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ─── `for` loop init assignment is visible to condition/update clauses ───────
+
+/// A variable assigned in a `for` loop's init clause must be resolvable in the
+/// condition and update clauses on the same `for` line, not just the loop body.
+///
+/// Reproduces the pdepend false positive where
+/// `for ($p = $e->getPrevious(); $p; $p = $p->getPrevious())` flagged the
+/// update-clause `$p->getPrevious()` as "type could not be resolved" because
+/// no scope snapshot covered the `for` header expressions.
+#[test]
+fn for_loop_init_visible_to_update_clause() {
+    let php = r#"<?php
+class Node {
+    public function getParent(): ?Node { return null; }
+    public function name(): string { return ''; }
+}
+
+class Walker {
+    public function run(Node $start): void {
+        for ($current = $start->getParent(); $current; $current = $current->getParent()) {
+            echo $current->name();
+        }
+    }
+}
+"#;
+
+    let uri = "file:///test/for_update.php";
+    let backend = create_test_backend();
+    {
+        let mut cfg = backend.config();
+        cfg.diagnostics.unresolved_member_access = Some(true);
+        backend.set_config(cfg);
+    }
+    backend.update_ast(uri, php);
+
+    // Use the slow-diagnostics path so the forward walker's diagnostic
+    // scope cache is active — this is what `analyze` exercises.
+    let mut out = Vec::new();
+    backend.collect_slow_diagnostics(uri, php, &mut out);
+
+    let relevant: Vec<_> = out
+        .iter()
+        .filter(|d| {
+            d.code.as_ref().is_some_and(|c| {
+                matches!(c, NumberOrString::String(s) if s == "unknown_member" || s == "unresolved_member_access")
+            })
+        })
+        .collect();
+    assert!(
+        relevant.is_empty(),
+        "Should not flag member access in `for` header clauses, got: {:?}",
+        relevant.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

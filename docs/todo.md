@@ -27,7 +27,6 @@ within the same impact tier.
 | --- | --------------------------------------------------------------------------------------------------------------------- | ---------- | ------ |
 | B91 | [Narrowing guards don't apply to array-index subject expressions](todo/bugs.md#b91-narrowing-guards-do-not-apply-to-array-index-subject-expressions) | Medium | Medium |
 | B92 | [Assert narrowing can't override list-destructured variables with unresolvable RHS](todo/bugs.md#b92-assert-narrowing-cannot-override-variables-assigned-by-list-destructuring-from-an-unresolvable-rhs) | Medium | Low-Medium |
-| B93 | [`for`-init assignment invisible to the loop's condition/update clauses](todo/bugs.md#b93-a-for-loops-init-clause-assignment-is-invisible-to-the-condition-and-update-clauses) | Low | Low |
 | L18 | [`Storage::disk()` return type — resolve from config, don't guess](todo/laravel.md#l18-storagedisk-return-type-is-genuinely-polymorphic--resolve-from-config-dont-guess) | Medium-High | Low-Medium  |
 | L19 | [Redis client (phpredis/predis) — resolve from config, don't guess](todo/laravel.md#l19-redis-connection-client-is-chosen-by-config-phpredis-vs-predis--resolve-from-config-dont-guess) | Medium      | Low-Medium  |
 | X4  | [Full background indexing](todo/indexing.md#x4-full-background-indexing) (workspace symbols, fast find-references)                                              | Medium      | High        |

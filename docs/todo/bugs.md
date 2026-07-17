@@ -74,19 +74,3 @@ A plain assignment from the same unresolvable RHS
 cannot be resolved — leaves the variables in a state that later
 assert narrowing cannot override. Accounts for all 8 `getImage()`
 errors in PDepend's parser tests.
-
-## B93. A `for` loop's init-clause assignment is invisible to the condition and update clauses
-
-**Severity: Low (1 error, pdepend) · Reproduced with fixture**
-
-```php
-for ($previous = $e->getPrevious(); $previous; $previous = $previous->getPrevious()) {
-    echo $previous->getMessage(); // body resolves fine
-}
-// update clause: "type of '$previous' could not be resolved"
-```
-
-The loop body sees `$previous`, but the update expression on the
-`for` line itself does not, so the diagnostic fires on the `for`
-statement. Rewriting as a `while` loop resolves. PDepend
-`src/TextUI/Command.php:288`.
