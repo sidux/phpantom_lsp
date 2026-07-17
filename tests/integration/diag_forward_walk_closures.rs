@@ -476,3 +476,57 @@ function render(array $variables): string {
          should resolve to its pre-assignment `array` type, got: {type_errors:?}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Closure param with a declared union type must not collapse to one arm
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// When the subject is a union of differently-parameterized collections,
+/// the closure parameter's own declared union type must be preserved
+/// rather than collapsing to the first collection's element type.
+#[test]
+fn closure_param_declared_union_wins_over_inferred_element() {
+    let backend = create_test_backend();
+
+    let collection_uri = "file:///Collection.php";
+    let collection_text = r#"<?php
+/**
+ * @template TKey
+ * @template TValue
+ */
+class Collection {
+    /**
+     * @param callable(TValue): bool $callback
+     * @return static
+     */
+    public function filter(callable $callback): static { return $this; }
+}
+"#;
+    backend.update_ast(collection_uri, collection_text);
+
+    let support_uri = "file:///Support.php";
+    let support_text = r#"<?php
+class CanApply {}
+class ViewModel { public int $viewId = 0; }
+"#;
+    backend.update_ast(support_uri, support_text);
+
+    let service_uri = "file:///Service.php";
+    let service_text = r#"<?php
+class Service {
+    /** @param Collection<int, CanApply>|Collection<int, ViewModel>|Collection<int, \stdClass> $items */
+    public function probe(Collection $items): void
+    {
+        $items->filter(function (CanApply|ViewModel|\stdClass $item): bool {
+            return $item->viewId === 1;
+        });
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics_with_scope_cache(&backend, service_uri, service_text);
+    assert!(
+        diags.is_empty(),
+        "Expected no unknown_member diagnostics: the declared union param type \
+         (CanApply|ViewModel|stdClass) must be preserved, got: {diags:?}"
+    );
+}

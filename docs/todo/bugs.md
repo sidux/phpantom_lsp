@@ -90,27 +90,3 @@ The loop body sees `$previous`, but the update expression on the
 `for` line itself does not, so the diagnostic fires on the `for`
 statement. Rewriting as a `while` loop resolves. PDepend
 `src/TextUI/Command.php:288`.
-
-## B94. A closure parameter's declared union type is overridden by the inferred collection element type
-
-**Severity: Medium (~3 errors, luxplus-website) · Reproduced with fixture**
-
-```php
-/** @param Collection<int, CanApply>|Collection<int, ViewModel>|Collection<int, stdClass> $items */
-public function probe(Collection $items): void
-{
-    $items->filter(function (CanApply|ViewModel|stdClass $item): bool {
-        if (isset($item->salesCampaignGroupId)) {
-            return $item->salesCampaignGroupId === 1; // "Property ... not found on class 'CanApply'"
-        }
-        return false;
-    });
-}
-```
-
-When the subject is a union of differently-parameterized
-collections, the closure parameter collapses to the first union
-member's element type (`CanApply`), discarding the parameter's own
-declared union. A declared parameter type must win over (or at
-least union with) the inferred element type. Website
-`SalesCampaignGroupDiscountService.php`.

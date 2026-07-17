@@ -2404,6 +2404,22 @@ class ClosureParamInferenceDemo
         $holder = new ScaffoldingTemplateCallableHolder();
         array_any($holder->tools, fn($item) => $item->write() !== '');
     }
+
+    /**
+     * A declared closure-parameter union is preserved even when the
+     * subject is a union of differently parameterized collections.
+     *
+     * @param FluentCollection<int, Pen>|FluentCollection<int, Pencil> $tools
+     */
+    public function unionSubject(FluentCollection $tools): void
+    {
+        // $item resolves to the declared union Pen|Pencil, not just the
+        // first collection's element type (Pen).  label() exists on both,
+        // so it resolves; hover on $item shows Pen|Pencil.
+        $tools->each(function (Pen|Pencil $item): void {
+            $item->label();               // resolves on both union arms
+        });
+    }
 }
 
 

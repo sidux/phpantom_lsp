@@ -941,7 +941,18 @@ fn seed_closure_params(
                             ctx.all_classes,
                             ctx.class_loader,
                         );
-                    if !inferred_resolved.is_empty()
+                    // Narrow to the inferred type only when it is a
+                    // genuine refinement of the *whole* declared type:
+                    // every inferred class must be a subtype of some
+                    // declared class (inferred ⊆ declared), AND every
+                    // declared class must be refined by some inferred
+                    // class (declared covered by inferred).  Without the
+                    // second check a declared union like
+                    // `A|B|C` collapses to a single inferred arm (`A`)
+                    // when the subject is a union of differently
+                    // parameterized collections, discarding the other
+                    // declared possibilities.
+                    let inferred_is_subtype = !inferred_resolved.is_empty()
                         && inferred_resolved.iter().all(|inferred_cls| {
                             resolved.iter().any(|explicit_cls| {
                                 crate::util::is_subtype_of_names(
@@ -950,8 +961,17 @@ fn seed_closure_params(
                                     ctx.class_loader,
                                 )
                             })
+                        });
+                    let inferred_covers_declared = resolved.iter().all(|explicit_cls| {
+                        inferred_resolved.iter().any(|inferred_cls| {
+                            crate::util::is_subtype_of_names(
+                                &inferred_cls.fqn(),
+                                &explicit_cls.fqn(),
+                                ctx.class_loader,
+                            )
                         })
-                    {
+                    });
+                    if inferred_is_subtype && inferred_covers_declared {
                         ResolvedType::from_classes_with_hint(inferred_resolved, inferred.clone())
                     } else {
                         ResolvedType::from_classes_with_hint(resolved, eff.clone())
