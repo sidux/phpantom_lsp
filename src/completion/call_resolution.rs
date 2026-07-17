@@ -2358,6 +2358,12 @@ impl Backend {
 
         let mut subs = HashMap::new();
 
+        // Bind the raw source-order argument texts to parameters by PHP's
+        // rules so a named argument (`id: Foo::class`) is routed to the
+        // parameter it targets rather than its ordinal slot, and its `name:`
+        // prefix is stripped off the value.
+        let bound = crate::call_args::bind_text_args_to_params(&method.parameters, arg_texts);
+
         for (tpl_name, param_name) in &method.template_bindings {
             // Find the parameter index for this binding.
             let param_idx = match method
@@ -2379,8 +2385,8 @@ impl Backend {
             let binding_mode = classify_template_binding(tpl_name, param_hint);
 
             // Get the corresponding argument text.
-            let arg_text = match arg_texts.get(param_idx) {
-                Some(text) => text.trim(),
+            let arg_text = match bound.get(param_idx).and_then(|o| o.as_deref()) {
+                Some(text) => text,
                 None => {
                     let default_value = method
                         .parameters

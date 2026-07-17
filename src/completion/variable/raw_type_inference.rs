@@ -343,16 +343,29 @@ pub(in crate::completion) fn extract_arg_texts_from_ast(
         .arguments
         .iter()
         .map(|arg| {
-            let span = match arg {
+            let value_span = match arg {
                 mago_syntax::ast::argument::Argument::Positional(pos) => pos.value.span(),
                 mago_syntax::ast::argument::Argument::Named(named) => named.value.span(),
             };
-            let start = span.start.offset as usize;
-            let end = span.end.offset as usize;
-            if end <= content.len() {
-                content[start..end].to_string()
+            let start = value_span.start.offset as usize;
+            let end = value_span.end.offset as usize;
+            let value = if end <= content.len() {
+                &content[start..end]
             } else {
-                String::new()
+                ""
+            };
+            // Preserve the `name:` prefix for named arguments so that
+            // downstream argument binding (`bind_text_args_to_params`) can
+            // route them to the parameter they target rather than their
+            // source-order slot. Without it, `f(b: 1, a: 2)` would bind `a`
+            // to the value `1` and misresolve conditional return types and
+            // template parameters that key on `a`.
+            match arg {
+                mago_syntax::ast::argument::Argument::Named(named) => {
+                    let name = crate::atom::bytes_to_str(named.name.value);
+                    format!("{name}: {value}")
+                }
+                mago_syntax::ast::argument::Argument::Positional(_) => value.to_string(),
             }
         })
         .collect()

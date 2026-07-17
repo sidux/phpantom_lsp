@@ -1211,6 +1211,13 @@ fn build_constructor_template_subs(
 ) -> HashMap<String, PhpType> {
     let mut subs = HashMap::new();
 
+    // Bind the raw source-order argument texts to parameters by PHP's rules
+    // so a named argument (`id: Foo::class`) is routed to the parameter it
+    // targets rather than its ordinal slot, and its `name:` prefix is
+    // stripped off the value.
+    let arg_refs: Vec<&str> = arg_texts.iter().map(|s| s.as_str()).collect();
+    let bound = crate::call_args::bind_text_args_to_params(&ctor.parameters, &arg_refs);
+
     for (tpl_name, param_name) in &ctor.template_bindings {
         // Find the parameter index for this binding.
         let param_idx = match ctor
@@ -1223,7 +1230,7 @@ fn build_constructor_template_subs(
         };
 
         // Get the corresponding argument text.
-        let provided_arg = arg_texts.get(param_idx).map(|t| t.trim());
+        let provided_arg = bound.get(param_idx).and_then(|o| o.as_deref());
 
         // Determine the binding mode by inspecting the parameter's
         // docblock type hint.  The type hint tells us how the template
@@ -2086,6 +2093,13 @@ pub(crate) fn build_function_template_subs(
 ) -> HashMap<String, PhpType> {
     let mut subs = HashMap::new();
 
+    // Bind the raw source-order argument texts to parameters by PHP's rules
+    // so a named argument (`id: Foo::class`) is routed to the parameter it
+    // targets rather than its ordinal slot, and its `name:` prefix is
+    // stripped off the value.
+    let arg_refs: Vec<&str> = arg_texts.iter().map(|s| s.as_str()).collect();
+    let bound = crate::call_args::bind_text_args_to_params(&func_info.parameters, &arg_refs);
+
     for (tpl_name, param_name) in &func_info.template_bindings {
         let param_idx = match func_info
             .parameters
@@ -2096,7 +2110,7 @@ pub(crate) fn build_function_template_subs(
             None => continue,
         };
 
-        let provided_arg = arg_texts.get(param_idx).map(|t| t.trim());
+        let provided_arg = bound.get(param_idx).and_then(|o| o.as_deref());
 
         // Determine the binding mode by inspecting the parameter's
         // docblock type hint.  The type hint tells us how the template

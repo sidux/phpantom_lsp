@@ -1712,19 +1712,26 @@ mod tests {
 
     #[test]
     fn class_const_condition_unlisted_mode_falls_through() {
-        // A mode with no dedicated branch reaches the `mixed` else branch,
-        // which is uninformative and therefore yields no resolved type.
-        assert_eq!(resolve_fetch("\\PDO::FETCH_COLUMN"), None);
+        // A mode with no dedicated branch reaches the `mixed` else branch.
+        // `mixed` is informative (a value of unknown type), so it flows
+        // through rather than yielding no resolved type.
+        assert_eq!(
+            resolve_fetch("\\PDO::FETCH_COLUMN").as_deref(),
+            Some("mixed")
+        );
     }
 
     #[test]
     fn class_const_condition_requires_matching_class() {
         // The same constant name on a different class must not match the
         // `PDO::FETCH_OBJ` branch — it falls through past every PDO branch to
-        // the `mixed` else, yielding no resolved type.
-        assert_eq!(resolve_fetch("Other::FETCH_OBJ"), None);
+        // the `mixed` else, which flows through as `mixed`.
+        assert_eq!(resolve_fetch("Other::FETCH_OBJ").as_deref(), Some("mixed"));
         // A different class whose constant matches an inner branch also fails.
-        assert_eq!(resolve_fetch("Other::FETCH_ASSOC"), None);
+        assert_eq!(
+            resolve_fetch("Other::FETCH_ASSOC").as_deref(),
+            Some("mixed")
+        );
     }
 
     #[test]

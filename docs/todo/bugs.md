@@ -240,39 +240,3 @@ type. Also swallows the docblock when it refines a native
 return \response()->json([...]); // "type of '\response()' could not be resolved"
 return response()->json([...]);  // works
 ```
-
-## B101. A conditional return type whose selected branch is `mixed` resolves to nothing
-
-**Severity: Medium (1 error, luxplus-backoffice) · Reproduced with fixture**
-
-```php
-/** @return ($key is string ? mixed : null) */
-function session(?string $key = null) { return null; }
-
-$file = session('file');            // should be `mixed`, resolves to no type
-if (!is_string($file)) { $file = null; }
-if ($file) {
-    explode('/', $file);            // "Argument 2 ($string) expects string, got null"
-}
-```
-
-When a conditional return type (e.g. Laravel's `session($key)`
-returning `($key is string ? mixed : null)`) selects a branch whose
-type is `mixed`, the resolver treats `mixed` as uninformative and
-returns no type at all instead of `mixed`. The variable is then
-untyped, so downstream narrowing (`is_string`, `instanceof`, …) has
-nothing to refine: after the `is_string` guard reassigns `null` on
-the failing path, the fall-through `string` contribution never
-materialises and `$file` reads as literal `null` inside the truthy
-branch.
-
-The fix is to flow `mixed` through as a resolved type (only `void`
-and `never` genuinely carry no value). A first attempt at this in
-the conditional resolver's leaf handling regressed
-`conditional_return_type_named_arg`: a `class-string<T>` condition
-passed an out-of-order named argument currently falls through to the
-`mixed` else branch and relied on the previous `mixed → None`
-behaviour to trigger a template-substitution fallback that recovered
-the correct `T` type. That named-argument path must be fixed to take
-the then-branch directly before `mixed` can safely flow through.
-Backoffice `InvoiceAnalyzerController.php:57`.

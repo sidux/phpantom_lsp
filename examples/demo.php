@@ -769,6 +769,20 @@ class ConditionalReturnDemo
         $mapper = new TreeMapperImpl();
         $result = $mapper->map('foo', 'bar');
         $result->write();                         // "foo" → Pen (literal string match)
+
+        // Out-of-order named arguments bind to the parameter they name, so
+        // the conditional keys on `$signature` ("foo") regardless of the
+        // order the arguments appear in the call.
+        $named = $mapper->map(source: 'bar', signature: 'foo');
+        $named->write();                          // named "foo" → Pen
+
+        // A conditional branch selecting `mixed` flows `mixed` through as a
+        // real type, so the value stays usable (and narrowable) instead of
+        // becoming untyped.
+        $unknown = sessionValue('file');          // ($key is string ? mixed : null) → mixed
+        if (is_string($unknown)) {
+            strtoupper($unknown);                 // narrowed from mixed to string
+        }
     }
 }
 
@@ -5812,6 +5826,18 @@ function app(?string $abstract = null): mixed
     return $abstract !== null ? $container->make($abstract) : $container;
 }
 
+/**
+ * A conditional return type whose non-null branch is `mixed`. When `$key`
+ * is a string, the value is of unknown type (`mixed`); otherwise it is
+ * `null`. Mirrors Laravel's `session($key)` helper.
+ *
+ * @return ($key is string ? mixed : null)
+ */
+function sessionValue(?string $key = null)
+{
+    return $key !== null ? 'value' : null;
+}
+
 function createUser(string $name, string $email): User
 {
     return new User($name, $email);
@@ -6505,6 +6531,16 @@ function runDemoAssertions(): void
 
     $appSelf = app();
     assert($appSelf instanceof Container, 'app() with no args must return Container');
+
+    // ── Named-argument conditional return type ──────────────────────────
+    $mapper = new TreeMapperImpl();
+    $named = $mapper->map(source: 'bar', signature: 'foo');
+    assert($named instanceof Pen, 'out-of-order named args bind $signature="foo" → Pen');
+
+    // ── Conditional branch selecting `mixed` flows through ──────────────
+    $unknown = sessionValue('file');
+    assert(is_string($unknown), 'sessionValue("file") returns a mixed value narrowable to string');
+    assert(sessionValue() === null, 'sessionValue() with no args returns null');
 
     // ── Closure / arrow function return types ───────────────────────────
     $makePenClosure = function(): Pen { return new Pen(); };
