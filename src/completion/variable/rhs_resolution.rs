@@ -3387,10 +3387,23 @@ fn resolve_rhs_method_call_inner<'b>(
                     &tpl,
                 )
                 .map(|resolved| {
-                    if template_subs.is_empty() {
+                    let substituted = if template_subs.is_empty() {
                         resolved
                     } else {
                         resolved.substitute(&template_subs)
+                    };
+                    // Replace `static`/`self`/`$this` in the resolved branch
+                    // just as the native return-type path does, so a branch
+                    // like `static<int, static<int, TValue>>` becomes
+                    // `Collection<int, Collection<int, string>>` instead of
+                    // carrying the unresolvable `static` keyword downstream.
+                    if substituted.contains_self_ref() {
+                        match receiver_type_for_owner(&receiver_resolved, &owner.name) {
+                            Some(rt) => substituted.replace_self_with_type(&rt),
+                            None => substituted.replace_self(&owner.fqn()),
+                        }
+                    } else {
+                        substituted
                     }
                 })
                 .or(ret_type_string)
@@ -3436,18 +3449,20 @@ fn resolve_rhs_method_call_inner<'b>(
         );
         if !results.is_empty() {
             let classes: Vec<Arc<ClassInfo>> = results;
-            // When the method has a conditional return type, the
-            // resolved classes came from evaluating the conditional
-            // (e.g. `$type is class-string<T> ? T : mixed` resolved
-            // to the concrete class).  In that case, using the
-            // method's declared return type (typically `mixed`) as
-            // the type hint would be misleading.  Skip it so that
-            // `from_classes` uses the resolved class names instead.
+            // When the method has a conditional return type,
+            // `ret_type_string` already holds the branch resolved
+            // against the call-site arguments (generics and self/static
+            // substituted), so it is the correct hint — not the
+            // declared return type.  Keep it so generic arguments like
+            // `Collection<int, Collection<int, string>>` survive; drop
+            // it only when the resolved branch is uninformative (e.g. a
+            // bare `mixed` else-branch), letting the resolved class
+            // names speak for themselves.
             let has_conditional = merged
                 .get_method_ci(&method_name)
                 .is_some_and(|m| m.conditional_return.is_some());
             let effective_hint = if has_conditional {
-                None
+                ret_type_string.filter(|t| !t.is_uninformative_return())
             } else {
                 ret_type_string
             };
@@ -3908,10 +3923,18 @@ fn resolve_rhs_static_call(
                         &tpl,
                     )
                     .map(|resolved| {
-                        if template_subs.is_empty() {
+                        let substituted = if template_subs.is_empty() {
                             resolved
                         } else {
                             resolved.substitute(&template_subs)
+                        };
+                        // Replace `static`/`self`/`$this` in the resolved
+                        // branch just as the native return-type path does,
+                        // so generic branches keep a resolvable base class.
+                        if substituted.contains_self_ref() {
+                            substituted.replace_self(&owner.fqn())
+                        } else {
+                            substituted
                         }
                     })
                     .or(ret_type_string)
@@ -3954,15 +3977,15 @@ fn resolve_rhs_static_call(
             );
             if !results.is_empty() {
                 let classes: Vec<Arc<ClassInfo>> = results;
-                // When the method has a conditional return type, the
-                // resolved classes came from evaluating the conditional.
-                // Using the method's declared return type (typically
-                // `mixed`) as the type hint would be misleading.
+                // `ret_type_string` already holds the conditional branch
+                // resolved against the call-site arguments (with generics
+                // and self/static substituted), so it is the correct hint.
+                // Drop it only when the resolved branch is uninformative.
                 let has_conditional = merged
                     .get_method_ci(&method_name)
                     .is_some_and(|m| m.conditional_return.is_some());
                 let effective_hint = if has_conditional {
-                    None
+                    ret_type_string.filter(|t| !t.is_uninformative_return())
                 } else {
                     ret_type_string
                 };

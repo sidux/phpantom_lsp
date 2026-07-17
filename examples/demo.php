@@ -1343,6 +1343,16 @@ class CollectionForeachDemo
         foreach ($collection as $pen) {
             $pen->write();                // via variable assignment scanning
         }
+
+        // Conditional @return with nested static<...> generic branches
+        // (Laravel's Collection::chunk shape). Chunking yields a
+        // collection of collections, so each iterated batch is itself a
+        // collection whose elements are the original element type.
+        /** @var TypedCollection<int, Pen> $pens */
+        $pens = new TypedCollection();
+        foreach ($pens->chunk(1) as $batch) {
+            $batch->first()->color();     // $batch → TypedCollection<int, Pen>, first() → Pen
+        }
     }
 }
 
@@ -5406,6 +5416,22 @@ class TypedCollection
 
     /** @return array<TKey, TValue> */
     public function all(): array { return $this->items; }
+
+    /**
+     * Conditional @return whose branches are `static<...>` generics
+     * (Laravel's `Collection::chunk()` shape). Chunking produces a
+     * collection of collections, so the wrapped generic arguments must
+     * survive the conditional to keep the inner element type resolvable.
+     *
+     * @return ($preserveKeys is true
+     *     ? static<int, static>
+     *     : static<int, static<int, TValue>>)
+     */
+    public function chunk(int $size, bool $preserveKeys = true): static
+    {
+        $chunks = array_chunk($this->items, $size, $preserveKeys);
+        return new static(array_map(fn(array $c): static => new static($c), $chunks));
+    }
 }
 
 /** @extends TypedCollection<int, Pen> */
@@ -6191,6 +6217,15 @@ function runDemoAssertions(): void
 
     $genericAccess = new ScaffoldingGenericArrayAccess([new Pen()]);
     assert($genericAccess[0] instanceof Pen, 'ArrayAccess<int, T>[0] must resolve T bound to Pen');
+
+    // ── Conditional @return with nested static<...> generic branches ────
+    /** @var TypedCollection<int, Pen> $penItems */
+    $penItems = new TypedCollection([new Pen()]);
+    $penBatches = $penItems->chunk(1);
+    assert(
+        $penBatches->first()->first() instanceof Pen,
+        'Collection::chunk() conditional return keeps the nested collection element type'
+    );
 
     // ── Fluent Model chains (static return) ─────────────────────────────
     $userObj = new User('Bob', 'bob@example.com');

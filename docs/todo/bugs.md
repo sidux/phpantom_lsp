@@ -269,23 +269,3 @@ narrowing to literal `null` inside a branch that proves the
 variable truthy. Both simple-fixture equivalents with fully-known
 initial types work. Backoffice `AuditViewModel.php:54`,
 `InvoiceAnalyzerController.php:57`.
-
-## B102. Conditional return types with `static<...>` generic branches do not resolve
-
-**Severity: Medium (1 error, luxplus-backoffice) · Reproduced with fixture**
-
-```php
-/** @return ($preserveKeys is true ? static<int, static> : static<int, static<int, TValue>>) */
-public function chunk($size, $preserveKeys = true) {}
-
-foreach ($tokens->chunk(500) as $batch) {
-    $batch->values(); // "type of '$batch' could not be resolved"
-}
-```
-
-The same nested-`static` return type without the conditional wrapper
-(`@return static<int, static>`) resolves fine; wrapping it in a
-conditional breaks it whether the condition parameter is omitted
-(default) or passed explicitly. This is Laravel's actual
-`Collection::chunk()` docblock, so every `chunk()` call in a Laravel
-project hits it. Backoffice `PushNotificationService.php:60`.
