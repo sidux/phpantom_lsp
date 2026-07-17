@@ -1383,11 +1383,17 @@ pub fn should_override_type_typed(docblock_type: &PhpType, native_type: &PhpType
     }
 
     // If the native type is a union or intersection, check each component.
-    // If ALL parts are scalar, the docblock can't override.
-    // If ANY part is non-scalar, it's plausible to refine.
+    // A member is refinable when it is non-scalar (a class the docblock can
+    // parameterise) or a broad container (`array`, `iterable`, `callable`)
+    // that a docblock commonly refines. `is_scalar()` counts bare `array`
+    // as scalar, so without the container check a native union like
+    // `array|false` would wrongly reject a `array<int, User>|false` docblock
+    // and drop the element type.
     match native_inner {
         PhpType::Union(members) | PhpType::Intersection(members) => {
-            return members.iter().any(|m| !m.is_scalar());
+            return members.iter().any(|m| {
+                !m.is_scalar() || m.is_bare_array() || m.is_iterable() || m.is_callable()
+            });
         }
         _ => {}
     }

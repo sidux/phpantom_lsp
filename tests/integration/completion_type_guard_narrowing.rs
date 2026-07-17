@@ -637,3 +637,77 @@ async fn test_guard_reassignment_keeps_narrowed_fallthrough_class() {
         "After the guard reassignment, `$type` should be `Country`; got: {methods:?}",
     );
 }
+
+// ── array<T>|false union keeps element type after narrowing ──────────────
+
+#[tokio::test]
+async fn test_array_false_union_keeps_element_after_is_array_guard() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///array_false_is_array.php").unwrap();
+    // A native `array|false` return refined by a `array<int, self>|false`
+    // docblock. After `if (!is_array(...)) return;` the element type must
+    // survive so the foreach value resolves to the class.
+    let text = concat!(
+        "<?php\n",
+        "class Col {\n",
+        "    public function value(): int { return 0; }\n",
+        "    /** @return array<int, self>|false */\n",
+        "    public static function getColumns(bool $x): array|false { return false; }\n",
+        "}\n",
+        "class Svc {\n",
+        "    public function run(bool $x): void {\n",
+        "        $columns = Col::getColumns($x);\n",
+        "        if (!is_array($columns)) {\n",
+        "            return;\n",
+        "        }\n",
+        "        foreach ($columns as $column) {\n",
+        "            $column->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 13, 21).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"value"),
+        "After !is_array() guard on array<int, self>|false, foreach element should be Col; got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_array_false_union_keeps_element_after_false_check() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///array_false_eqeq.php").unwrap();
+    // Same as above, but guarding with `=== false` instead of `is_array`.
+    let text = concat!(
+        "<?php\n",
+        "class Col {\n",
+        "    public function value(): int { return 0; }\n",
+        "    /** @return array<int, self>|false */\n",
+        "    public static function getColumns(bool $x): array|false { return false; }\n",
+        "}\n",
+        "class Svc {\n",
+        "    public function run(bool $x): void {\n",
+        "        $columns = Col::getColumns($x);\n",
+        "        if ($columns === false) {\n",
+        "            return;\n",
+        "        }\n",
+        "        foreach ($columns as $column) {\n",
+        "            $column->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 13, 21).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"value"),
+        "After `=== false` guard on array<int, self>|false, foreach element should be Col; got: {:?}",
+        methods
+    );
+}

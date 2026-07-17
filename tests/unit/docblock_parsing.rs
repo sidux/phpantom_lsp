@@ -776,6 +776,27 @@ fn override_nullable_array_with_class() {
 }
 
 #[test]
+fn override_array_false_union_with_generic() {
+    // Native `array|false` refined by `array<int, User>|false`. The bare
+    // `array` member is a broad container the docblock refines, so the
+    // whole union must override (keeping the element type). `false` is not
+    // stripped by nullable-unwrapping the way `null` is, so this exercises
+    // the union branch directly.
+    assert!(should_override_type_typed(
+        &PhpType::parse("array<int, User>|false"),
+        &PhpType::parse("array|false")
+    ));
+    assert_eq!(
+        resolve_effective_type_typed(
+            Some(&PhpType::parse("array|false")),
+            Some(&PhpType::parse("array<int, User>|false"))
+        )
+        .map(|t| t.to_string()),
+        Some("array<int, User>|false".to_string())
+    );
+}
+
+#[test]
 fn no_override_array_with_scalar_docblock() {
     // A plain scalar docblock (no generics) should not override.
     assert!(!should_override_type_typed(

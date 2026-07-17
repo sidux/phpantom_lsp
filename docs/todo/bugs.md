@@ -211,23 +211,3 @@ scheduling) changes resolution results. Points at shared state
 anti-patterns #4/#5 in `AGENTS.md`) leaking between files in the
 parallel analyze pipeline. Also makes the analyze-triage error
 counts themselves unstable by a few errors between runs.
-
-## B99. An `array<T>|false` union loses the array's element type
-
-**Severity: Medium (2 errors, luxplus-backoffice) · Reproduced with fixture**
-
-```php
-/** @return array<int, self>|false */
-public static function getColumns(bool $x): array|false {}
-
-$columns = Col::getColumns($x);
-if (!is_array($columns)) { return; }   // === false check fails the same way
-foreach ($columns as $column) {
-    echo $column->value; // "type of '$column' could not be resolved"
-}
-```
-
-The nullable equivalent (`array<int, self>|null` with a `!$columns`
-guard) resolves fine; only the `|false` union drops the element
-type. Also swallows the docblock when it refines a native
-`array|false` return. Backoffice `ProductPriceSheetService.php`.

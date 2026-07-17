@@ -403,6 +403,30 @@ class TypeGuardNarrowingDemo
         $settings->cache = new \stdClass();       // $settings->cache : stdClass
         $settings->cache->ttl = 3600;             // no diagnostic on ->ttl
     }
+
+    /**
+     * An `array<T>|false` return keeps its element type after the false
+     * check, so the surviving array still iterates to the element type.
+     */
+    public function falseUnion(): void
+    {
+        $pens = loadPensOrFail();                  // array<int, Pen>|false
+        if (!is_array($pens)) {
+            return;
+        }
+        foreach ($pens as $pen) {
+            $pen->write();                        // array<int, Pen> → Pen
+        }
+
+        // The `=== false` guard narrows the same way.
+        $more = loadPensOrFail();                  // array<int, Pen>|false
+        if ($more === false) {
+            return;
+        }
+        foreach ($more as $pen) {
+            $pen->write();                        // array<int, Pen> → Pen
+        }
+    }
 }
 
 
@@ -5881,6 +5905,12 @@ function pickRockOrBanana(): Rock|Banana
     return new Rock();
 }
 
+/** @return array<int, Pen>|false */
+function loadPensOrFail(): array|false
+{
+    return [new Pen()];
+}
+
 /** @phpstan-assert Rock $value */
 function assertRock(mixed $value): void
 {
@@ -6177,6 +6207,10 @@ function runDemoAssertions(): void
     $withDetail->$field = 'context';
     assert($memberDemo->guardClause($withDetail) === 'context', 'negated property_exists guard clause reads the property after it');
     assert($memberDemo->guardClause(new ApiResponse()) === 'none', 'guard clause returns early when the property is absent');
+
+    // ── array<T>|false keeps its element type after a false check ────────
+    $pens = loadPensOrFail();
+    assert($pens !== false && $pens[0] instanceof Pen, 'loadPensOrFail() returns array<int, Pen> on success');
 
     // ── @phpstan-require-extends base members on $this ──────────────────
     $consumer = new RequireExtendsConsumer();
