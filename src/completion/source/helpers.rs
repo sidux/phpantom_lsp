@@ -683,6 +683,24 @@ pub(in crate::completion) fn extract_closure_param_type_from_text(
     text: &str,
     position: usize,
 ) -> Option<PhpType> {
+    extract_closure_params_from_text(text)?
+        .into_iter()
+        .nth(position)?
+        .1
+}
+
+/// Extract the parameter list of a closure or arrow-function literal as
+/// `(name, type)` pairs, in declaration order.
+///
+/// Given `fn(Decimal $carry, $op) => ...`, returns
+/// `[("$carry", Some(Decimal)), ("$op", None)]`.  The name includes the
+/// leading `$` so entries can be matched against variable lookups
+/// directly.  Untyped parameters carry `None` as their type.
+///
+/// Returns `None` when the text is not a closure/arrow-function literal.
+pub(in crate::completion) fn extract_closure_params_from_text(
+    text: &str,
+) -> Option<Vec<(String, Option<PhpType>)>> {
     let trimmed = text.trim();
 
     let is_arrow = trimmed.starts_with("fn")
@@ -721,43 +739,52 @@ pub(in crate::completion) fn extract_closure_param_type_from_text(
     // Extract the parameter list text between the parens.
     let params_text = trimmed.get(paren_open + 1..paren_close)?.trim();
     if params_text.is_empty() {
-        return None;
+        return Some(vec![]);
     }
 
     // Split by commas at depth 0 (respecting nested parens/generics).
-    let params = split_params_at_depth_zero(params_text);
-    let param = params.get(position)?;
-    let param = param.trim();
-    if param.is_empty() {
-        return None;
+    let mut result = Vec::new();
+    for param in split_params_at_depth_zero(params_text) {
+        let param = param.trim();
+        if param.is_empty() {
+            continue;
+        }
+
+        // A typed parameter looks like `TypeHint $name` or `?TypeHint $name`
+        // or `TypeHint &$name` or `TypeHint ...$name`, optionally followed
+        // by `= default`.  An untyped parameter is just `$name` (with the
+        // same `&`/`...` and default variations).
+
+        // The first `$` starts the variable name (a default value may
+        // contain further `$`s, which come after the name).
+        let Some(dollar) = param.find('$') else {
+            continue;
+        };
+        let name: String = param[dollar..]
+            .chars()
+            .take_while(|c| *c == '$' || c.is_alphanumeric() || *c == '_')
+            .collect();
+        if name.len() <= 1 {
+            continue;
+        }
+
+        let before_dollar = param[..dollar].trim_end();
+        // Strip trailing `&` or `...` (pass-by-reference or variadic).
+        let before_dollar = before_dollar
+            .strip_suffix("...")
+            .or_else(|| before_dollar.strip_suffix('&'))
+            .unwrap_or(before_dollar)
+            .trim_end();
+
+        let ty = if before_dollar.is_empty() {
+            None
+        } else {
+            Some(PhpType::parse(before_dollar))
+        };
+        result.push((name, ty));
     }
 
-    // A typed parameter looks like `TypeHint $name` or `?TypeHint $name`
-    // or `TypeHint &$name` or `TypeHint ...$name`.
-    // An untyped parameter is just `$name` or `&$name` or `...$name`.
-    // We need to find the type hint, which is everything before the `$`
-    // (or `&$` or `...$`).
-
-    // Find the `$` that starts the variable name.
-    let dollar = param.rfind('$')?;
-    if dollar == 0 {
-        // No type hint — the parameter is untyped.
-        return None;
-    }
-
-    let before_dollar = param[..dollar].trim_end();
-    // Strip trailing `&` or `...` (pass-by-reference or variadic).
-    let before_dollar = before_dollar
-        .strip_suffix("...")
-        .or_else(|| before_dollar.strip_suffix('&'))
-        .unwrap_or(before_dollar)
-        .trim_end();
-
-    if before_dollar.is_empty() {
-        return None;
-    }
-
-    Some(PhpType::parse(before_dollar))
+    Some(result)
 }
 
 /// Split a parameter list string by commas at depth zero, respecting

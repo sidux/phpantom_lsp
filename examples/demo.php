@@ -918,6 +918,15 @@ class ClosureReturnTemplateDemo
         // The template inference must survive the symbol-map subject text serialization.
         $pencils->reduce(fn(Pen $carry, Pencil $item): Pen => $carry, new Pen('starter'))->write();
 
+        // Closure with NO return-type annotation: the return type is
+        // inferred from the body expression, resolving `$carry` from the
+        // closure's own typed parameter (`$carry->rename(...)` → Pen).
+        $inferred = $pencils->reduce(
+            fn(Pen $carry, $item) => $carry->rename('merged'),
+            new Pen('starter')
+        );
+        $inferred->write();     // TReduceReturnType = Pen (from the body)
+
         // @template T bound from a `@param \Closure(): T` callback, where the
         // closure has NO return-type annotation. The return type is inferred
         // from the closure body (like Laravel's Cache::remember).
@@ -6467,6 +6476,14 @@ function runDemoAssertions(): void
     // Chained call: reduce() result used directly without intermediate variable.
     $chainedWrite = $reducible->reduce(fn(Pen $carry, Pencil $item): Pen => $carry, new Pen('starter'))->write();
     assert(is_string($chainedWrite), 'reduce()->write() chained must return string (Pen::write() return type)');
+
+    // Unannotated closure: the return type follows from the body expression
+    // resolved through the closure's own typed parameter.
+    $inferredReduce = $reducible->reduce(
+        fn(Pen $carry, $item) => $carry->rename('merged'),
+        new Pen('starter')
+    );
+    assert($inferredReduce instanceof Pen, 'reduce(fn(Pen $carry, $item) => $carry->rename(...)) must return Pen (inferred from body)');
 
     // ── ScaffoldingClosureCache::remember() — unannotated closure body ──
     $cache = new ScaffoldingClosureCache();

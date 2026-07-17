@@ -3017,9 +3017,103 @@ impl Backend {
         super::source::helpers::extract_closure_return_type_from_text(arg_text)
             .or_else(|| super::source::helpers::infer_generator_type_from_closure_yields(arg_text))
             .or_else(|| {
-                super::source::helpers::extract_closure_body_expr_text(arg_text)
-                    .and_then(|body| Self::resolve_arg_text_to_type(body, ctx))
+                let body = super::source::helpers::extract_closure_body_expr_text(arg_text)?;
+                Self::resolve_closure_body_type(arg_text, body, ctx)
             })
+    }
+
+    /// Resolve an unannotated closure's body expression to a type,
+    /// seeding the closure's own typed parameters into variable
+    /// resolution.
+    ///
+    /// A body expression rooted at a closure parameter (e.g.
+    /// `fn(Decimal $carry, $op) => $carry->add(...)`) cannot resolve
+    /// through outer-scope assignment scanning because the parameter is
+    /// declared in the closure's own signature.  This injects a
+    /// `scope_var_resolver` that answers parameter lookups from the
+    /// declared type hints and delegates everything else to the
+    /// resolution the body would otherwise get (the outer scope
+    /// resolver when present, assignment scanning otherwise).
+    fn resolve_closure_body_type(
+        closure_text: &str,
+        body: &str,
+        ctx: &ResolutionCtx<'_>,
+    ) -> Option<PhpType> {
+        let typed_params: Vec<(String, PhpType)> =
+            super::source::helpers::extract_closure_params_from_text(closure_text)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(name, ty)| ty.map(|t| (name, t)))
+                .collect();
+        if typed_params.is_empty() {
+            return Self::resolve_arg_text_to_type(body, ctx);
+        }
+
+        // Pre-resolve each typed parameter to its classes so the
+        // injected resolver is a cheap map lookup.
+        let owning_class_name = ctx.current_class.map(|c| c.name.as_str()).unwrap_or("");
+        let param_types: HashMap<String, Vec<ResolvedType>> = typed_params
+            .into_iter()
+            .map(|(name, ty)| {
+                let classes = crate::completion::type_resolution::type_hint_to_classes_typed(
+                    &ty,
+                    owning_class_name,
+                    ctx.all_classes,
+                    ctx.class_loader,
+                );
+                let resolved = if classes.is_empty() {
+                    vec![ResolvedType::from_type_string(ty)]
+                } else {
+                    ResolvedType::from_classes_with_hint(classes, ty)
+                };
+                (name, resolved)
+            })
+            .collect();
+
+        let outer_resolver = ctx.scope_var_resolver;
+        let param_aware_resolver = move |name: &str| -> Vec<ResolvedType> {
+            if let Some(types) = param_types.get(name) {
+                return types.clone();
+            }
+            match outer_resolver {
+                Some(outer) => outer(name),
+                // No outer scope resolver: replicate the assignment-scan
+                // fallback the body resolution would otherwise take for
+                // this variable (see `resolve_variable_fallback`).
+                None => {
+                    let dummy_class;
+                    let effective_class = match ctx.current_class {
+                        Some(cc) => cc,
+                        None => {
+                            dummy_class = ClassInfo::default();
+                            &dummy_class
+                        }
+                    };
+                    crate::completion::variable::resolution::resolve_variable_types(
+                        name,
+                        effective_class,
+                        ctx.all_classes,
+                        ctx.content,
+                        ctx.cursor_offset,
+                        ctx.class_loader,
+                        Loaders::with_function(ctx.function_loader),
+                    )
+                }
+            }
+        };
+
+        let param_ctx = ResolutionCtx {
+            current_class: ctx.current_class,
+            all_classes: ctx.all_classes,
+            content: ctx.content,
+            cursor_offset: ctx.cursor_offset,
+            class_loader: ctx.class_loader,
+            resolved_class_cache: ctx.resolved_class_cache,
+            function_loader: ctx.function_loader,
+            scope_var_resolver: Some(&param_aware_resolver),
+            is_in_static_method: ctx.is_in_static_method,
+        };
+        Self::resolve_arg_text_to_type(body, &param_ctx)
     }
 }
 
