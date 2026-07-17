@@ -730,3 +730,114 @@ class Consumer {
         "unrelated project files should not seed macro discovery, got: {names:?}"
     );
 }
+
+#[tokio::test]
+async fn editing_provider_to_reference_new_helper_rebuilds_the_index() {
+    let composer_json = r#"{
+        "require": { "laravel/framework": "^11.0" },
+        "autoload": {
+            "psr-4": {
+                "App\\": "src/",
+                "Illuminate\\Support\\": "vendor/illuminate/Support/"
+            }
+        }
+    }"#;
+    let provider_before = "\
+<?php
+namespace App\\Providers;
+class AppServiceProvider {
+    public function boot(): void {
+    }
+}
+";
+    let provider_after = "\
+<?php
+namespace App\\Providers;
+use App\\Macros\\CollectionMacros;
+class AppServiceProvider {
+    public function boot(): void {
+        CollectionMacros::boot();
+    }
+}
+";
+    let helper = "\
+<?php
+namespace App\\Macros;
+use Illuminate\\Support\\Collection;
+class CollectionMacros {
+    public static function boot(): void {
+        Collection::macro('lateSum', function (string $field): float {
+            return 0.0;
+        });
+    }
+}
+";
+    let consumer = "\
+<?php
+namespace App;
+use Illuminate\\Support\\Collection;
+class Consumer {
+    public function go(Collection $c): void {
+        $c->
+    }
+}
+";
+    let (backend, dir) = create_psr4_workspace(
+        composer_json,
+        &[
+            ("vendor/illuminate/Support/Collection.php", COLLECTION_PHP),
+            (
+                "bootstrap/providers.php",
+                "<?php\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n];\n",
+            ),
+            ("src/Providers/AppServiceProvider.php", provider_before),
+            ("src/Macros/CollectionMacros.php", helper),
+            ("src/Consumer.php", consumer),
+        ],
+    );
+
+    // Initial build: the provider references no helper, so the macro is
+    // not discovered.
+    backend.initialized(InitializedParams {}).await;
+
+    // Open the provider at its real workspace URI and add a helper
+    // reference; the changed reference set must trigger an index rebuild
+    // that scans the newly referenced helper.
+    let provider_uri = Url::from_file_path(dir.path().join("src/Providers/AppServiceProvider.php"))
+        .unwrap()
+        .to_string();
+    open(&backend, &provider_uri, provider_after).await;
+
+    open(&backend, "file:///src/Consumer.php", consumer).await;
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse("file:///src/Consumer.php").unwrap(),
+                },
+                position: Position {
+                    line: 5,
+                    character: 12,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    let items = match result.expect("completion should return results") {
+        CompletionResponse::Array(items) => items,
+        CompletionResponse::List(list) => list.items,
+    };
+    let names: Vec<&str> = items
+        .iter()
+        .filter_map(|i| i.filter_text.as_deref())
+        .collect();
+
+    assert!(
+        names.contains(&"lateSum"),
+        "helper referenced by the edited provider should be scanned, got: {names:?}"
+    );
+}

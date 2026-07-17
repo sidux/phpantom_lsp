@@ -1921,12 +1921,32 @@ impl Backend {
             std::collections::HashSet::new();
         let mut provider_uris: Vec<String> = Vec::new();
         let mut imported_uris: Vec<String> = Vec::new();
+        // Seed URI → the class references it contributed to this build.
+        // `refresh_laravel_macros` compares an edited seed's references
+        // against this snapshot and only rebuilds when they changed.
+        let mut seeds: HashMap<String, Vec<String>> = HashMap::new();
+
+        // The app's provider registration files are seeds too: adding a
+        // provider there must trigger a rebuild.  Their reference
+        // fingerprint is the provider class list itself.
+        if let Some(root) = self.workspace_root.read().clone() {
+            for rel in ["bootstrap/providers.php", "config/app.php"] {
+                let path = root.join(rel);
+                let uri = crate::util::path_to_uri(&path);
+                let refs = self
+                    .get_file_content(&uri)
+                    .or_else(|| std::fs::read_to_string(&path).ok())
+                    .map(|c| crate::virtual_members::laravel::parse_provider_class_list(&c))
+                    .unwrap_or_default();
+                seeds.insert(uri, refs);
+            }
+        }
 
         // Scan a single file's content into the index, keyed by its URI.
         let scan_content = |index: &mut crate::virtual_members::laravel::LaravelMacroIndex,
                             uri: String,
                             content: &str| {
-            if !self.laravel_macro_token_cached(&uri, content) {
+            if memchr::memmem::find(content.as_bytes(), b"macro(").is_none() {
                 return;
             }
             let mut regs =
@@ -1952,14 +1972,15 @@ impl Backend {
 
         for uri in &provider_uris {
             let Some(content) = self.get_file_content(uri) else {
+                seeds.insert(uri.clone(), Vec::new());
                 continue;
             };
             scan_content(&mut index, uri.clone(), &content);
 
-            for imported_fqn in
-                crate::virtual_members::laravel::parse_provider_referenced_classes(&content)
-            {
-                let Some(imported_uri) = self.resolve_class_uri(&imported_fqn) else {
+            let referenced =
+                crate::virtual_members::laravel::parse_provider_referenced_classes(&content);
+            for imported_fqn in &referenced {
+                let Some(imported_uri) = self.resolve_class_uri(imported_fqn) else {
                     continue;
                 };
                 if !self.is_laravel_macro_helper_uri_allowed(uri, &imported_uri) {
@@ -1969,6 +1990,7 @@ impl Backend {
                     imported_uris.push(imported_uri);
                 }
             }
+            seeds.insert(uri.clone(), referenced);
         }
 
         for uri in &imported_uris {
@@ -1980,10 +2002,24 @@ impl Backend {
 
         index.rebuild();
         let has_macros = !index.is_empty();
-        let target_count = index.target_fqns().len();
+        let new_targets = index.target_fqns();
+        let target_count = new_targets.len();
+        let old_targets = self.laravel_macros.read().target_fqns();
         *self.laravel_macros.write() = index;
         self.laravel_has_macros
             .store(has_macros, std::sync::atomic::Ordering::Relaxed);
+        *self.laravel_macro_seeds.write() = seeds;
+
+        // Evict every class that had macros before or has them now, so a
+        // rebuild triggered by a provider edit replaces stale cached merges
+        // (both for added and for removed macros).
+        {
+            let mut cache = self.resolved_class_cache.write();
+            for fqn in old_targets.iter().chain(new_targets.iter()) {
+                crate::virtual_members::evict_fqn(&mut cache, fqn);
+            }
+        }
+
         tracing::info!(
             "PHPantom: scanned {} Laravel macro candidates ({} providers, {} imported classes), indexed {} macro targets",
             candidate_uris.len(),
@@ -2055,9 +2091,22 @@ impl Backend {
         if !self.resolved_class_cache.read().is_laravel() {
             return;
         }
-        if self.is_laravel_macro_seed_uri(uri) {
-            self.build_laravel_macro_index();
-            return;
+        // An edit to a seed file (a service provider or the app's provider
+        // registration files) that changes its class references alters which
+        // files feed the index, so the index is rebuilt.  When the references
+        // are unchanged the edit can only affect the seed's own
+        // registrations, which the single-file path below picks up.
+        let prev_refs = self.laravel_macro_seeds.read().get(uri).cloned();
+        if let Some(prev_refs) = prev_refs {
+            let refs = if self.is_laravel_provider_list_uri(uri) {
+                crate::virtual_members::laravel::parse_provider_class_list(content)
+            } else {
+                crate::virtual_members::laravel::parse_provider_referenced_classes(content)
+            };
+            if refs != prev_refs {
+                self.build_laravel_macro_index();
+                return;
+            }
         }
         let had = self.laravel_macros.read().has_uri(uri);
         let has_token = memchr::memmem::find(content.as_bytes(), b"macro(").is_some();
@@ -2074,11 +2123,15 @@ impl Backend {
 
         let targets = {
             let mut index = self.laravel_macros.write();
+            // Capture the pre-edit targets too, so a class whose last macro
+            // this edit removed is also evicted below.
+            let mut targets = index.target_fqns();
             index.set_file(uri.to_string(), regs);
             index.rebuild();
             self.laravel_has_macros
                 .store(!index.is_empty(), std::sync::atomic::Ordering::Relaxed);
-            index.target_fqns()
+            targets.extend(index.target_fqns());
+            targets
         };
 
         // Evict every class a macro attaches to so the next resolution picks
@@ -2089,22 +2142,17 @@ impl Backend {
         }
     }
 
-    fn is_laravel_macro_seed_uri(&self, uri: &str) -> bool {
-        if let Some(root) = self.workspace_root.read().clone() {
-            for rel in ["bootstrap/providers.php", "config/app.php"] {
-                if crate::util::path_to_uri(&root.join(rel)) == uri {
-                    return true;
-                }
-            }
-        }
-
-        for fqn in self.laravel_provider_fqns() {
-            if self.resolve_class_uri(&fqn).as_deref() == Some(uri) {
-                return true;
-            }
-        }
-
-        false
+    /// Whether `uri` is one of the app's provider registration files
+    /// (`bootstrap/providers.php` / `config/app.php`), whose macro-relevant
+    /// references are the provider class list rather than method-body class
+    /// references.
+    fn is_laravel_provider_list_uri(&self, uri: &str) -> bool {
+        let Some(root) = self.workspace_root.read().clone() else {
+            return false;
+        };
+        ["bootstrap/providers.php", "config/app.php"]
+            .iter()
+            .any(|rel| crate::util::path_to_uri(&root.join(rel)) == uri)
     }
 
     fn is_laravel_macro_helper_uri_allowed(&self, provider_uri: &str, helper_uri: &str) -> bool {

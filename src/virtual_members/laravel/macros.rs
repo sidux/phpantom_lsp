@@ -328,6 +328,7 @@ fn collect_instance_macro_registrations(
         Node::Statement(Statement::Function(function)) => collect_instance_macros_in_body(
             Node::Block(&function.body),
             &typed_parameter_targets(&function.parameter_list, resolved),
+            resolved,
             content,
             php_version,
             out,
@@ -340,6 +341,7 @@ fn collect_instance_macro_registrations(
                     collect_instance_macros_in_body(
                         Node::Block(body),
                         &typed_parameter_targets(&method.parameter_list, resolved),
+                        resolved,
                         content,
                         php_version,
                         out,
@@ -355,6 +357,7 @@ fn collect_instance_macro_registrations(
                     collect_instance_macros_in_body(
                         Node::Block(body),
                         &typed_parameter_targets(&method.parameter_list, resolved),
+                        resolved,
                         content,
                         php_version,
                         out,
@@ -370,6 +373,7 @@ fn collect_instance_macro_registrations(
                     collect_instance_macros_in_body(
                         Node::Block(body),
                         &typed_parameter_targets(&method.parameter_list, resolved),
+                        resolved,
                         content,
                         php_version,
                         out,
@@ -377,6 +381,17 @@ fn collect_instance_macro_registrations(
                 }
             }
         }
+        // A closure or arrow function in top-level code opens a variable
+        // scope of its own; the body walker computes it from the empty
+        // enclosing scope.
+        Node::Closure(_) | Node::ArrowFunction(_) => collect_instance_macros_in_body(
+            node,
+            &HashMap::new(),
+            resolved,
+            content,
+            php_version,
+            out,
+        ),
         _ => node.visit_children(|child| {
             collect_instance_macro_registrations(child, resolved, content, php_version, out)
         }),
@@ -386,22 +401,105 @@ fn collect_instance_macro_registrations(
 fn collect_instance_macros_in_body(
     node: Node<'_, '_>,
     typed_targets: &HashMap<String, String>,
+    resolved: &OwnedResolvedNames,
     content: &str,
     php_version: Option<PhpVersion>,
     out: &mut Vec<MacroRegistration>,
 ) {
-    if let Node::MethodCall(call) = node
-        && let ClassLikeMemberSelector::Identifier(ident) = &call.method
-        && bytes_to_str(ident.value).eq_ignore_ascii_case("macro")
-        && let Expression::Variable(Variable::Direct(dv)) = call.object
-        && let Some(target) = typed_targets.get(bytes_to_str(dv.name))
-        && let Some(reg) = build_instance_registration(call, target, content, php_version)
-    {
-        out.push(reg);
+    use mago_syntax::ast::class_like::member::ClassLikeMember;
+    use mago_syntax::ast::class_like::method::MethodBody;
+
+    match node {
+        // A closure sees only its `use (...)` captures plus its own
+        // parameters; a typed parameter overrides everything else.
+        Node::Closure(closure) => {
+            let mut scope: HashMap<String, String> = HashMap::new();
+            if let Some(use_clause) = &closure.use_clause {
+                for capture in use_clause.variables.iter() {
+                    let name = bytes_to_str(capture.variable.name);
+                    if let Some(target) = typed_targets.get(name) {
+                        scope.insert(name.to_string(), target.clone());
+                    }
+                }
+            }
+            for param in closure.parameter_list.parameters.iter() {
+                scope.remove(bytes_to_str(param.variable.name));
+            }
+            scope.extend(typed_parameter_targets(&closure.parameter_list, resolved));
+            collect_instance_macros_in_body(
+                Node::Block(&closure.body),
+                &scope,
+                resolved,
+                content,
+                php_version,
+                out,
+            );
+        }
+        // An arrow function captures the enclosing scope automatically; its
+        // own parameters shadow captured names.
+        Node::ArrowFunction(arrow) => {
+            let mut scope = typed_targets.clone();
+            for param in arrow.parameter_list.parameters.iter() {
+                scope.remove(bytes_to_str(param.variable.name));
+            }
+            scope.extend(typed_parameter_targets(&arrow.parameter_list, resolved));
+            collect_instance_macros_in_body(
+                Node::Expression(arrow.expression),
+                &scope,
+                resolved,
+                content,
+                php_version,
+                out,
+            );
+        }
+        // A nested named function starts a fresh variable scope.
+        Node::Function(function) => collect_instance_macros_in_body(
+            Node::Block(&function.body),
+            &typed_parameter_targets(&function.parameter_list, resolved),
+            resolved,
+            content,
+            php_version,
+            out,
+        ),
+        // So does each method of an anonymous class.
+        Node::AnonymousClass(class) => {
+            for member in class.members.iter() {
+                if let ClassLikeMember::Method(method) = member
+                    && let MethodBody::Concrete(body) = &method.body
+                {
+                    collect_instance_macros_in_body(
+                        Node::Block(body),
+                        &typed_parameter_targets(&method.parameter_list, resolved),
+                        resolved,
+                        content,
+                        php_version,
+                        out,
+                    );
+                }
+            }
+        }
+        _ => {
+            if let Node::MethodCall(call) = node
+                && let ClassLikeMemberSelector::Identifier(ident) = &call.method
+                && bytes_to_str(ident.value).eq_ignore_ascii_case("macro")
+                && let Expression::Variable(Variable::Direct(dv)) = call.object
+                && let Some(target) = typed_targets.get(bytes_to_str(dv.name))
+                && let Some(reg) = build_instance_registration(call, target, content, php_version)
+            {
+                out.push(reg);
+            }
+            node.visit_children(|child| {
+                collect_instance_macros_in_body(
+                    child,
+                    typed_targets,
+                    resolved,
+                    content,
+                    php_version,
+                    out,
+                )
+            });
+        }
     }
-    node.visit_children(|child| {
-        collect_instance_macros_in_body(child, typed_targets, content, php_version, out)
-    });
 }
 
 fn typed_parameter_targets(
@@ -706,6 +804,9 @@ fn collect_class_refs(
 ) {
     match node {
         Node::StaticMethodCall(call) => push_resolved_expr_fqn(call.class, resolved, seen, out),
+        Node::Instantiation(instantiation) => {
+            push_resolved_expr_fqn(instantiation.class, resolved, seen, out)
+        }
         Node::ClassConstantAccess(access)
             if matches!(
                 &access.constant,
@@ -715,8 +816,11 @@ fn collect_class_refs(
         {
             push_resolved_expr_fqn(access.class, resolved, seen, out)
         }
-        _ => node.visit_children(|child| collect_class_refs(child, resolved, seen, out)),
+        _ => {}
     }
+    // Always descend: a static call's or instantiation's arguments can
+    // themselves reference further helper classes.
+    node.visit_children(|child| collect_class_refs(child, resolved, seen, out));
 }
 
 fn push_resolved_expr_fqn(

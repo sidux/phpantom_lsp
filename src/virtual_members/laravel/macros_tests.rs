@@ -258,6 +258,33 @@ use App\Macros\CollectionMacros;
 }
 
 #[test]
+fn parse_provider_referenced_classes_collects_instantiations_and_call_arguments() {
+    let content = r#"<?php
+namespace App\Providers;
+
+use App\Macros\CollectionMacros;
+use App\Macros\ResponseMacros;
+use App\Macros\StrMacros;
+class MacroServiceProvider {
+    public function boot(): void {
+        (new CollectionMacros())->register();
+        $this->call(ResponseMacros::boot(...));
+        Registrar::run(StrMacros::class);
+    }
+}
+"#;
+    let refs = parse_provider_referenced_classes(content);
+    assert!(
+        refs.contains(&"App\\Macros\\CollectionMacros".to_string()),
+        "instantiated helper should be collected, got: {refs:?}"
+    );
+    assert!(
+        refs.contains(&"App\\Macros\\StrMacros".to_string()),
+        "::class argument of a static call should be collected, got: {refs:?}"
+    );
+}
+
+#[test]
 fn extracts_instance_macro_from_typed_parameter() {
     let content = r#"<?php
 use Illuminate\Database\Eloquent\Builder;
@@ -274,6 +301,123 @@ class ConfidentialScope {
     assert_eq!(regs.len(), 1);
     assert_eq!(regs[0].target, "Illuminate\\Database\\Eloquent\\Builder");
     assert_eq!(regs[0].method.name.as_str(), "withConfidential");
+}
+
+#[test]
+fn extracts_instance_macro_from_closure_typed_parameter() {
+    let content = r#"<?php
+namespace App\Providers;
+use Illuminate\Database\Eloquent\Builder;
+
+class AppServiceProvider {
+    public function boot(): void {
+        $this->app->resolving(Builder::class, function (Builder $builder): void {
+            $builder->macro('withConfidential', function (bool $flag = true): Builder {
+                return $this;
+            });
+        });
+    }
+}
+"#;
+    let regs = extract_macro_registrations(content, None);
+    assert_eq!(regs.len(), 1);
+    assert_eq!(regs[0].target, "Illuminate\\Database\\Eloquent\\Builder");
+    assert_eq!(regs[0].method.name.as_str(), "withConfidential");
+}
+
+#[test]
+fn closure_parameter_shadows_outer_typed_variable() {
+    // The inner `$query` is a Collection, not the method's Builder; the
+    // macro must attach to the shadowing parameter's type.
+    let content = r#"<?php
+namespace App\Providers;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
+
+class ShadowScope {
+    public function extend(Builder $query): void {
+        $this->each(function (Collection $query): void {
+            $query->macro('shadowed', function (): int {
+                return 1;
+            });
+        });
+    }
+}
+"#;
+    let regs = extract_macro_registrations(content, None);
+    assert_eq!(regs.len(), 1);
+    assert_eq!(regs[0].target, "Illuminate\\Support\\Collection");
+    assert_eq!(regs[0].method.name.as_str(), "shadowed");
+}
+
+#[test]
+fn closure_without_capture_does_not_see_outer_typed_variable() {
+    // A plain closure only sees `use (...)` captures; `$query` inside the
+    // uncaptured closure is a different (undefined) variable.
+    let content = r#"<?php
+namespace App\Providers;
+use Illuminate\Database\Eloquent\Builder;
+
+class NoCaptureScope {
+    public function extend(Builder $query): void {
+        $this->later(function (): void {
+            $query->macro('invisible', function (): int {
+                return 1;
+            });
+        });
+    }
+}
+"#;
+    let regs = extract_macro_registrations(content, None);
+    assert!(
+        regs.is_empty(),
+        "uncaptured outer variable must not resolve, got: {:?}",
+        regs.iter()
+            .map(|r| r.method.name.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn closure_use_capture_keeps_outer_typed_variable() {
+    let content = r#"<?php
+namespace App\Providers;
+use Illuminate\Database\Eloquent\Builder;
+
+class CaptureScope {
+    public function extend(Builder $query): void {
+        $this->later(function () use ($query): void {
+            $query->macro('captured', function (): int {
+                return 1;
+            });
+        });
+    }
+}
+"#;
+    let regs = extract_macro_registrations(content, None);
+    assert_eq!(regs.len(), 1);
+    assert_eq!(regs[0].target, "Illuminate\\Database\\Eloquent\\Builder");
+    assert_eq!(regs[0].method.name.as_str(), "captured");
+}
+
+#[test]
+fn arrow_function_captures_outer_typed_variable() {
+    let content = r#"<?php
+namespace App\Providers;
+use Illuminate\Database\Eloquent\Builder;
+
+class ArrowScope {
+    public function extend(Builder $query): callable {
+        return fn (): mixed => $query->macro('viaArrow', function (): int {
+            return 1;
+        });
+    }
+}
+"#;
+    let regs = extract_macro_registrations(content, None);
+    assert_eq!(regs.len(), 1);
+    assert_eq!(regs[0].target, "Illuminate\\Database\\Eloquent\\Builder");
+    assert_eq!(regs[0].method.name.as_str(), "viaArrow");
 }
 
 #[test]

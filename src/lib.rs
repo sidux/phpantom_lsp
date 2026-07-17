@@ -463,8 +463,12 @@ pub struct Backend {
     /// when the index holds at least one macro, so the hot class-load path
     /// skips the lock entirely for the common (no-macro) case.
     pub(crate) laravel_has_macros: Arc<std::sync::atomic::AtomicBool>,
-    /// Memoized `macro(` token presence by URI for Laravel macro discovery.
-    pub(crate) laravel_macro_token_cache: Arc<RwLock<HashMap<String, bool>>>,
+    /// Laravel macro seed files (service providers plus the app's provider
+    /// registration files), mapped to the class references each contributed
+    /// at the last macro-index build.  An edit that changes a seed's
+    /// references triggers a full index rebuild; every other edit takes the
+    /// cheap single-file refresh path.
+    pub(crate) laravel_macro_seeds: Arc<RwLock<HashMap<String, Vec<String>>>>,
     /// Per-target member completion cache.
     ///
     /// Typing `$model->wh...` triggers a completion request for each
@@ -885,7 +889,7 @@ impl Backend {
                 virtual_members::laravel::LaravelMacroIndex::default(),
             )),
             laravel_has_macros: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            laravel_macro_token_cache: Arc::new(RwLock::new(HashMap::new())),
+            laravel_macro_seeds: Arc::new(RwLock::new(HashMap::new())),
             member_completion_cache: Arc::new(Mutex::new(HashMap::new())),
             method_store: Arc::new(RwLock::new(HashMap::new())),
             gti_index: Arc::new(RwLock::new(HashMap::new())),
@@ -980,7 +984,7 @@ impl Backend {
                 virtual_members::laravel::LaravelMacroIndex::default(),
             )),
             laravel_has_macros: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            laravel_macro_token_cache: Arc::new(RwLock::new(HashMap::new())),
+            laravel_macro_seeds: Arc::new(RwLock::new(HashMap::new())),
             member_completion_cache: Arc::new(Mutex::new(HashMap::new())),
             method_store: Arc::new(RwLock::new(HashMap::new())),
             gti_index: Arc::new(RwLock::new(HashMap::new())),
@@ -1574,7 +1578,7 @@ impl Backend {
             laravel_aliases: Arc::clone(&self.laravel_aliases),
             laravel_macros: Arc::clone(&self.laravel_macros),
             laravel_has_macros: Arc::clone(&self.laravel_has_macros),
-            laravel_macro_token_cache: Arc::clone(&self.laravel_macro_token_cache),
+            laravel_macro_seeds: Arc::clone(&self.laravel_macro_seeds),
             member_completion_cache: Arc::clone(&self.member_completion_cache),
             method_store: Arc::clone(&self.method_store),
             gti_index: Arc::clone(&self.gti_index),
