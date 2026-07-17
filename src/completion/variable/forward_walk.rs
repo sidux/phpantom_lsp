@@ -5274,6 +5274,44 @@ fn process_destructuring_assignment<'b>(
     if let Some(ref rhs_type) = raw_type {
         bind_destructured_pattern(assignment.lhs, rhs_type, scope, ctx);
     }
+
+    // Ensure every destructured variable is present in scope even when the
+    // RHS type (or an individual element's type) could not be resolved.  A
+    // plain assignment from an unresolvable RHS records the variable with an
+    // empty type list via `set_empty`, which lets later assert narrowing seed
+    // a type for it.  Without this, list-destructuring from an unresolvable
+    // RHS leaves the variables absent from scope entirely, so the assert
+    // narrowing loop never visits them and the asserted type is dropped.
+    seed_destructured_vars_empty(assignment.lhs, scope);
+}
+
+/// Walk a destructuring LHS pattern and record every direct variable in
+/// scope with an empty type list, unless it is already present.  Used so
+/// that variables destructured from an unresolvable RHS still participate
+/// in later narrowing (`set_empty` leaves any already-bound type intact).
+fn seed_destructured_vars_empty<'b>(lhs: &'b Expression<'b>, scope: &mut ScopeState) {
+    let elements: Vec<&ArrayElement<'b>> = match lhs {
+        Expression::Array(arr) => arr.elements.iter().collect(),
+        Expression::List(list) => list.elements.iter().collect(),
+        _ => return,
+    };
+
+    for elem in elements {
+        let value_expr = match elem {
+            ArrayElement::KeyValue(kv) => kv.value,
+            ArrayElement::Value(val) => val.value,
+            _ => continue,
+        };
+        match value_expr {
+            Expression::Variable(Variable::Direct(dv)) => {
+                scope.set_empty(bytes_to_str(dv.name));
+            }
+            Expression::Array(_) | Expression::List(_) => {
+                seed_destructured_vars_empty(value_expr, scope);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Recursively bind types from a destructuring LHS pattern against a

@@ -57,20 +57,3 @@ subject. Covers PDepend's `PdependExtension.php:87`
 accesses in its PHP 8.2 enum tests, plus the two
 `$parameters['amount']->toFixed(2)` accesses in Backoffice's
 BusinessCentral tests.
-
-## B92. Assert narrowing cannot override variables assigned by list-destructuring from an unresolvable RHS
-
-**Severity: Medium (~8 errors, pdepend) · Reproduced with fixture**
-
-```php
-[$type, $variable] = $declarations[0]; // RHS type unknown (bare array param)
-static::assertInstanceOf(Wanted::class, $type);
-$type->getImage(); // "type of '$type' could not be resolved"
-```
-
-A plain assignment from the same unresolvable RHS
-(`$type = $declarations[0];`) narrows fine, and destructuring from a
-*typed* RHS works. Only the combination — list-destructure whose RHS
-cannot be resolved — leaves the variables in a state that later
-assert narrowing cannot override. Accounts for all 8 `getImage()`
-errors in PDepend's parser tests.

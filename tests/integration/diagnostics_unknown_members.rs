@@ -4174,6 +4174,53 @@ class NodeTest extends BaseAssert {
     );
 }
 
+/// A variable assigned by list-destructuring from an unresolvable RHS
+/// (e.g. a bare `array` parameter) must still be narrowable by a later
+/// `assertInstanceOf`.  Previously the destructured variables were never
+/// recorded in scope when the RHS type could not be resolved, so the
+/// assert narrowing loop skipped them and `$type->getImage()` produced a
+/// bogus `type of '$type' could not be resolved` diagnostic.
+#[test]
+fn assert_narrows_variable_destructured_from_unresolvable_rhs() {
+    let backend = create_test_backend();
+    {
+        let mut cfg = backend.config();
+        cfg.diagnostics.unresolved_member_access = Some(true);
+        backend.set_config(cfg);
+    }
+    let uri = "file:///test.php";
+    let text = r#"<?php
+class Wanted {
+    public function getImage(): string { return ''; }
+}
+class BaseAssert {
+    /**
+     * @template ExpectedType of object
+     * @param class-string<ExpectedType> $expected
+     * @phpstan-assert ExpectedType $actual
+     */
+    public static function assertInstanceOf(string $expected, object $actual): void {}
+}
+class ParserTest extends BaseAssert {
+    public function testDestructure(array $declarations): void {
+        [$type, $variable] = $declarations[0];
+        static::assertInstanceOf(Wanted::class, $type);
+        $type->getImage();
+    }
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_slow_diagnostics(uri, text, &mut diags);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("could not be resolved") && d.message.contains("getImage")),
+        "assertInstanceOf must narrow a list-destructured variable from an \
+         unresolvable RHS, got: {diags:?}",
+    );
+}
+
 /// An exact-type assertion `@phpstan-assert =Type $x` must not emit a
 /// bogus `Class '=Type' not found` diagnostic on the docblock.
 #[test]
