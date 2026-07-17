@@ -301,6 +301,17 @@ class CompoundNarrowingDemo
         $items[0]->crush();                       // element narrowed to Rock
     }
 
+    /** @param array<string, mixed> $bag */
+    public function untypedIndexed(array $bag): void
+    {
+        // The element type is unknown (mixed), but a guard clause still
+        // narrows the array-index subject to the checked class.
+        if (!$bag['specimen'] instanceof Rock) {
+            return;
+        }
+        $bag['specimen']->crush();                // mixed index narrowed to Rock
+    }
+
     public function arrow(): callable
     {
         // An untyped arrow-function parameter narrowed by an earlier `&&`

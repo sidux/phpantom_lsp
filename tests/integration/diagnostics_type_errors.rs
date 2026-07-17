@@ -5418,6 +5418,9 @@ class Extension {}
  */
 function takes_extension_class_string(string $className): void {}
 
+/**
+ * @param array{class: string} $config
+ */
 function activate(array $config): void
 {
     if (!is_a($config['class'], Extension::class, true)) {
@@ -5427,7 +5430,10 @@ function activate(array $config): void
     takes_extension_class_string($config['class']);
 }
 "#;
-    let diags = collect(php);
+    // Use the slow pipeline so the forward-walked diagnostic scope cache
+    // is active, matching real analysis where array-index narrowing keys
+    // are recorded.
+    let diags = collect_slow(php);
     assert!(
         !has_type_error(&diags),
         "is_a($config['class'], Extension::class, true) guard should narrow to class-string<Extension>: {:?}",

@@ -297,13 +297,25 @@ fn resolve_rhs_expression_inner<'b>(
         }
         Expression::ArrayAccess(array_access) => {
             // Check if the scope has a narrowed type for this array
-            // access (e.g. `$a["test"]` narrowed through null checks).
-            if let Some(resolver) = ctx.scope_var_resolver
-                && let Some(key) = crate::completion::types::narrowing::expr_to_subject_key(expr)
+            // access (e.g. `$a["test"]` narrowed through null checks, or
+            // `$config['class']` narrowed to `class-string<Foo>` by an
+            // `is_a(..., true)` guard).  The completion/hover paths carry
+            // a `scope_var_resolver`; the diagnostic path instead reads
+            // the forward walker's snapshot cache, so both are consulted.
+            if let Some(key) = crate::completion::types::narrowing::expr_to_subject_key(expr)
                 && key.contains("[\"")
             {
-                let from_scope = resolver(&key);
-                if !from_scope.is_empty() {
+                if let Some(resolver) = ctx.scope_var_resolver {
+                    let from_scope = resolver(&key);
+                    if !from_scope.is_empty() {
+                        return from_scope;
+                    }
+                } else if super::forward_walk::is_diagnostic_scope_active()
+                    && !super::forward_walk::is_building_scopes()
+                    && let Some(from_scope) =
+                        super::forward_walk::lookup_diagnostic_scope(&key, expr.span().start.offset)
+                    && !from_scope.is_empty()
+                {
                     return from_scope;
                 }
             }

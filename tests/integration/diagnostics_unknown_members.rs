@@ -2043,6 +2043,62 @@ function test(Application $app): void {
     );
 }
 
+/// An `assertInstanceOf`-style `@phpstan-assert` on an array-index subject
+/// (`assertInstanceOf(X::class, $arr['k'])`) must narrow that index so a
+/// following member access on it resolves.  Without keying narrowing by the
+/// printed subject expression, `$constants['C']->getImage()` was reported as
+/// an unresolved member access.
+#[test]
+fn assert_instanceof_narrows_array_index_subject() {
+    let backend = create_test_backend();
+    {
+        let mut cfg = backend.config();
+        cfg.diagnostics.unresolved_member_access = Some(true);
+        backend.set_config(cfg);
+    }
+    let uri = "file:///test.php";
+    let text = r#"<?php
+class ASTNode {
+    public function getImage(): string { return ''; }
+}
+
+class BaseAssert
+{
+    /**
+     * @template ExpectedType of object
+     * @param class-string<ExpectedType> $expected
+     * @phpstan-assert =ExpectedType $actual
+     */
+    public static function assertInstanceOf(string $expected, object $actual): void {}
+}
+
+class MyTest extends BaseAssert
+{
+    /**
+     * @param array<string, mixed> $constants
+     */
+    public function testIt(array $constants): void
+    {
+        static::assertInstanceOf(ASTNode::class, $constants['C']);
+        $constants['C']->getImage();
+    }
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_slow_diagnostics(uri, text, &mut diags);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("could not be resolved")),
+        "assertInstanceOf should narrow $constants['C'] to ASTNode, got: {diags:?}",
+    );
+    assert!(
+        !diags.iter().any(|d| d.message.contains("getImage")),
+        "getImage is a valid method on ASTNode, got: {diags:?}",
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Assert narrowing boundary prevents stale diagnostic cache reuse
 // ═══════════════════════════════════════════════════════════════════════════

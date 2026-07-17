@@ -9174,6 +9174,12 @@ fn apply_class_string_guard_narrowing<'b>(
                 if !effective_truthy {
                     continue;
                 }
+                // Seed compound subject keys (`$arr['class']`, `$obj->prop`)
+                // so a class-string guard on an array-index or property
+                // subject narrows just like one on a plain variable.  An
+                // untyped array index seeds as `mixed`, which the loop below
+                // narrows to `class-string<Class>`.
+                seed_synthetic_key_if_needed(var_name, scope, ctx);
                 let mut results = scope.get(var_name).to_vec();
                 if results.is_empty() {
                     continue;
@@ -9833,28 +9839,40 @@ fn seed_synthetic_key_if_needed(key: &str, scope: &mut ScopeState, ctx: &Forward
             if base_types.is_empty() {
                 return;
             }
-            // Look up the array key's type from the array shape.
+            // Look up the array key's type.  Prefer a precise shape entry
+            // (`array{class: Foo}`); fall back to the generic element type
+            // (`array<string, Foo>` → `Foo`); and finally to `mixed` for an
+            // untyped array (plain `array`).  Seeding the untyped case is
+            // what lets assertion / class-string narrowing apply to an
+            // array-index subject whose element type is otherwise unknown
+            // (e.g. `assertInstanceOf(X::class, $arr['k'])`).
             let mut key_results: Vec<ResolvedType> = Vec::new();
             for rt in base_types {
-                if let Some(element_type) = rt.type_string.extract_shape_key_type(key_name) {
-                    let resolved_classes =
-                        crate::completion::type_resolution::type_hint_to_classes_typed(
-                            &element_type,
-                            &ctx.current_class.name,
-                            ctx.all_classes,
-                            ctx.class_loader,
-                        );
-                    if resolved_classes.is_empty() {
-                        ResolvedType::extend_unique(
-                            &mut key_results,
-                            vec![ResolvedType::from_type_string(element_type)],
-                        );
-                    } else {
-                        ResolvedType::extend_unique(
-                            &mut key_results,
-                            ResolvedType::from_classes_with_hint(resolved_classes, element_type),
-                        );
-                    }
+                let element_type = rt
+                    .type_string
+                    .extract_shape_key_type(key_name)
+                    .or_else(|| rt.type_string.extract_value_type(false).cloned())
+                    .or_else(|| rt.type_string.is_array_like().then(PhpType::mixed));
+                let Some(element_type) = element_type else {
+                    continue;
+                };
+                let resolved_classes =
+                    crate::completion::type_resolution::type_hint_to_classes_typed(
+                        &element_type,
+                        &ctx.current_class.name,
+                        ctx.all_classes,
+                        ctx.class_loader,
+                    );
+                if resolved_classes.is_empty() {
+                    ResolvedType::extend_unique(
+                        &mut key_results,
+                        vec![ResolvedType::from_type_string(element_type)],
+                    );
+                } else {
+                    ResolvedType::extend_unique(
+                        &mut key_results,
+                        ResolvedType::from_classes_with_hint(resolved_classes, element_type),
+                    );
                 }
             }
             if !key_results.is_empty() {
