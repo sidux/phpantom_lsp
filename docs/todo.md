@@ -25,6 +25,8 @@ within the same impact tier.
 
 | #   | Item                                                                                                                  | Impact     | Effort |
 | --- | --------------------------------------------------------------------------------------------------------------------- | ---------- | ------ |
+| B111 | [`assertInstanceOf()` narrowing requires a literal `X::class` argument, not a variable holding the same class-string](todo/bugs.md#b111-assertinstanceof-narrowing-requires-a-literal-xclass-argument-a-variable-holding-the-same-class-string-does-not-narrow) | Low-Medium | Low |
+| B110 | [Container string alias resolution (`app('x')`/`resolve('x')`) breaks once assigned to a variable](todo/bugs.md#b110-container-string-alias-resolution-appx--resolvex-does-not-apply-once-the-call-result-is-assigned-to-a-variable) | Low | Low |
 | L18 | [`Storage::disk()` return type — resolve from config, don't guess](todo/laravel.md#l18-storagedisk-return-type-is-genuinely-polymorphic--resolve-from-config-dont-guess) | Medium-High | Low-Medium  |
 | L19 | [Redis client (phpredis/predis) — resolve from config, don't guess](todo/laravel.md#l19-redis-connection-client-is-chosen-by-config-phpredis-vs-predis--resolve-from-config-dont-guess) | Medium      | Low-Medium  |
 | X4  | [Full background indexing](todo/indexing.md#x4-full-background-indexing) (workspace symbols, fast find-references)                                              | Medium      | High        |

@@ -275,12 +275,84 @@ pub(crate) fn is_diagnostic_scope_active() -> bool {
 /// Insert a scope snapshot into the diagnostic scope cache at the given
 /// byte offset.
 fn record_scope_snapshot(offset: u32, scope: &ScopeState) {
+    // Skip recording while a nested variable-resolution walk is in
+    // progress.  Those walks (see [`suspend_snapshot_recording`]) spin up
+    // their own fresh scope to answer a single "what is this variable's
+    // type?" query and must not overwrite the authoritative snapshots
+    // built by the dedicated diagnostic-scope walk.  Their statement
+    // offsets can even come from a different file (e.g. a return-type
+    // inference walking the callee's body) and would otherwise collide
+    // with the outer file's offsets in the shared map.
+    if SUSPEND_SNAPSHOT.with(|c| c.get()) > 0 {
+        return;
+    }
     DIAGNOSTIC_SCOPE.with(|cell| {
         let mut borrow = cell.borrow_mut();
         if let Some(ref mut map) = *borrow {
             map.insert(offset, scope.locals.clone());
         }
     });
+}
+
+thread_local! {
+    /// Non-zero while a nested variable-resolution walk is running.
+    /// Consulted by [`record_scope_snapshot`] to suppress snapshot
+    /// writes that would pollute the authoritative diagnostic scope
+    /// cache.  A counter (rather than a bool) so nested resolution
+    /// walks compose correctly.
+    static SUSPEND_SNAPSHOT: Cell<u32> = const { Cell::new(0) };
+}
+
+/// RAII guard that decrements the [`SUSPEND_SNAPSHOT`] counter on drop.
+struct SnapshotSuspendGuard;
+
+impl Drop for SnapshotSuspendGuard {
+    fn drop(&mut self) {
+        SUSPEND_SNAPSHOT.with(|c| c.set(c.get().saturating_sub(1)));
+    }
+}
+
+/// Suspend diagnostic scope snapshot recording for the lifetime of the
+/// returned guard.
+///
+/// The dedicated diagnostic-scope walk ([`build_diagnostic_scopes`])
+/// resolves assignment right-hand sides and method return types as it
+/// goes.  That resolution can re-enter the forward walker
+/// ([`resolve_in_method_body`], [`resolve_in_top_level`], etc.) to look
+/// up a variable's type, which walks a body with a fresh scope.  Without
+/// this guard those nested walks would record their own snapshots into
+/// the active cache, clobbering the outer scope (dropping variables like
+/// a query builder assigned earlier in the method) and producing
+/// false-positive "type could not be resolved" diagnostics on some
+/// call-chain branches but not others.
+fn suspend_snapshot_recording() -> SnapshotSuspendGuard {
+    SUSPEND_SNAPSHOT.with(|c| c.set(c.get() + 1));
+    SnapshotSuspendGuard
+}
+
+/// RAII guard that restores the saved [`SUSPEND_SNAPSHOT`] value on drop.
+struct SnapshotResumeGuard(u32);
+
+impl Drop for SnapshotResumeGuard {
+    fn drop(&mut self) {
+        SUSPEND_SNAPSHOT.with(|c| c.set(self.0));
+    }
+}
+
+/// Temporarily clear any active snapshot suspension for the lifetime of
+/// the returned guard, restoring it on drop.
+///
+/// Use this around a *dedicated* scope-building walk (e.g. the hover
+/// scope cache population in [`resolve_in_method_body`]) that must record
+/// snapshots even when it happens to run inside a nested variable
+/// resolution that suspended recording via [`suspend_snapshot_recording`].
+fn resume_snapshot_recording() -> SnapshotResumeGuard {
+    let prev = SUSPEND_SNAPSHOT.with(|c| {
+        let v = c.get();
+        c.set(0);
+        v
+    });
+    SnapshotResumeGuard(prev)
 }
 
 /// Walk a sequence of statements for diagnostic scope building.
@@ -2557,6 +2629,10 @@ pub(crate) fn resolve_in_method_body<'b>(
         // Activate a temporary diagnostic scope so that walk_body_forward
         // records snapshots at every statement boundary.
         let _diag_guard = with_diagnostic_scope_cache();
+        // This is a dedicated scope-building walk (it harvests the temp
+        // cache below), so its snapshots must be recorded even when we
+        // were reached from a nested resolution that suspended recording.
+        let _resume_guard = resume_snapshot_recording();
 
         // Build a full-walk context (cursor at u32::MAX = walk entire body).
         let full_ctx = ForwardWalkCtx {
@@ -2624,8 +2700,13 @@ pub(crate) fn resolve_in_method_body<'b>(
         ctx,
     );
 
-    // Walk the body forward.
-    walk_body_forward(stmts_vec.iter().copied(), &mut scope, ctx);
+    // Walk the body forward.  Suspend snapshot recording: this is a
+    // transient lookup of `var_name`'s type, not the authoritative scope
+    // build, so it must not write into an active diagnostic scope cache.
+    {
+        let _suspend = suspend_snapshot_recording();
+        walk_body_forward(stmts_vec.iter().copied(), &mut scope, ctx);
+    }
 
     // Read the target variable from the scope.
     // Return `Some(types)` when the variable exists in scope (even if
@@ -2705,8 +2786,13 @@ pub(crate) fn resolve_in_function_body<'b>(
         ctx,
     );
 
-    // Walk the body forward.
-    walk_body_forward(func.body.statements.iter(), &mut scope, ctx);
+    // Walk the body forward.  Suspend snapshot recording (see
+    // `resolve_in_method_body`): this transient lookup must not pollute
+    // an active diagnostic scope cache.
+    {
+        let _suspend = suspend_snapshot_recording();
+        walk_body_forward(func.body.statements.iter(), &mut scope, ctx);
+    }
 
     // Read the target variable.
     // Return `Some` when the variable exists in scope (even with
@@ -2743,8 +2829,15 @@ pub(crate) fn resolve_in_top_level<'b>(
     // Seed superglobals so that `$_GET`, `$_POST`, etc. resolve.
     seed_superglobals(&mut scope);
 
-    // Walk the top-level statements forward.
-    walk_body_forward(statements, &mut scope, ctx);
+    // Walk the top-level statements forward.  Suspend snapshot recording
+    // (see `resolve_in_method_body`): this transient lookup must not
+    // pollute an active diagnostic scope cache.  Its statements can even
+    // belong to another file (return-type inference of a called function),
+    // whose offsets would otherwise collide with the outer file's.
+    {
+        let _suspend = suspend_snapshot_recording();
+        walk_body_forward(statements, &mut scope, ctx);
+    }
 
     // Return `Some` when the variable exists in scope (even with
     // empty types), `None` when it was never seen.
@@ -2765,6 +2858,10 @@ pub(crate) fn walk_top_level_for_globals<'b>(
     ctx: &ForwardWalkCtx<'_>,
 ) {
     seed_superglobals(scope);
+    // Suspend snapshot recording (see `resolve_in_method_body`): this
+    // transient `global`-resolution walk must not pollute an active
+    // diagnostic scope cache.
+    let _suspend = suspend_snapshot_recording();
     walk_body_forward(statements, scope, ctx);
 }
 
