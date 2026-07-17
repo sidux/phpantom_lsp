@@ -412,9 +412,10 @@ pub struct Backend {
     ///
     /// Used by [`parse_and_cache_file`](Self::parse_and_cache_file) to avoid
     /// redundant concurrent parses of the same file.  Before parsing, the URI
-    /// is inserted; if it was already present, the calling thread waits for
-    /// the result to appear in `uri_classes_index` instead of re-parsing.
-    pub(crate) parse_inflight: Arc<Mutex<HashSet<String>>>,
+    /// is claimed; if another thread already holds the claim, the calling
+    /// thread blocks until that parse completes and then reads the result
+    /// from `uri_classes_index` instead of re-parsing.
+    pub(crate) parse_inflight: Arc<resolution::ParseInflight>,
     /// Embedded PHP stubs for built-in classes/interfaces (e.g. `UnitEnum`,
     /// `BackedEnum`, `Iterator`, `Countable`, …).
     /// Maps class short name → raw PHP source code.
@@ -873,7 +874,7 @@ impl Backend {
             class_not_found_cache: Arc::new(RwLock::new(CiSet::new())),
             phar_archives: Arc::new(RwLock::new(HashMap::new())),
             parsed_uris: Arc::new(RwLock::new(HashSet::new())),
-            parse_inflight: Arc::new(Mutex::new(HashSet::new())),
+            parse_inflight: Arc::new(resolution::ParseInflight::new()),
             stub_index: RwLock::new(CiMap::from(stubs::build_stub_class_index())),
             stub_function_index: RwLock::new(CiMap::from(stubs::build_stub_function_index())),
             stub_constant_index: RwLock::new(stubs::build_stub_constant_index()),
@@ -968,7 +969,7 @@ impl Backend {
             class_not_found_cache: Arc::new(RwLock::new(CiSet::new())),
             phar_archives: Arc::new(RwLock::new(HashMap::new())),
             parsed_uris: Arc::new(RwLock::new(HashSet::new())),
-            parse_inflight: Arc::new(Mutex::new(HashSet::new())),
+            parse_inflight: Arc::new(resolution::ParseInflight::new()),
             stub_index: RwLock::new(CiMap::new()),
             stub_function_index: RwLock::new(CiMap::new()),
             stub_constant_index: RwLock::new(HashMap::new()),

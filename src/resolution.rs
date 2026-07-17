@@ -32,7 +32,6 @@
 ///   - Unqualified names resolved via the import table or current namespace
 ///   - Qualified names with alias expansion and namespace prefixing
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use std::path::Path;
@@ -45,23 +44,114 @@ use crate::php_type::{PhpType, is_builtin_non_class_type};
 use crate::types::{ClassInfo, FileContext, FunctionInfo, PhpVersion};
 use crate::util::short_name;
 
-/// RAII guard that removes a URI from `parse_inflight` on drop.
+/// Deduplicates concurrent parses of the same file.
 ///
-/// Holding the inflight entry in a guard ensures that if parsing or
-/// extraction unwinds (panics), the URI is still removed from the
-/// inflight set. Without this, a panic would leave the URI stuck in
-/// `parse_inflight` forever, forcing every subsequent lookup down the
-/// slow `wait_for_cached_result` spin path that can never succeed.
+/// The first thread to request a URI claims it and performs the parse;
+/// any other thread that requests the same URI while the parse is in
+/// flight blocks on a condvar until the claim is released, then reads
+/// the completed result from `uri_classes_index`.
+///
+/// Blocking (rather than spin-waiting with a timeout) matters for
+/// correctness: a timed-out waiter would conclude the class does not
+/// exist and poison the `class_not_found_cache` for the rest of the
+/// process, turning a scheduling hiccup into permanently unresolved
+/// types.  Waiting is always finite because a parse never parses
+/// another file (so there are no claim cycles) and the claim is
+/// released via an RAII guard even when the parse unwinds.
+///
+/// Claims are keyed by URI and record the owning thread, so a
+/// (currently impossible) re-entrant parse of the same URI on the same
+/// thread degrades to reading the current cached state instead of
+/// self-deadlocking.
+pub(crate) struct ParseInflight {
+    /// URI → thread currently parsing it.
+    entries: parking_lot::Mutex<HashMap<String, std::thread::ThreadId>>,
+    /// Notified whenever a claim is released.
+    released: parking_lot::Condvar,
+}
+
+impl ParseInflight {
+    /// Create an empty inflight set.
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: parking_lot::Mutex::new(HashMap::new()),
+            released: parking_lot::Condvar::new(),
+        }
+    }
+
+    /// Try to claim `uri` for parsing on the current thread.
+    ///
+    /// Returns `true` when the claim was acquired (the caller must
+    /// parse and then release via [`InflightGuard`]), `false` when
+    /// another thread already holds the claim.
+    fn try_claim(&self, uri: &str) -> bool {
+        let mut entries = self.entries.lock();
+        match entries.get(uri) {
+            Some(_) => false,
+            None => {
+                entries.insert(uri.to_string(), std::thread::current().id());
+                true
+            }
+        }
+    }
+
+    /// Block until no thread holds a claim on `uri`.
+    ///
+    /// If the current thread itself holds the claim (re-entrant parse),
+    /// returns immediately instead of deadlocking — the caller then
+    /// sees whatever partial state is already cached.
+    ///
+    /// A single parse takes milliseconds, so the 10-second escape
+    /// hatch is never reached in normal operation.  It exists so that
+    /// if a parse ever hangs abnormally (e.g. a future caller waiting
+    /// while holding a lock the parsing thread needs), the waiter
+    /// degrades to a loudly-logged stale read instead of hanging the
+    /// analyzer forever.
+    fn wait_until_released(&self, uri: &str) {
+        const ESCAPE_HATCH: std::time::Duration = std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + ESCAPE_HATCH;
+        let mut entries = self.entries.lock();
+        while let Some(owner) = entries.get(uri) {
+            if *owner == std::thread::current().id() {
+                tracing::warn!(
+                    "PHPantom: re-entrant parse of {uri} on the same thread; \
+                     returning current cached state"
+                );
+                return;
+            }
+            if self.released.wait_until(&mut entries, deadline).timed_out() {
+                tracing::warn!(
+                    "PHPantom: gave up waiting for another thread's parse of {uri} \
+                     after {ESCAPE_HATCH:?}; results for this file may be incomplete"
+                );
+                return;
+            }
+        }
+    }
+
+    /// Release the claim on `uri` and wake all waiters.
+    fn release(&self, uri: &str) {
+        self.entries.lock().remove(uri);
+        self.released.notify_all();
+    }
+}
+
+/// RAII guard that releases a URI claim in `parse_inflight` on drop.
+///
+/// Holding the claim in a guard ensures that if parsing or extraction
+/// unwinds (panics), the claim is still released and waiting threads
+/// wake up. Without this, a panic would leave the URI claimed forever,
+/// blocking every subsequent lookup of the same file.
 struct InflightGuard<'a> {
-    /// The shared inflight set the URI was inserted into.
-    inflight: &'a parking_lot::Mutex<HashSet<String>>,
-    /// The URI to remove on drop.
+    /// The shared inflight set the URI was claimed in.
+    inflight: &'a ParseInflight,
+    /// The URI to release on drop.
     uri: String,
 }
 
 impl Drop for InflightGuard<'_> {
     fn drop(&mut self) {
-        self.inflight.lock().remove(&self.uri);
+        self.inflight.release(&self.uri);
     }
 }
 
@@ -325,7 +415,7 @@ impl Backend {
             let uri = format!("phar://{}/{}", phar_path.display(), internal_path);
 
             // Deduplicate concurrent parses of the same phar entry.
-            if !self.parse_inflight.lock().insert(uri.clone()) {
+            if !self.parse_inflight.try_claim(&uri) {
                 return self.wait_for_cached_result(&uri);
             }
             // Remove the inflight entry even if the work below unwinds.
@@ -346,7 +436,7 @@ impl Backend {
         let uri = crate::util::path_to_uri(file_path);
 
         // Deduplicate concurrent parses of the same file.
-        if !self.parse_inflight.lock().insert(uri.clone()) {
+        if !self.parse_inflight.try_claim(&uri) {
             return self.wait_for_cached_result(&uri);
         }
         // Remove the inflight entry even if the work below unwinds.
@@ -358,18 +448,22 @@ impl Backend {
         content.and_then(|c| self.parse_and_cache_content(&c, &uri))
     }
 
-    /// Spin-wait for another thread to finish parsing a file and return
+    /// Block until another thread finishes parsing a file, then return
     /// the cached result from `uri_classes_index`.
+    ///
+    /// The wait must not give up while the parse is still running:
+    /// returning early makes the caller conclude the class does not
+    /// exist, and that conclusion is cached in `class_not_found_cache`
+    /// — one slow parse under heavy thread contention would permanently
+    /// poison resolution of every class in the file for the rest of the
+    /// process (nondeterministic "type could not be resolved"
+    /// diagnostics in full-project runs).  The wait is bounded by the
+    /// owning thread's single parse, which never parses another file
+    /// and releases its claim via RAII even on panic; see
+    /// [`ParseInflight::wait_until_released`] for the abnormal-hang
+    /// escape hatch.
     fn wait_for_cached_result(&self, uri: &str) -> Option<Vec<Arc<ClassInfo>>> {
-        for _ in 0..200 {
-            // Check if parsing is complete (URI removed from inflight set).
-            if !self.parse_inflight.lock().contains(uri) {
-                return self.uri_classes_index.read().get(uri).cloned();
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        // Timeout: the other thread is still parsing.  Return whatever is
-        // in uri_classes_index (may be stale or None).
+        self.parse_inflight.wait_until_released(uri);
         self.uri_classes_index.read().get(uri).cloned()
     }
 
@@ -1319,19 +1413,86 @@ mod tests {
 }
 
 #[cfg(test)]
-mod inflight_guard_tests {
-    //! The inflight guard must remove its URI from `parse_inflight` even
-    //! when the parse/extraction work unwinds, so a panic can never
-    //! permanently poison a URI (leaving it stuck on the slow spin path).
+mod stub_patch_consistency_tests {
+    //! A constant lookup routes its stub source through `update_ast`
+    //! (under a `phpantom-stub://const/…` URI).  The same stub file
+    //! often also defines functions — e.g. `ARRAY_FILTER_USE_BOTH`
+    //! lives in the stub chunk that declares `array_map`.  Functions
+    //! registered on that path must carry the same stub patches as the
+    //! dedicated stub-function loader; otherwise the unpatched variant
+    //! overwrites (or preempts) the patched one and `array_map` loses
+    //! its `@template TValue`, silently breaking closure parameter
+    //! inference for the rest of the session.  Which registration runs
+    //! first depends on file analysis order, so the breakage was
+    //! nondeterministic in full-project runs.
 
-    use super::InflightGuard;
-    use parking_lot::Mutex;
-    use std::collections::HashSet;
+    use crate::Backend;
 
     #[test]
-    fn guard_removes_uri_on_panic() {
-        let inflight: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
-        inflight.lock().insert("file:///a.php".to_string());
+    fn constant_lookup_before_function_lookup_keeps_stub_patches() {
+        let backend = Backend::new_test_with_full_stubs();
+
+        assert!(
+            backend
+                .lookup_global_constant("ARRAY_FILTER_USE_BOTH")
+                .is_some(),
+            "ARRAY_FILTER_USE_BOTH must resolve from the embedded stubs"
+        );
+
+        let fi = backend
+            .find_or_load_function(&["array_map"])
+            .expect("array_map must resolve from the embedded stubs");
+        assert!(
+            !fi.template_params.is_empty(),
+            "array_map must keep its @template stub patch when the \
+             constant stub that defines it was parsed first"
+        );
+    }
+
+    #[test]
+    fn constant_lookup_after_function_lookup_keeps_stub_patches() {
+        let backend = Backend::new_test_with_full_stubs();
+
+        assert!(
+            backend
+                .find_or_load_function(&["array_map"])
+                .is_some_and(|fi| !fi.template_params.is_empty()),
+            "array_map must resolve with its @template stub patch"
+        );
+
+        assert!(
+            backend
+                .lookup_global_constant("ARRAY_FILTER_USE_BOTH")
+                .is_some(),
+            "ARRAY_FILTER_USE_BOTH must resolve from the embedded stubs"
+        );
+
+        let fi = backend
+            .find_or_load_function(&["array_map"])
+            .expect("array_map must still resolve");
+        assert!(
+            !fi.template_params.is_empty(),
+            "array_map must keep its @template stub patch after a \
+             constant lookup re-registered the same stub file's functions"
+        );
+    }
+}
+
+#[cfg(test)]
+mod inflight_guard_tests {
+    //! The inflight guard must release its URI claim in `parse_inflight`
+    //! even when the parse/extraction work unwinds, so a panic can never
+    //! leave a URI claimed forever (blocking every subsequent lookup).
+    //! Waiters must block until the claim is released — never time out
+    //! into a "class not found" conclusion — and a re-entrant wait on
+    //! the claiming thread must return instead of self-deadlocking.
+
+    use super::{InflightGuard, ParseInflight};
+
+    #[test]
+    fn guard_releases_claim_on_panic() {
+        let inflight = ParseInflight::new();
+        assert!(inflight.try_claim("file:///a.php"));
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = InflightGuard {
@@ -1346,15 +1507,15 @@ mod inflight_guard_tests {
             "the panic should propagate to catch_unwind"
         );
         assert!(
-            !inflight.lock().contains("file:///a.php"),
-            "guard must remove the URI even when the scope unwinds"
+            inflight.try_claim("file:///a.php"),
+            "guard must release the claim even when the scope unwinds"
         );
     }
 
     #[test]
-    fn guard_removes_uri_on_normal_drop() {
-        let inflight: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
-        inflight.lock().insert("file:///b.php".to_string());
+    fn guard_releases_claim_on_normal_drop() {
+        let inflight = ParseInflight::new();
+        assert!(inflight.try_claim("file:///b.php"));
         {
             let _guard = InflightGuard {
                 inflight: &inflight,
@@ -1362,8 +1523,59 @@ mod inflight_guard_tests {
             };
         }
         assert!(
-            !inflight.lock().contains("file:///b.php"),
-            "guard must remove the URI when it drops normally"
+            inflight.try_claim("file:///b.php"),
+            "guard must release the claim when it drops normally"
         );
+    }
+
+    #[test]
+    fn waiter_blocks_until_claim_released() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let inflight = ParseInflight::new();
+        assert!(inflight.try_claim("file:///c.php"));
+        let released = AtomicBool::new(false);
+
+        std::thread::scope(|s| {
+            let waiter = s.spawn(|| {
+                inflight.wait_until_released("file:///c.php");
+                assert!(
+                    released.load(Ordering::SeqCst),
+                    "waiter must not wake up before the claim is released"
+                );
+            });
+
+            // Hold the claim long enough that a woken-too-early waiter
+            // would observe `released == false` and fail the assert.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            released.store(true, Ordering::SeqCst);
+            inflight.release("file:///c.php");
+            waiter.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn reentrant_wait_on_claiming_thread_returns() {
+        let inflight = ParseInflight::new();
+        assert!(inflight.try_claim("file:///d.php"));
+        // Same thread holds the claim — must return, not deadlock.
+        inflight.wait_until_released("file:///d.php");
+        inflight.release("file:///d.php");
+    }
+
+    #[test]
+    fn second_claim_fails_while_held() {
+        let inflight = ParseInflight::new();
+        assert!(inflight.try_claim("file:///e.php"));
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                assert!(
+                    !inflight.try_claim("file:///e.php"),
+                    "a held claim must not be claimable from another thread"
+                );
+            })
+            .join()
+            .unwrap();
+        });
     }
 }

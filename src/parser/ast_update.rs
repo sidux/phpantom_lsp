@@ -330,6 +330,25 @@ impl Backend {
                 &namespace,
                 Some(&func_doc_ctx),
             );
+
+            // Apply stub patches when parsing embedded stub content
+            // (e.g. a constant lookup routes its stub source through
+            // `update_ast` under a `phpantom-stub://const/…` URI).  The
+            // same stub file often defines functions and classes too;
+            // without patching here, those register with unpatched
+            // signatures and overwrite (or preempt) the patched entries
+            // from the stub-function and stub-class loaders — silently
+            // dropping e.g. `array_map`'s template parameters and
+            // breaking closure parameter inference for the rest of the
+            // session.
+            if uri.starts_with("phpantom-stub") {
+                for func in &mut functions {
+                    crate::stub_patches::apply_function_stub_patches(func);
+                }
+                for (cls, _) in &mut classes_with_ns {
+                    crate::stub_patches::apply_class_stub_patches(cls);
+                }
+            }
             // Recall the standalone functions and defines this file contributed
             // on its previous parse so that symbols the edit deleted or renamed
             // can be evicted from the global maps.  Without this, deleting or

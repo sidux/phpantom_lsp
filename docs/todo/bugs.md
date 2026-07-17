@@ -189,25 +189,3 @@ Indexing a shape (or a homogeneous map built in a loop) with a
 variable key should resolve to the union of the value types.
 Website `ProductRoutineTest.php:163`, Backoffice
 `RAFEventsAggregatorService.php:108` and `EconomyController.php:540`.
-
-## B98. Full-project analyze nondeterministically fails to resolve closure parameters that resolve in single-file runs
-
-**Severity: Medium (0-10 errors per run: luxplus-website ×3, luxplus-backoffice ×1) · Observed repeatedly, no isolated fixture possible**
-
-```php
-// UsersController.php — errors appear only in some full-project runs:
-$userInfo['skin_concerns'] = array_map(fn($e) => $e->value, $request->skinConcerns);
-// "type of '$e' could not be resolved" — file analyzed alone is always clean
-```
-
-During the 2026-07-16 re-triage, Website's three `fn($e) => $e->value`
-errors (UsersController) appeared in the first full-project run and
-were absent from six later identical runs; Backoffice's
-`fn($cause) => $cause->value` error (CreateRefund.php:141) appears in
-full runs but never single-file. Same binary, same project state,
-different diagnostics — which files get analyzed together (worker
-scheduling) changes resolution results. Points at shared state
-(thread-locals or consumer-gated caches — see performance
-anti-patterns #4/#5 in `AGENTS.md`) leaking between files in the
-parallel analyze pipeline. Also makes the analyze-triage error
-counts themselves unstable by a few errors between runs.

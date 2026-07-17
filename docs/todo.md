@@ -25,7 +25,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                                  | Impact     | Effort |
 | --- | --------------------------------------------------------------------------------------------------------------------- | ---------- | ------ |
-| B98 | [Full-project analyze nondeterministically fails to resolve closure parameters](todo/bugs.md#b98-full-project-analyze-nondeterministically-fails-to-resolve-closure-parameters-that-resolve-in-single-file-runs) | Medium | Medium |
 | B91 | [Narrowing guards don't apply to array-index subject expressions](todo/bugs.md#b91-narrowing-guards-do-not-apply-to-array-index-subject-expressions) | Medium | Medium |
 | B97 | [Dynamic-key array element access doesn't resolve the element type](todo/bugs.md#b97-array-element-access-with-a-dynamic-non-literal-key-does-not-resolve-the-element-type) | Medium | Medium |
 | B92 | [Assert narrowing can't override list-destructured variables with unresolvable RHS](todo/bugs.md#b92-assert-narrowing-cannot-override-variables-assigned-by-list-destructuring-from-an-unresolvable-rhs) | Medium | Low-Medium |
