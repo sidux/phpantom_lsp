@@ -2297,16 +2297,26 @@ impl ResolvedType {
     ///   - Entries that narrowing introduced (e.g. instanceof narrows
     ///     to a new class) are added via `from_class`.
     ///   - Non-class entries (scalars, shapes) are kept unchanged —
-    ///     narrowing never affects them.
+    ///     narrowing never affects them, UNLESS `f` reports a definite
+    ///     (inclusion-style) narrowing (return `true`), in which case
+    ///     leftover non-class `mixed` entries are dropped too — see
+    ///     below.
+    ///
+    /// `f` returns whether it applied a *definite* (inclusion-style)
+    /// narrowing — one that concludes the variable's type outright
+    /// (e.g. `instanceof` proving membership), as opposed to an
+    /// *exclusion*-style narrowing that only rules out one possibility
+    /// and leaves the rest of the union (including an unresolved
+    /// `mixed` component) intact.
     pub(crate) fn apply_narrowing(
         results: &mut Vec<ResolvedType>,
-        f: impl FnOnce(&mut Vec<ClassInfo>),
+        f: impl FnOnce(&mut Vec<ClassInfo>) -> bool,
     ) {
         let mut classes: Vec<ClassInfo> = results
             .iter()
             .filter_map(|rt| rt.class_info.as_ref().map(|arc| arc.as_ref().clone()))
             .collect();
-        f(&mut classes);
+        let definite = f(&mut classes);
 
         // Remove entries whose class was removed by narrowing.
         // Compare by FQN (namespace + name) so that same-named classes
@@ -2332,15 +2342,22 @@ impl ResolvedType {
             }
         }
 
-        // When narrowing introduced concrete class types (e.g. via
-        // `instanceof`), drop leftover `mixed` non-class entries.
-        // `mixed` is kept by the `None => true` retain branch above
-        // because it has no `class_info`, but once narrowing has
-        // constrained the value to a specific class, `mixed` is no
-        // longer accurate and would cause false-positive diagnostics
-        // after branch merges (where subsumption lets `mixed` swallow
-        // the narrowed class type).
-        if added_new {
+        // Once narrowing has definitely constrained the value to a
+        // specific class, `mixed` is no longer an accurate remaining
+        // possibility and would cause false-positive diagnostics after
+        // branch merges (where subsumption lets `mixed` swallow the
+        // narrowed class type).  `mixed` is kept by the `None => true`
+        // retain branch above because it has no `class_info`, so it
+        // must be dropped explicitly here.
+        //
+        // This fires both when narrowing introduced a class that
+        // wasn't previously present (`added_new`) and whenever `f`
+        // reports a definite (inclusion-style) conclusion (`definite`)
+        // — the latter also covers the case where the narrowed class
+        // was already one of several possibilities (e.g. a union of a
+        // known class and an unresolved `mixed` component), which
+        // `added_new` alone cannot detect.
+        if added_new || definite {
             results.retain(|rt| !(rt.class_info.is_none() && rt.type_string.is_mixed()));
         }
     }

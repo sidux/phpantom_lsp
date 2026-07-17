@@ -280,12 +280,20 @@ pub(in crate::completion) fn try_apply_instanceof_narrowing_inverse(
 /// When `exact` is `true` (`get_class($x) === Foo::class` or
 /// `$x::class === Foo::class`), the variable is narrowed to exactly
 /// that class regardless of the current results.
+///
+/// Always returns `true`: every path through this function reaches a
+/// definite conclusion about the variable's type (including the
+/// unresolvable-target case, which definitely concludes "untyped").
+/// Callers feeding the result through [`ResolvedType::apply_narrowing`]
+/// use this to drop leftover non-class entries (e.g. `mixed`) that the
+/// instanceof check has proven cannot hold, even when the narrowed
+/// class was already present in the pre-narrowing union.
 pub(in crate::completion) fn apply_instanceof_inclusion(
     ty: &PhpType,
     exact: bool,
     ctx: &VarResolutionCtx<'_>,
     results: &mut Vec<ClassInfo>,
-) {
+) -> bool {
     let narrowed: Vec<ClassInfo> = super::resolution::type_hint_to_classes_typed(
         ty,
         &ctx.current_class.name,
@@ -307,7 +315,7 @@ pub(in crate::completion) fn apply_instanceof_inclusion(
         // suppressed by the diagnostic engine, eliminating the false
         // positives without losing any information we actually had.
         results.clear();
-        return;
+        return true;
     }
 
     // For non-exact checks (instanceof / is_a), keep existing results
@@ -330,7 +338,7 @@ pub(in crate::completion) fn apply_instanceof_inclusion(
             // class, so the instanceof check is satisfied without
             // widening.
             *results = already_subtypes;
-            return;
+            return true;
         }
     }
 
@@ -369,7 +377,7 @@ pub(in crate::completion) fn apply_instanceof_inclusion(
                         results.push(cls);
                     }
                 }
-                return;
+                return true;
             }
         }
     }
@@ -382,14 +390,20 @@ pub(in crate::completion) fn apply_instanceof_inclusion(
             results.push(cls);
         }
     }
+    true
 }
 
 /// Remove the resolved classes for `ty` from `results`.
+///
+/// Always returns `false`: exclusion only rules out one possibility and
+/// never concludes the variable's full type, so leftover non-class
+/// entries (e.g. `mixed`) that [`ResolvedType::apply_narrowing`] tracks
+/// separately must survive.
 pub(in crate::completion) fn apply_instanceof_exclusion(
     ty: &PhpType,
     ctx: &VarResolutionCtx<'_>,
     results: &mut Vec<ClassInfo>,
-) {
+) -> bool {
     let excluded: Vec<ClassInfo> = super::resolution::type_hint_to_classes_typed(
         ty,
         &ctx.current_class.name,
@@ -402,6 +416,7 @@ pub(in crate::completion) fn apply_instanceof_exclusion(
     if !excluded.is_empty() {
         results.retain(|r| !excluded.iter().any(|e| e.name == r.name));
     }
+    false
 }
 
 /// If `expr` is `$var instanceof ClassName` and the variable name
@@ -1075,24 +1090,31 @@ fn scalar_assert_guard_kind(ty: &PhpType) -> Option<TypeGuardKind> {
 /// assertion whose bound `class-string` argument could not be resolved
 /// (e.g. `assertInstanceOf($variableClass, $x)`): the subject is still known
 /// to be an object, so it is narrowed to `object` rather than cleared.
+///
+/// Returns `true` when a definite (inclusion-style) narrowing was
+/// applied to `results` — see [`ResolvedType::apply_narrowing`]. The
+/// scalar/pseudo-type and template-deferral branches signal through
+/// `type_guard` instead and do not affect `results` here, so they
+/// contribute `false`.
 pub(in crate::completion) fn try_apply_custom_assert_narrowing(
     expr: &Expression<'_>,
     ctx: &VarResolutionCtx<'_>,
     results: &mut Vec<ClassInfo>,
     type_guard: &mut Option<(TypeGuardKind, bool)>,
-) {
+) -> bool {
     let expr = match expr {
         Expression::Parenthesized(inner) => inner.expression,
         other => other,
     };
     let call = match expr {
         Expression::Call(c) => c,
-        _ => return,
+        _ => return false,
     };
     let info = match extract_call_assertions(call, ctx) {
         Some(info) => info,
-        None => return,
+        None => return false,
     };
+    let mut definite = false;
     for assertion in info.assertions {
         if assertion.kind != AssertionKind::Always {
             continue;
@@ -1135,10 +1157,11 @@ pub(in crate::completion) fn try_apply_custom_assert_narrowing(
             if assertion.negated {
                 apply_instanceof_exclusion(&effective_type, ctx, results);
             } else {
-                apply_instanceof_inclusion(&effective_type, false, ctx, results);
+                definite |= apply_instanceof_inclusion(&effective_type, false, ctx, results);
             }
         }
     }
+    definite
 }
 
 /// Collect argument expressions that an assert-style call proves to be
@@ -1379,11 +1402,14 @@ pub(in crate::completion) fn find_assertion_arg_variable(
 /// `assert()` narrows unconditionally for all subsequent code in the
 /// same scope — the statement being before the cursor is already
 /// guaranteed by the caller.
+///
+/// Returns `true` when a definite (inclusion-style) narrowing was
+/// applied — see [`ResolvedType::apply_narrowing`].
 pub(in crate::completion) fn try_apply_assert_instanceof_narrowing(
     expr: &Expression<'_>,
     ctx: &VarResolutionCtx<'_>,
     results: &mut Vec<ClassInfo>,
-) {
+) -> bool {
     // ── Compound OR inside assert: `assert($x instanceof A || $x instanceof B)` ──
     if let Some(classes) = try_extract_assert_compound_or_instanceof(expr, ctx.var_name)
         && !classes.is_empty()
@@ -1392,18 +1418,20 @@ pub(in crate::completion) fn try_apply_assert_instanceof_narrowing(
         if !union.is_empty() {
             results.clear();
             *results = union;
+            return true;
         }
-        return;
+        return false;
     }
 
     if let Some(mut extraction) = try_extract_assert_instanceof(expr, ctx.var_name) {
         resolve_extraction_to_fqn(&mut extraction, ctx.class_loader);
-        if extraction.negated {
-            apply_instanceof_exclusion(&extraction.class_type, ctx, results);
+        return if extraction.negated {
+            apply_instanceof_exclusion(&extraction.class_type, ctx, results)
         } else {
-            apply_instanceof_inclusion(&extraction.class_type, extraction.exact, ctx, results);
-        }
+            apply_instanceof_inclusion(&extraction.class_type, extraction.exact, ctx, results)
+        };
     }
+    false
 }
 
 /// If `expr` is `assert($var instanceof ClassName)` (or the negated

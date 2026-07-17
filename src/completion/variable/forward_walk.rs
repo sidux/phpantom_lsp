@@ -5861,13 +5861,13 @@ fn process_assert_narrowing<'b>(
 
         // assert($x instanceof Foo)
         ResolvedType::apply_narrowing(&mut results, |classes| {
-            narrowing::try_apply_assert_instanceof_narrowing(expr, &var_ctx, classes);
+            narrowing::try_apply_assert_instanceof_narrowing(expr, &var_ctx, classes)
         });
 
         // @phpstan-assert / @psalm-assert
         let mut type_guard: Option<(narrowing::TypeGuardKind, bool)> = None;
         ResolvedType::apply_narrowing(&mut results, |classes| {
-            narrowing::try_apply_custom_assert_narrowing(expr, &var_ctx, classes, &mut type_guard);
+            narrowing::try_apply_custom_assert_narrowing(expr, &var_ctx, classes, &mut type_guard)
         });
 
         // A scalar / pseudo-type assertion (`assertIsString`, `assertIsObject`,
@@ -8123,7 +8123,7 @@ fn apply_condition_narrowing<'b>(
                             &extraction.class_type,
                             &var_ctx,
                             classes,
-                        );
+                        )
                     });
                     // Negated instanceof exclusion does NOT eliminate
                     // null — `!$x instanceof Foo` is true when $x is
@@ -8143,7 +8143,7 @@ fn apply_condition_narrowing<'b>(
                             extraction.exact,
                             &var_ctx,
                             classes,
-                        );
+                        )
                     });
                     if !single.is_empty() {
                         let entry = instanceof_results.entry(var_name.clone()).or_default();
@@ -8256,12 +8256,7 @@ fn apply_condition_narrowing<'b>(
                     };
                     let var_ctx = build_var_ctx(&var_name, ctx, &scope_resolver);
                     ResolvedType::apply_narrowing(&mut results, |classes| {
-                        narrowing::apply_instanceof_inclusion(
-                            &union_type,
-                            false,
-                            &var_ctx,
-                            classes,
-                        );
+                        narrowing::apply_instanceof_inclusion(&union_type, false, &var_ctx, classes)
                     });
                     // Instanceof guarantees non-null — strip bare
                     // `null` entries that were preserved by
@@ -8343,7 +8338,7 @@ fn apply_condition_narrowing_inverse_single<'b>(
             let mut results = scope.get(var_name).to_vec();
             for cls_type in &classes {
                 ResolvedType::apply_narrowing(&mut results, |class_list| {
-                    narrowing::apply_instanceof_exclusion(cls_type, &var_ctx, class_list);
+                    narrowing::apply_instanceof_exclusion(cls_type, &var_ctx, class_list)
                 });
             }
             if !results.is_empty() {
@@ -8366,7 +8361,7 @@ fn apply_condition_narrowing_inverse_single<'b>(
                         extraction.exact,
                         &var_ctx,
                         classes,
-                    );
+                    )
                 });
                 results.retain(|rt| !rt.type_string.is_null());
             } else {
@@ -8374,11 +8369,7 @@ fn apply_condition_narrowing_inverse_single<'b>(
                 // Exclusion does NOT strip null (`!instanceof` is
                 // true for null values).
                 ResolvedType::apply_narrowing(&mut results, |classes| {
-                    narrowing::apply_instanceof_exclusion(
-                        &extraction.class_type,
-                        &var_ctx,
-                        classes,
-                    );
+                    narrowing::apply_instanceof_exclusion(&extraction.class_type, &var_ctx, classes)
                 });
             }
             if !results.is_empty() {
@@ -8598,18 +8589,18 @@ fn apply_in_array_narrowing<'b>(
                 let would_remove_all = {
                     let mut test = results.clone();
                     ResolvedType::apply_narrowing(&mut test, |classes| {
-                        narrowing::apply_instanceof_exclusion(&element_type, &var_ctx, classes);
+                        narrowing::apply_instanceof_exclusion(&element_type, &var_ctx, classes)
                     });
                     test.is_empty()
                 };
                 if !would_remove_all {
                     ResolvedType::apply_narrowing(&mut results, |classes| {
-                        narrowing::apply_instanceof_exclusion(&element_type, &var_ctx, classes);
+                        narrowing::apply_instanceof_exclusion(&element_type, &var_ctx, classes)
                     });
                 }
             } else {
                 ResolvedType::apply_narrowing(&mut results, |classes| {
-                    narrowing::apply_instanceof_inclusion(&element_type, false, &var_ctx, classes);
+                    narrowing::apply_instanceof_inclusion(&element_type, false, &var_ctx, classes)
                 });
             }
 
@@ -8739,7 +8730,7 @@ fn apply_phpstan_assert_condition_narrowing<'b>(
                                 &assertion.asserted_type,
                                 &var_ctx,
                                 classes,
-                            );
+                            )
                         });
                     } else {
                         ResolvedType::apply_narrowing(&mut results, |classes| {
@@ -8748,7 +8739,7 @@ fn apply_phpstan_assert_condition_narrowing<'b>(
                                 false,
                                 &var_ctx,
                                 classes,
-                            );
+                            )
                         });
                     }
                     if !results.is_empty() {
@@ -8824,7 +8815,7 @@ fn apply_phpstan_assert_condition_narrowing<'b>(
                                 &resolved_assert_type,
                                 &var_ctx,
                                 classes,
-                            );
+                            )
                         });
                     } else {
                         ResolvedType::apply_narrowing(&mut results, |classes| {
@@ -8833,7 +8824,7 @@ fn apply_phpstan_assert_condition_narrowing<'b>(
                                 false,
                                 &var_ctx,
                                 classes,
-                            );
+                            )
                         });
                     }
                     if !results.is_empty() {
@@ -8914,7 +8905,7 @@ fn apply_phpstan_assert_condition_narrowing<'b>(
                 let mut results = scope.get(&target_var).to_vec();
                 if should_exclude {
                     ResolvedType::apply_narrowing(&mut results, |classes| {
-                        narrowing::apply_instanceof_exclusion(&asserted_type, &var_ctx, classes);
+                        narrowing::apply_instanceof_exclusion(&asserted_type, &var_ctx, classes)
                     });
                 } else {
                     ResolvedType::apply_narrowing(&mut results, |classes| {
@@ -8923,7 +8914,7 @@ fn apply_phpstan_assert_condition_narrowing<'b>(
                             false,
                             &var_ctx,
                             classes,
-                        );
+                        )
                     });
                 }
                 if !results.is_empty() {

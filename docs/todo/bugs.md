@@ -241,31 +241,38 @@ return \response()->json([...]); // "type of '\response()' could not be resolved
 return response()->json([...]);  // works
 ```
 
-## B101. Reassignment inside a guard branch discards the other path's type when the initial type is partially unresolved
+## B101. A conditional return type whose selected branch is `mixed` resolves to nothing
 
-**Severity: Medium (2 errors, luxplus-backoffice) · Reproduced with fixture (enum case); session() case reproduced in-project**
+**Severity: Medium (1 error, luxplus-backoffice) · Reproduced with fixture**
 
 ```php
-$type = $b ? Country::ADMIN : $m->grab(); // grab(): mixed
-if (!$type || !$type instanceof Country) {
-    $type = Country::ADMIN;
-}
-$type->getFlagImageName(); // "type of '$type' could not be resolved"
+/** @return ($key is string ? mixed : null) */
+function session(?string $key = null) { return null; }
 
-// Same family (reproduces with session('file') in a Laravel project):
-$file = session('file');
+$file = session('file');            // should be `mixed`, resolves to no type
 if (!is_string($file)) { $file = null; }
 if ($file) {
-    explode('/', $file); // "Argument 2 ($string) expects string, got null"
+    explode('/', $file);            // "Argument 2 ($string) expects string, got null"
 }
 ```
 
-After the guard, the variable should be the union of the branch
-assignment and the narrowed fall-through type. When the initial
-type has an unresolved component, the fall-through contribution is
-dropped and only the branch assignment (`null` / the enum) survives
-— in the first case producing no type at all, in the second
-narrowing to literal `null` inside a branch that proves the
-variable truthy. Both simple-fixture equivalents with fully-known
-initial types work. Backoffice `AuditViewModel.php:54`,
-`InvoiceAnalyzerController.php:57`.
+When a conditional return type (e.g. Laravel's `session($key)`
+returning `($key is string ? mixed : null)`) selects a branch whose
+type is `mixed`, the resolver treats `mixed` as uninformative and
+returns no type at all instead of `mixed`. The variable is then
+untyped, so downstream narrowing (`is_string`, `instanceof`, …) has
+nothing to refine: after the `is_string` guard reassigns `null` on
+the failing path, the fall-through `string` contribution never
+materialises and `$file` reads as literal `null` inside the truthy
+branch.
+
+The fix is to flow `mixed` through as a resolved type (only `void`
+and `never` genuinely carry no value). A first attempt at this in
+the conditional resolver's leaf handling regressed
+`conditional_return_type_named_arg`: a `class-string<T>` condition
+passed an out-of-order named argument currently falls through to the
+`mixed` else branch and relied on the previous `mixed → None`
+behaviour to trigger a template-substitution fallback that recovered
+the correct `T` type. That named-argument path must be fixed to take
+the then-branch directly before `mixed` can safely flow through.
+Backoffice `InvoiceAnalyzerController.php:57`.
