@@ -231,12 +231,3 @@ The nullable equivalent (`array<int, self>|null` with a `!$columns`
 guard) resolves fine; only the `|false` union drops the element
 type. Also swallows the docblock when it refines a native
 `array|false` return. Backoffice `ProductPriceSheetService.php`.
-
-## B100. Leading-backslash global function calls do not resolve in member chains
-
-**Severity: Low (1 error, luxplus-backoffice) · Reproduced with fixture**
-
-```php
-return \response()->json([...]); // "type of '\response()' could not be resolved"
-return response()->json([...]);  // works
-```

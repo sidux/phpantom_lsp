@@ -910,6 +910,15 @@ impl Backend {
         file_use_map: &HashMap<String, String>,
         file_namespace: &Option<String>,
     ) -> Option<FunctionInfo> {
+        // A leading backslash (`\response`, `\App\Helpers\foo`) is an
+        // explicit global/absolute reference.  Strip it and look up the
+        // qualified name directly, bypassing the use-map and namespace
+        // qualification (which would otherwise mangle it into
+        // `Current\Ns\\response`).
+        if let Some(absolute) = name.strip_prefix('\\') {
+            return self.find_or_load_function(&[absolute]);
+        }
+
         // Build candidate names to try: exact name, use-map
         // resolved name, and namespace-qualified name.
         let mut candidates: Vec<&str> = vec![name];

@@ -209,6 +209,9 @@ class ReturnTypeDemo
         $created->write();                        // function return type
         // MUST NOT appear: refill() (private)
 
+        $absolute = \Demo\makePen();              // leading-backslash (absolute) call
+        $absolute->write();                       // resolves the same as makePen()
+
         $found = pickPenOrPencil();               // Pen|Pencil union
         $found->label();                          // available on both types
     }
@@ -6139,6 +6142,9 @@ function runDemoAssertions(): void
     assert($pen instanceof Pen, 'createPen() must return Pen (inferred from body)');
     $tool = $factory->createTool(true);
     assert($tool instanceof Pen || $tool instanceof Pencil, 'createTool() must return Pen|Pencil');
+
+    // ── Leading-backslash (absolute) function call ─────────────────────
+    assert(\Demo\makePen() instanceof Pen, 'absolute \\Demo\\makePen() resolves the same as makePen()');
 
     // ── Trait `return $this` fluent chain ───────────────────────────────
     $page = new TestablePage();
