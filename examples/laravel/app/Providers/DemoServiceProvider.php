@@ -12,7 +12,7 @@ class DemoServiceProvider extends ServiceProvider
         // A macro registered here becomes a real method on Collection:
         // it autocompletes, hovers with this signature, and type-checks.
         Collection::macro('sumField', function (string $field): float {
-            return 0.0;
+            return $this->sum($field);
         });
     }
 }
