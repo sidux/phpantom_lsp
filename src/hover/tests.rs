@@ -444,6 +444,14 @@ fn html_to_markdown_ordered_list() {
 }
 
 #[test]
+fn html_to_markdown_definition_list() {
+    assert_eq!(
+        formatting::html_to_markdown("<dl><dt>Term</dt><dd>Definition</dd></dl>"),
+        "\n\n**Term**\n  Definition\n"
+    );
+}
+
+#[test]
 fn html_to_markdown_span_stripped() {
     assert_eq!(formatting::html_to_markdown("<span>text</span>"), "text");
 }

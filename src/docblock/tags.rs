@@ -992,11 +992,13 @@ pub fn extract_link_urls_from_info(info: &DocblockInfo) -> Vec<String> {
     urls
 }
 
-/// Strip common HTML tags from a docblock description string.
+/// Convert common HTML tags in a docblock description to plain text.
 ///
-/// Removes `<p>`, `</p>`, `<i>`, `</i>`, `<b>`, `</b>`, `<br>`, `<br/>`,
-/// `<br />`, `<li>`, `</li>`, `<ul>`, `</ul>`, `<ol>`, `</ol>`,
-/// `<code>`, `</code>`, `<em>`, `</em>`, and `<strong>`, `</strong>`.
+/// Inline formatting tags (`<b>`, `<i>`, `<code>`, `<em>`, `<strong>`,
+/// `<span>`) are unwrapped, `<br>` and `<p>` become line breaks, and list
+/// and definition-list tags (`<ul>`/`<ol>`/`<li>`, `<dl>`/`<dt>`/`<dd>`)
+/// become bullet-prefixed or indented lines. Tag matching is
+/// case-insensitive. Unrecognised tags are left untouched.
 fn strip_html_tags(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.char_indices().peekable();
@@ -1009,11 +1011,15 @@ fn strip_html_tags(s: &str) -> String {
                     "<li>" => Some("- "),
                     "</li>" => Some("\n"),
                     "<ul>" | "<ol>" => Some("\n"),
+                    "<dl>" | "</dl>" => Some("\n"),
+                    "<dt>" => Some("\n"),
+                    "<dd>" => Some("\n  "),
                     "<br>" | "<br/>" | "<br />" => Some("\n"),
                     "<p>" => Some("\n\n"),
                     "</ul>" | "</ol>" => Some("\n"),
-                    "</p>" | "<i>" | "</i>" | "<b>" | "</b>" | "<code>" | "</code>" | "<em>"
-                    | "</em>" | "<strong>" | "</strong>" | "<span>" | "</span>" => Some(""),
+                    "</p>" | "</dt>" | "</dd>" | "<i>" | "</i>" | "<b>" | "</b>" | "<code>"
+                    | "</code>" | "<em>" | "</em>" | "<strong>" | "</strong>" | "<span>"
+                    | "</span>" => Some(""),
                     _ => None,
                 };
                 if let Some(rep) = replacement {
@@ -2306,6 +2312,14 @@ mod tests {
         assert_eq!(
             strip_html_tags("<ol><li>first</li><li>second</li></ol>"),
             "\n- first\n- second\n\n"
+        );
+    }
+
+    #[test]
+    fn strip_html_tags_definition_list() {
+        assert_eq!(
+            strip_html_tags("<dl><dt>Term</dt><dd>Definition</dd></dl>"),
+            "\n\nTerm\n  Definition\n"
         );
     }
 

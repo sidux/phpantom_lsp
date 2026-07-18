@@ -519,8 +519,11 @@ fn skip_type_token(s: &str) -> &str {
 
 /// Convert basic HTML markup in docblock text to Markdown equivalents.
 ///
-/// Handles `<b>`, `<i>`, `<code>`, `<br>`, and `<p>` tags.  This is a
-/// simple string-replacement pass, not a full HTML parser.
+/// Handles inline formatting (`<b>`/`<strong>`, `<i>`/`<em>`, `<code>`),
+/// line breaks (`<br>`, `<p>`), lists (`<ul>`/`<ol>`/`<li>`), and
+/// definition lists (`<dl>`/`<dt>`/`<dd>`); `<span>` is unwrapped. This is
+/// a simple string-replacement pass, not a full HTML parser, so tag
+/// matching is case-sensitive and attributes are not recognised.
 pub(crate) fn html_to_markdown(text: &str) -> String {
     text.replace("<b>", "**")
         .replace("</b>", "**")
