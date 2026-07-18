@@ -1876,6 +1876,11 @@ impl Backend {
         self.file_imports.write().remove(uri);
         self.resolved_names.write().remove(uri);
         self.file_namespaces.write().remove(uri);
+        // Parse errors are stored per file during update_ast and consumed
+        // by the syntax-error diagnostic. Without this removal the last
+        // parse-error vector for every file ever opened (or deleted from
+        // disk) stays resident for the whole session.
+        self.parse_errors.write().remove(uri);
         // NOTE: We intentionally keep fqn_uri_index and fqn_class_index intact.
         // fqn_uri_index maps FQN → URI so GTD can locate the file, and
         // fqn_class_index keeps the full ClassInfo for cross-file resolution.

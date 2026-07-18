@@ -684,41 +684,6 @@ early since it is a few lines.
 
 ---
 
-## P24. Per-file maps that survive `did_close` grow for the whole session
-
-**Impact: Low · Effort: Low**
-
-Two session-lifetime leaks found while auditing map hygiene:
-
-1. **`parse_errors` is never pruned.** `clear_file_maps`
-   (`src/util.rs:1757-1772`) removes `uri_classes_index`,
-   `symbol_maps`, `file_imports`, `resolved_names`, and
-   `file_namespaces`, but not `parse_errors`, and no other path
-   removes entries either (`did_close` and `reindex_files_batch`
-   both delegate to `clear_file_maps`). Every file ever opened
-   (or deleted from disk) keeps its last parse-error vector in
-   memory until restart.
-
-2. **`member_completion_cache` has no size bound.** It is cleared
-   wholesale on signature-changing edits
-   (`src/parser/ast_update.rs:735`) and on watched-file changes,
-   but during read-heavy browsing (no edits) it accumulates one
-   `Vec<CompletionItem>` per distinct completion target — for
-   Eloquent models those vectors contain hundreds of fully-built
-   items each.
-
-### Fix
-
-Add `self.parse_errors.write().remove(uri)` to `clear_file_maps`.
-For the completion cache, a simple cap (e.g. clear when the map
-exceeds N entries) is enough — the cache exists to serve
-keystroke bursts on one target, so losing cold entries is free.
-While in there, audit the `diag_last_*` / `diag_result_ids` /
-external-tool diagnostic caches for the same keep-after-close
-pattern (they hold per-file diagnostic vectors).
-
----
-
 ## P25. `type_mismatch_argument` / `argument_count_mismatch` slow on large single files
 
 **Impact: Medium · Effort: Medium**
