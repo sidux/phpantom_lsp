@@ -1002,35 +1002,22 @@ fn strip_html_tags(s: &str) -> String {
     let mut chars = s.char_indices().peekable();
     while let Some((i, c)) = chars.next() {
         if c == '<' {
-            // Find the closing `>`.
             if let Some(end) = s[i..].find('>') {
                 let tag = &s[i..i + end + 1];
                 let tag_lower = tag.to_ascii_lowercase();
-                let is_html = tag_lower == "<p>"
-                    || tag_lower == "</p>"
-                    || tag_lower == "<i>"
-                    || tag_lower == "</i>"
-                    || tag_lower == "<b>"
-                    || tag_lower == "</b>"
-                    || tag_lower == "<br>"
-                    || tag_lower == "<br/>"
-                    || tag_lower == "<br />"
-                    || tag_lower == "<li>"
-                    || tag_lower == "</li>"
-                    || tag_lower == "<ul>"
-                    || tag_lower == "</ul>"
-                    || tag_lower == "<ol>"
-                    || tag_lower == "</ol>"
-                    || tag_lower == "<code>"
-                    || tag_lower == "</code>"
-                    || tag_lower == "<em>"
-                    || tag_lower == "</em>"
-                    || tag_lower == "<strong>"
-                    || tag_lower == "</strong>"
-                    || tag_lower == "<span>"
-                    || tag_lower == "</span>";
-                if is_html {
-                    // Skip past the closing `>`.
+                let replacement = match tag_lower.as_str() {
+                    "<li>" => Some("- "),
+                    "</li>" => Some("\n"),
+                    "<ul>" | "<ol>" => Some("\n"),
+                    "<br>" | "<br/>" | "<br />" => Some("\n"),
+                    "<p>" => Some("\n\n"),
+                    "</ul>" | "</ol>" => Some("\n"),
+                    "</p>" | "<i>" | "</i>" | "<b>" | "</b>" | "<code>" | "</code>" | "<em>"
+                    | "</em>" | "<strong>" | "</strong>" | "<span>" | "</span>" => Some(""),
+                    _ => None,
+                };
+                if let Some(rep) = replacement {
+                    result.push_str(rep);
                     for _ in 0..end {
                         chars.next();
                     }
@@ -2276,6 +2263,61 @@ mod tests {
             assert_eq!(result[0].asserted_type.to_string(), "Foobar", "doc: {doc}");
             assert!(result[0].negated, "doc: {doc}");
         }
+    }
+
+    // ── strip_html_tags ──────────────────────────────────────────────
+
+    #[test]
+    fn strip_html_tags_removes_inline_tags() {
+        assert_eq!(
+            strip_html_tags("<b>bold</b> <i>italic</i> <code>code</code>"),
+            "bold italic code"
+        );
+    }
+
+    #[test]
+    fn strip_html_tags_strong_em_span() {
+        assert_eq!(
+            strip_html_tags("<strong>a</strong> <em>b</em> <span>c</span>"),
+            "a b c"
+        );
+    }
+
+    #[test]
+    fn strip_html_tags_br_becomes_newline() {
+        assert_eq!(strip_html_tags("a<br>b<br/>c<br />d"), "a\nb\nc\nd");
+    }
+
+    #[test]
+    fn strip_html_tags_paragraph() {
+        assert_eq!(strip_html_tags("first<p>second</p>"), "first\n\nsecond");
+    }
+
+    #[test]
+    fn strip_html_tags_list_items_become_bullets() {
+        assert_eq!(
+            strip_html_tags("<ul><li>one</li><li>two</li></ul>"),
+            "\n- one\n- two\n\n"
+        );
+    }
+
+    #[test]
+    fn strip_html_tags_ordered_list() {
+        assert_eq!(
+            strip_html_tags("<ol><li>first</li><li>second</li></ol>"),
+            "\n- first\n- second\n\n"
+        );
+    }
+
+    #[test]
+    fn strip_html_tags_preserves_non_html_angle_brackets() {
+        assert_eq!(strip_html_tags("a < b and c > d"), "a < b and c > d");
+    }
+
+    #[test]
+    fn strip_html_tags_no_html() {
+        let plain = "No HTML here.";
+        assert_eq!(strip_html_tags(plain), plain);
     }
 
     #[test]

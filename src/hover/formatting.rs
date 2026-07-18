@@ -524,8 +524,12 @@ fn skip_type_token(s: &str) -> &str {
 pub(crate) fn html_to_markdown(text: &str) -> String {
     text.replace("<b>", "**")
         .replace("</b>", "**")
+        .replace("<strong>", "**")
+        .replace("</strong>", "**")
         .replace("<i>", "*")
         .replace("</i>", "*")
+        .replace("<em>", "*")
+        .replace("</em>", "*")
         .replace("<code>", "`")
         .replace("</code>", "`")
         .replace("<br />", "\n")
@@ -533,6 +537,20 @@ pub(crate) fn html_to_markdown(text: &str) -> String {
         .replace("<br>", "\n")
         .replace("<p>", "\n\n")
         .replace("</p>", "")
+        .replace("<ul>", "\n")
+        .replace("</ul>", "\n")
+        .replace("<ol>", "\n")
+        .replace("</ol>", "\n")
+        .replace("<li>", "- ")
+        .replace("</li>", "\n")
+        .replace("<dl>", "\n")
+        .replace("</dl>", "\n")
+        .replace("<dt>", "\n**")
+        .replace("</dt>", "**")
+        .replace("<dd>", "\n  ")
+        .replace("</dd>", "")
+        .replace("<span>", "")
+        .replace("</span>", "")
 }
 
 /// Extract the description from a pre-parsed [`DocblockInfo`], applying
