@@ -213,6 +213,31 @@ class Svc {
     );
 }
 
+/// The binding survives being assigned to a variable before use, not just
+/// when chained directly off the call.
+#[tokio::test]
+async fn resolve_container_alias_resolves_through_variable_assignment() {
+    let content = "\
+<?php
+namespace App;
+class Svc {
+    public function make() {
+        $compiler = resolve('blade.compiler');
+        $compiler->
+    }
+}
+";
+    let labels = complete_labels(&base_files(), "src/Svc.php", content, 5, 19).await;
+    assert!(
+        labels.iter().any(|l| l.starts_with("component")),
+        "expected BladeCompiler::component in completions, got: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l.starts_with("compileString")),
+        "expected BladeCompiler::compileString in completions, got: {labels:?}"
+    );
+}
+
 /// An unknown string binding stays unresolved (no guessing): `resolve()` of a
 /// service-provider-registered name offers nothing.
 #[tokio::test]

@@ -2799,6 +2799,28 @@ fn resolve_rhs_function_call<'b>(
         _ => None,
     };
 
+    // ── Laravel container string binding ────────────────
+    // `$var = app('blade.compiler')` / `$var = resolve('cache')` bind a
+    // plain string to a concrete class via the framework's container
+    // alias table. Mirrors the direct-call-subject interception in
+    // call_resolution.rs so the binding survives being assigned to a
+    // variable instead of being chained off the call directly.
+    if let Some(ref name) = func_name {
+        let normalized_func = name.trim_start_matches('\\');
+        if matches!(normalized_func, "app" | "resolve") {
+            let arg_texts = super::raw_type_inference::extract_arg_texts_from_ast(
+                &func_call.argument_list,
+                content,
+            );
+            if let Some(first_arg) = arg_texts.first()
+                && let Some(alias) = crate::util::unescape_php_string_literal(first_arg.trim())
+                && let Some(cls) = (ctx.class_loader)(&alias)
+            {
+                return ResolvedType::from_classes(vec![cls]);
+            }
+        }
+    }
+
     // ── Known array functions ────────────────────────
     // For element-extracting functions (array_pop, etc.)
     // resolve to the element ClassInfo directly.
