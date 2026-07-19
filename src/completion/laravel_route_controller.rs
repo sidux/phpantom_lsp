@@ -324,7 +324,6 @@ impl Backend {
                     item.insert_text = Some(filter.clone());
                 }
                 item.insert_text_format = None;
-                item.commit_characters = None;
             }
         }
 

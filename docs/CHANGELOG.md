@@ -236,6 +236,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A leading-backslash type resolves to the global class even when a same-named class is imported.** A variable typed `\Redis` (via `@var` or elsewhere) now resolves to the global `\Redis` class regardless of a `use SomeNamespace\Redis;` import that shares the short name, so its members complete, navigate, and type-check instead of resolving to the imported class.
 - **HTML lists in docblock descriptions render on hover.** Descriptions written with HTML markup, including bulleted and numbered lists, now appear as formatted Markdown in hover popups instead of showing raw tags or losing their structure entirely. Contributed by @calebdw.
 - **Memory no longer grows for the whole session as files are closed.** Closing a file now releases the parse errors held for it, so a long editing session that opens and closes many files no longer accumulates their state until restart.
+- **Method completion no longer inserts a duplicate pair of parentheses.** Typing a method name to completion and then typing `(` yourself, instead of accepting the suggestion with Enter or Tab, no longer leaves behind an extra `()`. The suggestion already inserts the call's parentheses (and argument placeholders), so treating `(` as a separate auto-accept trigger produced two pairs.
 
 ## [0.8.0] - 2026-05-14
 
