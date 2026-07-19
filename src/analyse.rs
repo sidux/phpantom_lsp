@@ -253,6 +253,18 @@ pub async fn run(options: AnalyseOptions) -> i32 {
         indexed
     });
 
+    // ── Discover the configured Laravel date class ──────────────────
+    // The `now()`/`today()` helpers and the Date facade / DateFactory
+    // resolve to the class selected by `Date::use()` (defaulting to
+    // `Illuminate\Support\Carbon`).  Discovery reads project service
+    // providers, so it must run after Phase 1 has parsed every user file.
+    // The LSP does the equivalent in its `initialized` handler; without
+    // this call the helpers would resolve to nothing here, producing
+    // false-positive return-type diagnostics.
+    if backend.resolved_class_cache.read().is_laravel() {
+        backend.build_laravel_date_class();
+    }
+
     // ── Phase 1.5: Eager class population ───────────────────────────
     // Pre-populate the resolved_class_cache by resolving every known
     // class in topological (dependency-first) order.  This ensures

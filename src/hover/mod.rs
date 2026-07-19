@@ -1156,12 +1156,19 @@ impl Backend {
                 name.trim_start_matches('\\').rsplit('\\').next(),
                 Some("now" | "today")
             );
+            // Only when the configured date class actually resolves do we
+            // override the declared return type; the `(inferred)` annotation
+            // must reflect that override, not merely the helper's name (a
+            // user-defined `now()` in a non-Laravel project keeps its own
+            // return type unannotated).
+            let mut inferred_date_return = false;
             if is_configured_date_helper
                 && let Some(date_class) = self
                     .find_or_load_class(crate::virtual_members::laravel::CONFIGURED_DATE_CLASS_FQN)
             {
-                let date_type = crate::php_type::PhpType::Named(date_class.name.to_string());
+                let date_type = crate::php_type::PhpType::Named(date_class.fqn().to_string());
                 func.return_type = Some(date_type);
+                inferred_date_return = true;
             }
             let resolved_see = self.resolve_see_refs(&func.see_refs, uri, content);
             let provenance = self.provenance_line_for_function(name);
@@ -1169,7 +1176,7 @@ impl Backend {
                 &func,
                 Some(&resolved_see),
                 provenance,
-                is_configured_date_helper,
+                inferred_date_return,
             ))
         } else {
             None

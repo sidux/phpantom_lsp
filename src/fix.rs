@@ -326,6 +326,15 @@ pub async fn run(options: FixOptions) -> i32 {
         );
     }
 
+    // Discover the configured Laravel date class now that every user file
+    // is parsed, so the `now()`/`today()` helpers and the Date facade
+    // resolve to a concrete class instead of nothing.  Matches the LSP
+    // `initialized` handler and the `analyze` pipeline; without it, fixes
+    // could be driven by false-positive return-type diagnostics.
+    if backend.resolved_class_cache.read().is_laravel() {
+        backend.build_laravel_date_class();
+    }
+
     // ── Phase 2: Fix files (parallel) ───────────────────────────────
     if use_colour && output_format == OutputFormat::Table {
         eprint!("\r\x1b[2K {}", progress_bar(0, file_count, "Fixing"));

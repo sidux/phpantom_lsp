@@ -160,10 +160,18 @@ unlikely to move the needle for most users.
 | S5  | Language construct signature help and hover                                                                                                                                 | Low         | Low         |
 |     | **[Laravel](todo/laravel.md)**                                                                                                                                              |             |             |
 | L14 | [Diagnostics for Laravel string keys](todo/laravel.md#l14-diagnostics-for-laravel-string-keys) (route/config/env/trans/view)                                                | High        | Medium      |
+| L22 | [Broaden recognized call sites for Laravel string keys](todo/laravel.md#l22-broaden-recognized-call-sites-for-laravel-string-keys)                                          | High        | Low-Medium  |
 | L15 | [Completion for Laravel string keys](todo/laravel.md#l15-completion-for-laravel-string-keys)                                                                                | High        | Medium      |
 | L5  | [`abort_if`/`abort_unless` type narrowing](todo/laravel.md#l5-abort_ifabort_unless-type-narrowing)                                                                          | High        | Medium      |
+| L24 | [Translation depth: JSON lang files, locales, placeholders](todo/laravel.md#l24-translation-depth-json-lang-files-locales-placeholders)                                     | Medium-High | Medium      |
+| L26 | [Gate ability and policy strings](todo/laravel.md#l26-gate-ability-and-policy-strings)                                                                                      | Medium-High | Medium-High |
 | L16 | [Hover for Laravel string keys](todo/laravel.md#l16-hover-for-laravel-string-keys)                                                                                          | Medium      | Low-Medium  |
+| L23 | [Route parameter name completion](todo/laravel.md#l23-route-parameter-name-completion)                                                                                      | Medium      | Low-Medium  |
+| L30 | [Eloquent attribute-array key completion](todo/laravel.md#l30-eloquent-attribute-array-key-completion)                                                                      | Medium      | Low-Medium  |
 | L17 | [Additional string contexts without booting](todo/laravel.md#l17-additional-string-contexts-without-booting) (middleware, assets, validation, Inertia)                     | Medium      | Medium      |
+| L25 | [Storage disk name strings](todo/laravel.md#l25-storage-disk-name-strings)                                                                                                  | Low-Medium  | Low         |
+| L31 | [String-key rename, highlight, and semantic tokens](todo/laravel.md#l31-string-key-rename-highlight-and-semantic-tokens)                                                    | Low-Medium  | Low-Medium  |
+| L29 | [Livewire and Volt component names](todo/laravel.md#l29-livewire-and-volt-component-names)                                                                                  | Low-Medium  | Medium      |
 | L3  | `$dates` array (deprecated)                                                                                                                  | Low-Medium  | Low         |
 | L12 | [`HasUuids` / `HasUlids` trait — `$id` typed as `string`](todo/laravel.md#l12-hasuuids--hasulids-trait--id-typed-as-string)                                                 | Low-Medium  | Low         |
 | L6  | Factory `has*`/`for*` relationship methods                                                                                                                                  | Low-Medium  | Medium      |
@@ -172,6 +180,8 @@ unlikely to move the needle for most users.
 | L8  | `withSum`/`withAvg`/`withMin`/`withMax` aggregate properties                                                                                                                | Low-Medium  | Medium-High |
 | L9  | Higher-order collection proxies                                                                                                                                             | Low-Medium  | Medium-High |
 | L10 | `View::withX()` / `RedirectResponse::withX()` dynamic methods                                                                                                               | Low         | Low         |
+| L27 | [Legacy `Controller@method` action strings](todo/laravel.md#l27-legacy-controllermethod-action-strings)                                                                     | Low         | Low         |
+| L28 | [Path helper links and completion](todo/laravel.md#l28-path-helper-links-and-completion)                                                                                    | Low         | Low         |
 |     | **[External Stubs](todo/external-stubs.md)**                                                                                                                                |             |             |
 | E6  | Stub install prompt for non-Composer projects                                                                                                                               | Low         | Low         |
 | E7  | [Stub-based framework patches](todo/external-stubs.md#e7-stub-based-framework-patches)                                                                                      | Medium      | Medium      |

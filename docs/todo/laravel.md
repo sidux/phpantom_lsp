@@ -545,12 +545,19 @@ entirely around this layer, and PhpStorm + Laravel Idea cover it too.
 
 ### Why we do this statically (and they boot the app)
 
-The Laravel extension gathers these facts by **booting the user's
+The Larastan extension gathers these facts by **booting the user's
 application** in the background and introspecting the live container
 (`app('router')->getRoutes()`, `config()->all()`, `app()->getBindings()`,
-etc.). PhpStorm's Laravel Idea and `barryvdh/laravel-ide-helper` do the
-same thing differently: they generate a snapshot (JSON payload or PHP
-stubs) that the IDE then reads.
+etc.). The Laravel LSP does the same through `php artisan tinker
+--execute`: 14 of its 18 data providers (routes, configs, translations,
+views, models, middleware, auth, bindings, Blade components, paths, …)
+run injected PHP inside the booted app; only env vars, public assets,
+the Mix manifest, and controller names (regex-scraped) are gathered
+statically. Its Eloquent column completion even shells out to
+`artisan model:show --json` per model, which requires a **reachable,
+migrated database**. PhpStorm's Laravel Idea and
+`barryvdh/laravel-ide-helper` do the same thing differently: they
+generate a snapshot (JSON payload or PHP stubs) that the IDE then reads.
 
 All three share two problems:
 
@@ -564,6 +571,12 @@ All three share two problems:
    (manual for ide-helper, periodic background re-boot for the extension).
    Static scanning with a file watcher updates the instant the source file
    changes, not at the next heartbeat.
+3. **Silent total failure.** When the app cannot boot (broken provider,
+   missing `.env`, no database), the Laravel LSP's tinker call exits
+   nonzero and every boot-dependent feature silently returns empty:
+   completions, hovers, and diagnostics all vanish with no indication
+   why. A static scanner keeps working on a project that doesn't boot —
+   which is exactly when the developer needs tooling most.
 
 Our position (consistent with the **No application booting** philosophy
 above): the overwhelming majority of these facts live in static files we
@@ -617,6 +630,21 @@ dynamic keys (e.g. `config($key)` with a variable, or
 `route("admin.$section")` interpolation) by only flagging plain string
 literals.
 
+Additional guards the Laravel LSP applies:
+
+- **Wildcard patterns are never diagnosed.** `Route::is('admin.*')` and
+  `$request->routeIs('users.*')` take glob patterns; complete against
+  known names but skip the diagnostic when the string contains `*`.
+- **Translation key-shape heuristic.** Only flag strings that look like
+  keys (dotted segments); free-text strings passed to `__()` (the JSON
+  translation style, see L24) are valid keys whose absence just means
+  "untranslated," so at most an info-level hint.
+- **`env()` with a default argument** (`env('KEY', 'fallback')`) is
+  legitimate for keys absent from `.env`; suppress or downgrade the
+  missing-key warning when a second argument is present. (The Laravel
+  LSP flags these regardless — a false positive we should not copy.)
+- **`config()` with a default argument** deserves the same treatment.
+
 #### L15. Completion for Laravel string keys
 
 **Impact: High · Effort: Medium**
@@ -628,6 +656,12 @@ The candidate lists are exactly the declaration sets the go-to scanners
 already produce; the work is detecting the string-literal cursor context
 (the symbol-map already records these as `LaravelStringKey`) and returning
 the collected keys as completion items.
+
+Polish the items the way the Laravel LSP does: set the completion
+`detail` to the resolved config value, the route's `[METHOD] uri` +
+action, or the translation's default-locale value; sort vendor views
+after application views; and escape quotes in the inserted text to match
+the surrounding quote character.
 
 #### L16. Hover for Laravel string keys
 
@@ -642,27 +676,239 @@ already loaded by the go-to scanners; this is formatting it as hover markdown.
 
 **Impact: Medium · Effort: Medium**
 
-Constructs the extension covers that we don't, and that are statically
-recoverable (no booting):
+Constructs the extension and the Laravel LSP cover that we don't, and
+that are statically recoverable (no booting):
 
-- **Middleware aliases** — completion/go-to/diagnostics for `->middleware('auth')`.
+- **Middleware aliases** — completion/go-to/diagnostics/hover for
+  `->middleware('auth')`, `->withoutMiddleware(...)`, and the
+  `#[Middleware]` controller attribute (string and array arguments).
   Aliases are declared statically in `bootstrap/app.php`
   (`$middleware->alias([...])`) on Laravel 11+, or the HTTP Kernel's
-  `$middlewareAliases` on older versions. Scan that array.
-- **Asset paths** — `asset('...')` against a filesystem walk of `public/`.
+  `$middlewareAliases`/`$routeMiddleware` on older versions; the
+  framework's built-in aliases and default groups live in
+  `Illuminate\Foundation\Configuration\Middleware` and the Kernel base
+  class, parseable from vendor source the same way the container alias
+  table already is. Be **parameter-aware**: `auth:web` and
+  `throttle:60,1` validate the alias before the `:`, and hover can show
+  the middleware's `handle()` parameter signature. For groups (`'web'`,
+  `'api'`), hover lists the member middleware.
+- **Asset paths** — `asset('...')` (and `UrlGenerator::asset()`) against
+  a filesystem walk of `public/`. Two cheap extensions the Laravel LSP
+  has or lacks: `mix('...')` against `public/mix-manifest.json` (static
+  JSON, legacy projects), and — which they do *not* support — Vite
+  entry-point strings (`Vite::asset('resources/js/app.js')`, `@vite`
+  arguments) checked against source-file existence.
 - **Validation rules** — completion for the rule strings in
   `'field' => 'required|email'`. This is a fixed, known rule list plus
-  parameter snippets (the extension hardcodes ~50 rules); no project data
-  needed.
-- **Inertia page paths** — `Inertia::render('...')` against a filesystem
-  walk of `resources/js/Pages` (extension/extensions from `inertia` config,
-  read statically). Only relevant to Inertia projects.
+  parameter snippets (the Laravel LSP hardcodes ~90 rules as LSP
+  snippets, e.g. `between:${min},${max}`); no project data needed.
+  Trigger contexts to match: `$request->validate()` arg 0,
+  `Validator::make()` arg 1, `$validator->sometimes()` arg 1, and array
+  *values* (never keys — those are field names) inside the `rules()`
+  method of `FormRequest` / `Livewire\Form` subclasses.
+- **Inertia page paths** — `Inertia::render('...')` and
+  `Inertia::modal()` arg 0, `Route::inertia()` arg 1, and the
+  `inertia()` helper, against a filesystem walk of `resources/js/Pages`
+  (page paths/extensions from `config/inertia.php`, read statically;
+  default `resources/js/Pages` + `.vue`). Only relevant to Inertia
+  projects. Pair the unknown-page diagnostic with a "create page" quick
+  fix (the Laravel LSP scaffolds a `<script setup>/<template>` stub).
+  Its second-argument prop-key completion (regex-parsing `defineProps`
+  out of the `.vue` page) is shallow and optional — defer unless asked.
 
 **Explicitly still out of scope** (see the table at the top): container
 binding names (`app('...')`), facade string aliases, and anything else that
 requires the live container. These genuinely cannot be resolved without
 booting, and a snapshot of them is the "true for one boot" half-truth we are
 choosing not to ship.
+
+#### L22. Broaden recognized call sites for Laravel string keys
+
+**Impact: High · Effort: Low-Medium**
+
+Detection breadth multiplies everything else in this section: the
+symbol-map spans feed go-to-definition and references today and L14–L16
+tomorrow. Our current detection is much narrower than the Laravel LSP's
+pattern set. Gaps by kind:
+
+- **Route names** — we detect only the bare `route()` function. Add:
+  `to_route()`, `signedRoute()`, `temporarySignedRoute()`,
+  `redirectToRoute()`; the same methods on the `Redirect`, `URL`, and
+  `Response` facades and on `redirect()`/`url()` helper chains
+  (`redirect()->route('x')`); `Route::is()` and `$request->routeIs()`
+  (glob-aware, see L14); and the `#[RedirectToRoute]` attribute.
+- **View names** — add `View::first()`, `View::renderEach()`,
+  `View::renderWhen()`/`renderUnless()` (view name at arg 1),
+  `Route::view()` (arg 1), `MailMessage::view()`/`markdown()`, and the
+  mailable `#[Content]` attribute (`view`/`markdown` arguments, named or
+  positional).
+- **Translation keys** — add `Lang::has()`/`hasForLocale()`. (`@lang`
+  and other Blade directives arrive via the Blade preprocessor;
+  see `blade.md`.)
+- **Config keys** — add the typed accessors `Config::string()`,
+  `integer()`, `boolean()`, `float()`, `array()`, plus `getMany()`
+  (array argument), `prepend()`, `push()`, and the `#[Config]` container
+  attribute. Audit `is_config_repository_method` against this list.
+- **Env vars** — add `Env::get()`, and index env keys as proper
+  `LaravelStringKey` spans instead of the current definition-only
+  ad-hoc fallback, so references (and later completion/diagnostics)
+  work uniformly.
+- **Container alias strings** — `app('cache')` already resolves to the
+  concrete class for member completion via the alias tables; wire
+  go-to-definition and hover on the string itself to that resolved
+  class. No new data needed. Provider-registered binding names stay out
+  of scope (see the table at the top).
+
+#### L23. Route parameter name completion
+
+**Impact: Medium · Effort: Low-Medium**
+
+`route('users.show', ['user' => 1])` — the second argument's array keys
+are the route's URI parameters. The route-name scanner already locates
+the `->name()` registration; extend it to record the URI literal from
+the same registration chain (`Route::get('/users/{user}/posts/{post}',
+…)`) and complete the `{param}` names (minus the `?` optional marker) as
+array keys in the parameters argument of `route()`, `to_route()`,
+`signedRoute()`, and `temporarySignedRoute()`. The Laravel LSP reads
+parameters off booted route objects; the URI literal in the registration
+gives us the same data statically. The recorded URI also feeds the L16
+hover (`[GET] /users/{user}` next to the route name).
+
+#### L24. Translation depth: JSON lang files, locales, placeholders
+
+**Impact: Medium-High · Effort: Medium**
+
+Statically recoverable translation features the Laravel LSP has and we
+lack entirely:
+
+- **JSON lang files.** `lang/{locale}.json` (the "translation string as
+  key" style) is not scanned at all — today's go-to-definition and
+  references miss those keys, and L14/L15 would inherit the hole.
+  Highest priority of this item: it is a correctness gap in a shipped
+  feature, not just a missing endpoint.
+- **Locale argument completion.** The `$locale` parameter of `__()`,
+  `trans()`, `trans_choice()`, `Lang::get()/choice()/hasForLocale()`
+  (positional or named) completes from the locale set derived from
+  `lang/*/` directories and `lang/*.json` files.
+- **Placeholder parameter completion.** The `:name` placeholders parsed
+  from the translation value complete as keys of the replacement array
+  (`__('welcome', ['name' => …])`).
+- **Multi-locale hover.** When L16 lands, show the value per locale
+  (with a link to each file), not just the default locale.
+
+#### L25. Storage disk name strings
+
+**Impact: Low-Medium · Effort: Low**
+
+`Storage::disk('...')`, `Storage::fake()`, `persistentFake()`,
+`forgetDisk()`, and the `#[Storage]` container attribute name a disk
+declared under `filesystems.disks.*`. The config scanner already parses
+`config/*.php`; expose the children of `filesystems.disks` as the
+candidate set for completion, go-to-definition (jump to the disk's entry
+in `config/filesystems.php`), and an unknown-disk diagnostic.
+
+#### L26. Gate ability and policy strings
+
+**Impact: Medium-High · Effort: Medium-High**
+
+The Laravel LSP covers auth strings (completion, hover, diagnostics,
+links) by booting and asking the `Gate` for its abilities and policy
+map. The statically recoverable equivalents:
+
+- **Gate definitions:** scan `Gate::define('name', …)` in service
+  provider `boot()` methods — same shape as the existing macro scanner,
+  including the closure signature for hover.
+- **Policies:** the `$policies` array in `AuthServiceProvider`, the
+  `#[UsePolicy]` model attribute, and the default discovery convention
+  (`App\Models\Foo` → `App\Policies\FooPolicy`). Public methods of the
+  policy become abilities valid for that model.
+- **Trigger contexts:** `Gate::allows()/denies()/check()/any()/none()/
+  authorize()/inspect()/has()` (string and array arguments),
+  `$user->can()/cannot()/canAny()`, controller `$this->authorize()`,
+  `Route::can()`, the `can:ability,Model` middleware parameter, and
+  (via the Blade preprocessor) `@can`/`@cannot`/`@canany`.
+- **Model-aware validation:** when the second argument is a
+  `Model::class` literal or a typed variable, verify the ability exists
+  *for that model's policy*, not just anywhere — distinguishing "unknown
+  ability" from "ability not defined for this model."
+
+#### L27. Legacy `Controller@method` action strings
+
+**Impact: Low · Effort: Low**
+
+We already complete and resolve the modern `[Controller::class,
+'method']` array form (which the Laravel LSP does *not* complete), and
+method-name strings inside `Route::controller()` groups. The legacy
+`'App\Http\Controllers\FooController@method'` string form gets nothing.
+Split on `@`, resolve the class through normal resolution (honoring any
+group namespace prefix), and provide completion, go-to-definition, and
+an unknown-action diagnostic. Low priority: the string form is
+discouraged since Laravel 8.
+
+#### L28. Path helper links and completion
+
+**Impact: Low · Effort: Low**
+
+`base_path('...')`, `app_path()`, `config_path()`, `database_path()`,
+`lang_path()`, `public_path()`, `resource_path()`, and `storage_path()`
+map to fixed conventional directories under the project root. Provide
+go-to-definition (or a document link) on the string argument when the
+target exists, and path-segment completion from the directory listing.
+The Laravel LSP boots the app to learn the base paths and only links
+arguments that resolve to an existing *file*; convention gives us the
+same statically, and we can also handle directories.
+
+#### L29. Livewire and Volt component names
+
+**Impact: Low-Medium (Livewire projects only) · Effort: Medium**
+
+The Laravel LSP resolves Livewire components by booting the app and
+instantiating every component. The static equivalents:
+
+- **Component index by convention:** class components under
+  `app/Livewire/` (`App\Livewire\FooBar` ↔ `foo-bar`, nested
+  `admin.foo-bar`), plus view-based Volt / Livewire v4 single-file
+  components under the views tree.
+- **PHP-side triggers:** `Volt::route('/path', 'component')` (arg 1)
+  and `Route::livewire()` — completion, go-to, unknown-component
+  diagnostic.
+- **Blade-side (`<livewire:foo-bar>` tags):** belongs to the Blade
+  project (`blade.md`) but should consume the same component index.
+  Hover showing the component's public properties falls out of our
+  existing `ClassInfo` once the class resolves — richer than the
+  Laravel LSP's reflection dump, and with no risk of running component
+  constructors.
+
+#### L30. Eloquent attribute-array key completion
+
+**Impact: Medium · Effort: Low-Medium**
+
+Our Eloquent string completion covers where-style column arguments and
+relation names, but not **attribute-array keys**: `User::create(['name'
+=> …])`, `fill()`, `make()`, `update()`, `updateOrCreate()`,
+`firstOrCreate()`, `firstOrNew()`, `createOrFirst()` should complete
+array keys from the model's column sources (preferring fillable
+columns, skipping keys already present in the literal). Also extend the
+scalar column list with `firstWhere()`, `whereColumn()`, and the
+aggregate methods (`min`/`max`/`sum`/`avg`), and cover the model-level
+PHP attributes that take column-name arguments where the installed
+framework version has them. The Laravel LSP gets its column list from
+`artisan model:show --json` (live DB required); ours comes from the
+same static sources the model provider already uses (casts, fillable,
+accessors, `@property` tags) — no database needed.
+
+#### L31. String-key rename, highlight, and semantic tokens
+
+**Impact: Low-Medium · Effort: Low-Medium**
+
+References and go-to-definition already work for the four indexed
+string kinds, but the rename, document-highlight, and semantic-token
+arms are explicit no-ops. Wiring them up exceeds the Laravel LSP (which
+has none of the three): renaming a translation key updates the lang
+files across every locale plus all usages; renaming a route name
+updates the `->name()` declaration and all usages; highlight and
+semantic tokens reuse the existing spans. Renaming a view name implies
+moving the Blade file — defer that one until the rest is in place.
 
 #### L18. `Macroable::mixin()` registrations
 

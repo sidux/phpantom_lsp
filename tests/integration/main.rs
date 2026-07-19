@@ -115,6 +115,7 @@ mod implementation;
 mod inlay_hints;
 mod laravel_contract_concrete;
 mod laravel_custom_builder;
+mod laravel_date_factory;
 mod laravel_macro_facade;
 mod laravel_macros;
 mod laravel_references;
