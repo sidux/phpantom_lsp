@@ -760,6 +760,81 @@ parse hot path.
 
 ---
 
+## P30. Evaluate migrating parse/resolve/docblock pipeline to `mago-hir`
+
+**Impact: Medium-High · Effort: High**
+
+Mago 1.44.0 introduces `mago-hir`, a new intermediate representation
+that lowers the CST plus PHPDoc comments into a single flat,
+fully-resolved tree in one pass: names are resolved
+(`Local`/`Qualified`/`FullyQualified` + `imported` flag on every
+identifier), docblock tags are parsed into structured annotations
+(`@template`, `@extends`/`@implements` generics, `@mixin`,
+`@method`/`@property`, `@param`/`@return`/`@throws`,
+`@assert`/`@assert-if-true`/`@assert-if-false`, `@param-out`,
+`@self-out`, type aliases), and types are parsed into a full
+PHPStan/Psalm-grade type language (generics with resolved bounds,
+conditional types, `key-of`/`value-of`, array/object shapes,
+int-ranges, class-string variants, int-masks). This is exactly the
+layer PHPantom currently hand-rolls across `parser/`, `names.rs`,
+`docblock/`, and parts of `php_type.rs`.
+
+The IR threads three generic "hole" parameters
+(`IR<'arena, I, S, E>`, defaulting to `()`) through every node so a
+later inference pass can fill in resolved type information at
+item/statement/expression granularity without changing the tree
+shape — this is the "groundwork for the upcoming rule-based checker"
+azjezz described.
+
+Confirmed by reading the 1.44.0 source directly (docs.rs is only
+~1% documented, so don't rely on it): `mago-hir` depends only on
+crates we already use (`mago-syntax`, `mago-syntax-core`,
+`mago-phpdoc-syntax`, `mago-span`, `mago-database`,
+`mago-allocator`) plus the small `mago-flags` crate. It does **not**
+pull in `mago-codex`, `mago-analyzer`, or `mago-reflection`, so
+adopting it would not introduce a second type-resolution engine
+alongside our own (see the "no parallel type resolution systems"
+rule in `CLAUDE.md`) — it would replace the raw-parsing layer that
+currently *feeds* `ClassInfo` construction, not `ClassInfo` itself or
+`resolve_rhs_expression`/`resolve_expression_type`.
+
+Potential payoff if it holds up:
+
+- Deletes a large share of our hand-rolled docblock tag parsing,
+  type-string parsing, and name resolution, replacing it with a
+  single upstream-maintained pass.
+- A natural path to Blade support: lowering Blade's compiled-PHP
+  approximation (see `examples/laravel`/Blade handling) to the same
+  IR would let more code actions and diagnostics work uniformly on
+  Blade files instead of only a subset, as flagged in the Discord
+  discussion with azjezz.
+
+**Do not start this now.** The crate is brand new (shipped in
+1.44.0, not the 1.43.0 this project is currently on), ~19k LOC,
+under active redesign ("final touches... in the next branch" per
+azjezz), and its public API should be expected to move.
+
+**Triggers to revisit — start only once at least two of these hold:**
+
+- `mago-hir` has shipped unchanged (no breaking API changes) across
+  at least 2-3 minor mago releases, indicating the API has settled.
+- Upstream's own rule-based checker/analyzer ships on top of
+  `mago-hir` and is in real use, proving the IR's "holes" mechanism
+  works end-to-end for type inference, not just as a parse target.
+- rustdoc coverage for `mago-hir` is substantially more complete
+  (the 1.44.0 release is ~1% documented), or azjezz confirms the
+  shape is stable enough to build against.
+
+**Before committing to a full migration, prototype first:** feed
+`symbol_map` extraction (or `ClassInfo` construction) for a single
+file from `IR` behind a flag, on a branch, and compare output against
+the current extraction plus wall-clock time. Only proceed to a
+broader migration if the prototype reproduces current behavior and
+shows a real win; otherwise record the findings here and keep
+waiting on the triggers above.
+
+---
+
 # Remaining anti-pattern fixes
 
 Most remaining depth-cap issues are addressed by ER5 (class
