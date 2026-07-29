@@ -120,6 +120,32 @@ impl Backend {
                     (&mut lenses, &mut seen),
                 );
             }
+
+            let mut hierarchy = HashSet::new();
+            hierarchy.insert(class_fqn.to_string());
+            hierarchy.extend(self.class_hierarchy_names(class));
+            for property in &class.properties {
+                if property.name_offset == 0 {
+                    continue;
+                }
+                let locations =
+                    self.framework_property_reference_locations(&property.name, Some(&hierarchy));
+                if locations.is_empty() {
+                    continue;
+                }
+                self.push_locations_lens(
+                    uri,
+                    offset_to_position(content, property.name_offset as usize),
+                    format!(
+                        "Symfony form/validation: {} {}",
+                        locations.len(),
+                        if locations.len() == 1 { "ref" } else { "refs" }
+                    ),
+                    locations,
+                    &mut lenses,
+                    &mut seen,
+                );
+            }
         }
 
         self.push_symfony_route_attribute_lenses(uri, content, &classes, &mut lenses, &mut seen);
@@ -261,6 +287,28 @@ impl Backend {
         };
 
         for (idx, declaration) in references.iter().enumerate() {
+            if let FrameworkReferenceKind::ConfigKey {
+                path,
+                declaration: true,
+            } = &declaration.kind
+            {
+                let usages = self.framework_config_key_locations(path, false, true);
+                if !usages.is_empty() {
+                    self.push_locations_lens(
+                        uri,
+                        offset_to_position(content, declaration.start as usize),
+                        format!(
+                            "Symfony configuration: {} {}",
+                            usages.len(),
+                            if usages.len() == 1 { "ref" } else { "refs" }
+                        ),
+                        usages,
+                        lenses,
+                        seen,
+                    );
+                }
+                continue;
+            }
             if let FrameworkReferenceKind::Translation {
                 domain,
                 name,
