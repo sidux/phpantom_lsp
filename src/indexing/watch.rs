@@ -87,7 +87,7 @@ impl Backend {
                     continue;
                 }
                 if !path_str.ends_with(".php") {
-                    if crate::framework::is_framework_resource_uri(&change.uri.to_string()) {
+                    if crate::framework::is_framework_resource_uri(change.uri.as_ref()) {
                         let uri_str = change.uri.to_string();
                         if open.contains_key(&uri_str) {
                             continue;
@@ -108,6 +108,10 @@ impl Backend {
                 let Ok(file_path) = change.uri.to_file_path() else {
                     continue;
                 };
+
+                if crate::framework::is_framework_php_config_path(&file_path) {
+                    framework_changes.push((uri_str.clone(), file_path.clone(), change.typ));
+                }
 
                 if change.typ == FileChangeType::CHANGED {
                     // `parsed_uris` records the editor URI for open files and

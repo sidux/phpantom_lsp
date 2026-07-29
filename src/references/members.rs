@@ -593,9 +593,7 @@ impl Backend {
 
         let doctrine_repository_fqns = self.resolve_doctrine_repository_subject_to_fqns(
             subject_text,
-            use_map,
-            namespace,
-            &ctx.classes,
+            ctx,
             access_offset,
             content,
             &class_loader,
@@ -640,9 +638,7 @@ impl Backend {
     fn resolve_doctrine_repository_subject_to_fqns(
         &self,
         subject_text: &str,
-        use_map: &HashMap<String, String>,
-        namespace: &Option<String>,
-        local_classes: &[Arc<ClassInfo>],
+        ctx: &crate::types::FileContext,
         access_offset: u32,
         content: &str,
         class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
@@ -650,9 +646,9 @@ impl Backend {
         let expr = crate::type_engine::subject_expr::SubjectExpr::parse(subject_text);
         let mut candidates = self.doctrine_repository_fqns_from_expr(
             &expr,
-            use_map,
-            namespace,
-            local_classes,
+            &ctx.use_map,
+            &ctx.namespace,
+            &ctx.classes,
             access_offset,
             class_loader,
         );
@@ -665,9 +661,9 @@ impl Backend {
             let assigned = crate::type_engine::subject_expr::SubjectExpr::parse(assigned_expr);
             candidates = self.doctrine_repository_fqns_from_expr(
                 &assigned,
-                use_map,
-                namespace,
-                local_classes,
+                &ctx.use_map,
+                &ctx.namespace,
+                &ctx.classes,
                 access_offset,
                 class_loader,
             );
