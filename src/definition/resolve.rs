@@ -80,8 +80,10 @@ impl Backend {
             return vec![loc];
         }
 
-        if let Some(loc) = self.resolve_framework_resource_definition(uri, content, position) {
-            return vec![loc];
+        let framework_locations =
+            self.resolve_framework_resource_definition(uri, content, position);
+        if !framework_locations.is_empty() {
+            return framework_locations;
         }
 
         // env() fallback: not yet indexed in the symbol map.
@@ -95,17 +97,32 @@ impl Backend {
         uri: &str,
         content: &str,
         position: Position,
-    ) -> Option<Location> {
-        let reference = self.framework_reference_at_position(uri, content, position)?;
+    ) -> Vec<Location> {
+        let Some(reference) = self.framework_reference_at_position(uri, content, position) else {
+            return Vec::new();
+        };
         match reference.kind {
-            FrameworkReferenceKind::Class { fqn } => {
-                self.resolve_class_reference(uri, content, &fqn, true, reference.start)
-            }
+            FrameworkReferenceKind::Class { fqn } => self
+                .resolve_class_reference(uri, content, &fqn, true, reference.start)
+                .into_iter()
+                .collect(),
             FrameworkReferenceKind::Method {
                 class_fqn,
                 member_name,
-            } => self.resolve_framework_member_definition(uri, content, &class_fqn, &member_name),
-            FrameworkReferenceKind::Namespace { .. } | FrameworkReferenceKind::Path { .. } => None,
+            } => self
+                .resolve_framework_member_definition(uri, content, &class_fqn, &member_name)
+                .into_iter()
+                .collect(),
+            FrameworkReferenceKind::SymfonySymbol {
+                kind,
+                name,
+                declaration: false,
+            } => self.framework_symfony_symbol_locations(kind, &name, true, false),
+            FrameworkReferenceKind::Namespace { .. }
+            | FrameworkReferenceKind::Path { .. }
+            | FrameworkReferenceKind::SymfonySymbol {
+                declaration: true, ..
+            } => Vec::new(),
         }
     }
 

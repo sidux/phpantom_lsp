@@ -184,6 +184,9 @@ impl Backend {
                     Some(&hierarchy),
                 )
             }
+            FrameworkReferenceKind::SymfonySymbol { kind, name, .. } => {
+                self.framework_symfony_symbol_locations(kind, &name, include_declaration, true)
+            }
             FrameworkReferenceKind::Namespace { .. } | FrameworkReferenceKind::Path { .. } => {
                 Vec::new()
             }
