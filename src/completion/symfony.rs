@@ -839,7 +839,9 @@ mod tests {
         let yaml = "services:\n  app.foo:\n    arguments: ['@app.ba']\n";
         let offset = yaml.find("app.ba").unwrap() + 6;
         let position = offset_to_position(yaml, offset);
-        let context = detect_resource_context(yaml, position).unwrap();
+        let context =
+            detect_resource_context("file:///project/config/services.yaml", yaml, position)
+                .unwrap();
         assert_eq!(context.kind, SymfonySymbolKind::Service);
         assert_eq!(context.prefix, "app.ba");
     }
