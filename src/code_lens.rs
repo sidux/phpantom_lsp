@@ -14,7 +14,7 @@ use crate::definition::member::MemberKind;
 use crate::reference_index::ReferenceIndexKey;
 use crate::symbol_map::SymbolKind;
 use crate::text_position::offset_to_position;
-use crate::types::{ClassInfo, ClassLikeKind, MAX_INHERITANCE_DEPTH, Visibility};
+use crate::types::{ClassInfo, ClassLikeKind, MAX_INHERITANCE_DEPTH, MethodInfo, Visibility};
 use crate::util::short_name;
 
 fn line_indent(content: &str, byte_offset: usize) -> u32 {
@@ -112,10 +112,8 @@ impl Backend {
                 uri,
                 content,
                 class,
-                &class_fqn,
                 &class_loader,
-                &mut lenses,
-                &mut seen,
+                (&mut lenses, &mut seen),
             );
             for method in &class.methods {
                 if method.name_offset == 0
@@ -199,11 +197,8 @@ impl Backend {
                     uri,
                     content,
                     class,
-                    &class_fqn,
-                    method.name.as_str(),
-                    method.name_offset,
-                    &mut lenses,
-                    &mut seen,
+                    method,
+                    (&mut lenses, &mut seen),
                 );
             }
 
@@ -676,40 +671,61 @@ impl Backend {
         uri: &str,
         content: &str,
         class: &ClassInfo,
-        class_fqn: &str,
         class_loader: &dyn Fn(&str) -> Option<std::sync::Arc<ClassInfo>>,
-        lenses: &mut Vec<CodeLens>,
-        seen: &mut HashSet<String>,
+        output: (&mut Vec<CodeLens>, &mut HashSet<String>),
     ) {
+        let (lenses, seen) = output;
+        let class_fqn = class.fqn();
         let Some(source_pos) = class_lens_position(content, class) else {
             return;
         };
 
-        let config_locations = self.framework_class_reference_locations(class_fqn);
+        let config_locations = self.framework_class_reference_locations(&class_fqn);
         if !config_locations.is_empty() {
             let title = if config_locations.len() == 1 {
                 "Symfony/Doctrine config: 1 ref".to_string()
             } else {
                 format!("Symfony/Doctrine config: {} refs", config_locations.len())
             };
-            self.push_locations_lens(uri, source_pos, title, config_locations, lenses, seen);
+            self.push_locations_lens(
+                uri,
+                source_pos,
+                title,
+                config_locations,
+                &mut *lenses,
+                &mut *seen,
+            );
         }
 
         for repo_fqn in self
-            .doctrine_repository_fqns_for_entity(class_fqn, class_loader)
+            .doctrine_repository_fqns_for_entity(&class_fqn, class_loader)
             .into_iter()
             .filter(|fqn| !is_builtin_doctrine_repository_fqn(fqn))
         {
             if let Some(location) = self.class_location(&repo_fqn, uri, content) {
                 let title = format!("Doctrine repository: {}", short_name(&repo_fqn));
-                self.push_locations_lens(uri, source_pos, title, vec![location], lenses, seen);
+                self.push_locations_lens(
+                    uri,
+                    source_pos,
+                    title,
+                    vec![location],
+                    &mut *lenses,
+                    &mut *seen,
+                );
             }
         }
 
-        for entity_fqn in self.doctrine_entities_for_repository(class_fqn, class_loader) {
+        for entity_fqn in self.doctrine_entities_for_repository(&class_fqn, class_loader) {
             if let Some(location) = self.class_location(&entity_fqn, uri, content) {
                 let title = format!("Doctrine entity: {}", short_name(&entity_fqn));
-                self.push_locations_lens(uri, source_pos, title, vec![location], lenses, seen);
+                self.push_locations_lens(
+                    uri,
+                    source_pos,
+                    title,
+                    vec![location],
+                    &mut *lenses,
+                    &mut *seen,
+                );
             }
         }
     }
@@ -719,21 +735,19 @@ impl Backend {
         uri: &str,
         content: &str,
         class: &ClassInfo,
-        class_fqn: &str,
-        method_name: &str,
-        name_offset: u32,
-        lenses: &mut Vec<CodeLens>,
-        seen: &mut HashSet<String>,
+        method: &MethodInfo,
+        output: (&mut Vec<CodeLens>, &mut HashSet<String>),
     ) {
-        let pos = offset_to_position(content, name_offset as usize);
+        let (lenses, seen) = output;
+        let pos = offset_to_position(content, method.name_offset as usize);
         let mut hierarchy = HashSet::new();
-        hierarchy.insert(class_fqn.to_string());
+        hierarchy.insert(class.fqn().to_string());
         for fqn in self.class_hierarchy_names(class) {
             hierarchy.insert(fqn);
         }
 
         let route_locations =
-            self.framework_member_reference_locations(method_name, Some(&hierarchy));
+            self.framework_member_reference_locations(&method.name, Some(&hierarchy));
         if route_locations.is_empty() {
             return;
         }
