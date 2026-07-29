@@ -19,14 +19,26 @@ pub(crate) mod preload;
 mod scan;
 mod watch;
 
+/// Return the path as supplied plus its canonical spelling when the
+/// filesystem exposes the same location through an alias.
+pub(crate) fn path_aliases(path: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![path.to_path_buf()];
+    if let Ok(canonical) = path.canonicalize()
+        && canonical != path
+    {
+        paths.push(canonical);
+    }
+    paths
+}
+
 /// Classify where a class file originates (project source, a direct vendor
 /// dependency, or a transitive vendor dependency) for completion ranking.
 pub(crate) fn classify_class_origin(
     path: &Path,
-    vendor_path: &Path,
+    vendor_paths: &[PathBuf],
     vendor_package_roots: &[(PathBuf, crate::ClassCompletionOrigin, String)],
 ) -> crate::ClassCompletionOrigin {
-    if !path.starts_with(vendor_path) {
+    if !vendor_paths.iter().any(|vendor| path.starts_with(vendor)) {
         return crate::ClassCompletionOrigin::Project;
     }
     for (root, origin, _pkg_name) in vendor_package_roots {
