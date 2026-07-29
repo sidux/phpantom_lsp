@@ -680,6 +680,7 @@ impl LanguageServer for Backend {
 
         if crate::framework::is_framework_resource_uri(&uri) {
             self.index_framework_uri_content(&uri, &text);
+            self.schedule_diagnostics(uri.clone());
             self.log(
                 MessageType::INFO,
                 format!("Opened framework resource: {}", uri),
@@ -769,6 +770,7 @@ impl LanguageServer for Backend {
 
         if crate::framework::is_framework_resource_uri(&uri) {
             self.index_framework_uri_content(&uri, &text);
+            self.schedule_diagnostics(uri);
             return;
         }
 
