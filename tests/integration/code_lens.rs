@@ -885,7 +885,7 @@ class HomeController {
         "expected class config lens, got {titles:?}"
     );
     assert!(
-        titles.contains(&"Symfony route config: 1 ref"),
+        titles.contains(&"Symfony config: 1 ref"),
         "expected method route config lens, got {titles:?}"
     );
 }
