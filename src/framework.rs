@@ -2044,7 +2044,10 @@ fn is_config_tree_node_call(call_name: &str) -> bool {
 fn php_call_context(content: &str, offset: usize) -> Option<PhpCallContext<'_>> {
     let prefix = content.get(..offset)?;
     let search_start = offset.saturating_sub(2048);
-    let open = prefix[search_start..].rfind('(')? + search_start;
+    let open = prefix.as_bytes()[search_start..]
+        .iter()
+        .rposition(|byte| *byte == b'(')?
+        + search_start;
     let bytes = content.as_bytes();
     let mut name_end = open;
     skip_ascii_whitespace_backwards(bytes, &mut name_end);
@@ -4760,4 +4763,19 @@ fn normalize_path(path: PathBuf) -> PathBuf {
         }
     }
     normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn php_call_context_handles_multibyte_search_boundary() {
+        let content = format!("─{} service('app.mailer')", "x".repeat(2037));
+        let quote_start = content.find("'app.mailer").unwrap();
+        let call = php_call_context(&content, quote_start).unwrap();
+
+        assert_eq!(call.name, "service");
+        assert_eq!(call.argument_index, 0);
+    }
 }
