@@ -657,9 +657,9 @@ impl Backend {
         );
 
         if candidates.is_empty()
-            && let crate::type_engine::subject_expr::SubjectExpr::Variable(var_name) = expr
+            && let crate::type_engine::subject_expr::SubjectExpr::Variable(var_name) = &expr
             && let Some(assigned_expr) =
-                last_assignment_expression_before(content, access_offset, &var_name)
+                last_assignment_expression_before(content, access_offset, var_name)
         {
             let assigned = crate::type_engine::subject_expr::SubjectExpr::parse(assigned_expr);
             candidates = self.doctrine_repository_fqns_from_expr(
