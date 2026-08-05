@@ -1482,7 +1482,7 @@ fn scan_php_symfony_literal(
 
     let leading = literal.value.len() - literal.value.trim_start().len();
     let trailing = literal.value.len() - literal.value.trim_end().len();
-    let raw = &literal.value[leading..literal.value.len().saturating_sub(trailing)];
+    let raw = literal.value.trim();
     if raw.is_empty() {
         return;
     }
@@ -4777,5 +4777,23 @@ mod tests {
 
         assert_eq!(call.name, "service");
         assert_eq!(call.argument_index, 0);
+    }
+
+    #[test]
+    fn php_symfony_scanner_ignores_whitespace_only_literal() {
+        let content = "<?php service(' ');";
+        let mut refs = Vec::new();
+        let literals = scan_php_string_literals_and_class_constants(
+            "file:///test.php",
+            content,
+            &HashMap::new(),
+            &None,
+            false,
+            &mut refs,
+        );
+
+        scan_php_symfony_literal("file:///test.php", content, &literals, 0, false, &mut refs);
+
+        assert!(refs.is_empty());
     }
 }
