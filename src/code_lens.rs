@@ -44,7 +44,7 @@ impl Backend {
             map.get(uri)?.clone()
         };
 
-        let mut lenses = Vec::new();
+        let mut lenses = self.symfony_event_lenses(&classes, uri, content);
 
         for class in &classes {
             let class_fqn = class.fqn();
@@ -52,7 +52,6 @@ impl Backend {
             if let Some(lens) = self.build_covers_lens(class, uri, content) {
                 lenses.push(lens);
             }
-
             for method in &class.methods {
                 if method.name_offset == 0
                     || method.is_virtual

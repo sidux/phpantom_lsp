@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Fully-qualified PHP classes navigate from YAML and XML.** Ctrl+Click a class name in any YAML key or value, or any XML attribute or text node, and PHPantom opens its PHP declaration without needing to know that file's schema. `Class::member` references navigate too. Unknown and unqualified strings are left alone. Contributed by @sidux.
 - **Generated transparent proxies can be mapped back to their real classes.** Configure opt-in proxy paths and a marker interface under `[[php.proxies]]`; a class name read from YAML or XML then navigates to the parent class the runtime proxy represents, without changing normal PHP type resolution. Contributed by @sidux.
+- **Symfony event publishers and listeners navigate in both directions.** PHPantom reads the final listener wiring from the generated container without executing it, while project-defined publisher attributes and event-name rules stay in `.phpantom.toml`. Event links and lenses follow transparent proxies back to the real class. Contributed by @sidux.
 
 ### Changed
 
