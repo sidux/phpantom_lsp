@@ -164,3 +164,68 @@ async fn unknown_and_unqualified_names_do_not_navigate() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn transparent_proxy_metadata_navigates_to_the_real_class() {
+    let php = concat!(
+        "<?php\n",
+        "namespace App\\Service;\n",
+        "class Mailer {\n",
+        "    public function send(): void {}\n",
+        "}\n",
+    );
+    let proxy = concat!(
+        "<?php\n",
+        "namespace Generated;\n",
+        "class MailerProxy extends \\App\\Service\\Mailer ",
+        "implements \\Acme\\Proxy\\TransparentProxy {}\n",
+    );
+    let config = concat!(
+        "[indexing]\n",
+        "strategy = \"none\"\n",
+        "[[php.proxies]]\n",
+        "paths = [\"var/cache/*/proxies/*.php\"]\n",
+        "marker-interface = 'Acme\\Proxy\\TransparentProxy'\n",
+    );
+    let yaml = "handler: Generated\\MailerProxy::send\n";
+    let (backend, dir) = create_psr4_workspace(
+        COMPOSER,
+        &[
+            ("src/Service/Mailer.php", php),
+            ("var/cache/dev/proxies/MailerProxy.php", proxy),
+            ("config/services.yaml", yaml),
+            (".phpantom.toml", config),
+        ],
+    );
+    backend.initialized(InitializedParams {}).await;
+    let yaml_uri = Url::from_file_path(dir.path().join("config/services.yaml")).unwrap();
+    open_resource(&backend, yaml_uri.clone(), "yaml", yaml).await;
+
+    let class_result = definition_at(&backend, yaml_uri.clone(), yaml, "MailerProxy", 3)
+        .await
+        .expect("proxy class should navigate to its real class");
+    let GotoDefinitionResponse::Scalar(class_location) = class_result else {
+        panic!("expected one real class definition");
+    };
+    assert!(
+        class_location
+            .uri
+            .path()
+            .ends_with("/src/Service/Mailer.php")
+    );
+    assert_eq!(class_location.range.start.line, 2);
+
+    let member_result = definition_at(&backend, yaml_uri, yaml, "send", 2)
+        .await
+        .expect("proxy member should navigate to the real member");
+    let GotoDefinitionResponse::Scalar(member_location) = member_result else {
+        panic!("expected one real member definition");
+    };
+    assert!(
+        member_location
+            .uri
+            .path()
+            .ends_with("/src/Service/Mailer.php")
+    );
+    assert_eq!(member_location.range.start.line, 3);
+}

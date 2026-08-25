@@ -47,11 +47,17 @@ impl Backend {
         position: Position,
     ) -> Option<Location> {
         match symbol_at(content, position)? {
-            ResourceSymbol::Class(fqn) => self.class_declaration_location(&fqn),
+            ResourceSymbol::Class(fqn) => self
+                .metadata_class_family(&fqn)
+                .iter()
+                .find_map(|target| self.class_declaration_location(target)),
             ResourceSymbol::Member {
                 class_fqn,
                 member_name,
-            } => self.class_member_declaration_location(&class_fqn, &member_name),
+            } => self
+                .metadata_class_family(&class_fqn)
+                .iter()
+                .find_map(|target| self.class_member_declaration_location(target, &member_name)),
         }
     }
 }
