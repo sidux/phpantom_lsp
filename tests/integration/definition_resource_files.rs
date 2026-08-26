@@ -147,6 +147,156 @@ async fn navigates_class_members_and_yaml_escaped_class_names() {
 }
 
 #[tokio::test]
+async fn resource_classes_feed_find_references_and_code_lens() {
+    let php = concat!("<?php\n", "namespace App\\Domain;\n", "class Widget {}\n",);
+    let yaml = concat!(
+        "primary: App\\Domain\\Widget\n",
+        "fallback: App\\Domain\\Widget\n",
+    );
+    let xml = r#"<item class="App\Domain\Widget" />"#;
+    let (backend, dir) = create_psr4_workspace(
+        COMPOSER,
+        &[
+            ("src/Domain/Widget.php", php),
+            ("config/widgets.yaml", yaml),
+            ("config/widgets.xml", xml),
+        ],
+    );
+    let php_uri = Url::from_file_path(dir.path().join("src/Domain/Widget.php")).unwrap();
+    open_resource(&backend, php_uri.clone(), "php", php).await;
+
+    let references = backend
+        .references(ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: php_uri.clone(),
+                },
+                position: Position::new(2, 8),
+            },
+            context: ReferenceContext {
+                include_declaration: false,
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("reference request should succeed")
+        .expect("resource references should be found");
+    assert_eq!(references.len(), 3);
+    assert_eq!(
+        references
+            .iter()
+            .filter(|location| location.uri.path().ends_with("/config/widgets.yaml"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        references
+            .iter()
+            .filter(|location| location.uri.path().ends_with("/config/widgets.xml"))
+            .count(),
+        1
+    );
+
+    let lenses = backend
+        .code_lens(CodeLensParams {
+            text_document: TextDocumentIdentifier { uri: php_uri },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code lens request should succeed")
+        .expect("class reference lens should be present");
+    let lens = lenses
+        .into_iter()
+        .find(|lens| lens.range.start.line == 2 && lens.data.is_some())
+        .expect("class declaration should have an unresolved reference lens");
+    let resolved = backend
+        .code_lens_resolve(lens)
+        .await
+        .expect("class reference lens should resolve");
+    assert_eq!(
+        resolved
+            .command
+            .as_ref()
+            .map(|command| command.title.as_str()),
+        Some("3 references")
+    );
+}
+
+#[tokio::test]
+async fn resource_class_members_feed_find_references_and_code_lens() {
+    let php = concat!(
+        "<?php\n",
+        "namespace App\\Handler;\n",
+        "class Run {\n",
+        "    public function handle(): void {}\n",
+        "}\n",
+    );
+    let yaml = "callback: App\\Handler\\Run::handle\n";
+    let (backend, dir) = create_psr4_workspace(
+        COMPOSER,
+        &[
+            ("src/Handler/Run.php", php),
+            ("config/callbacks.yaml", yaml),
+        ],
+    );
+    let php_uri = Url::from_file_path(dir.path().join("src/Handler/Run.php")).unwrap();
+    open_resource(&backend, php_uri.clone(), "php", php).await;
+
+    let references = backend
+        .references(ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: php_uri.clone(),
+                },
+                position: Position::new(3, 22),
+            },
+            context: ReferenceContext {
+                include_declaration: false,
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("reference request should succeed")
+        .expect("resource member reference should be found");
+    assert_eq!(references.len(), 1);
+    assert!(references[0].uri.path().ends_with("/config/callbacks.yaml"));
+
+    let lenses = backend
+        .code_lens(CodeLensParams {
+            text_document: TextDocumentIdentifier { uri: php_uri },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("code lens request should succeed")
+        .expect("member reference lens should be present");
+    let lens = lenses
+        .into_iter()
+        .find(|lens| {
+            lens.range.start.line == 3
+                && lens.data.as_ref().is_some_and(|data| {
+                    data.get("kind").and_then(serde_json::Value::as_str)
+                        == Some("phpMemberReferences")
+                })
+        })
+        .expect("method declaration should have an unresolved reference lens");
+    let resolved = backend
+        .code_lens_resolve(lens)
+        .await
+        .expect("member reference lens should resolve");
+    assert_eq!(
+        resolved
+            .command
+            .as_ref()
+            .map(|command| command.title.as_str()),
+        Some("1 reference")
+    );
+}
+
+#[tokio::test]
 async fn unknown_and_unqualified_names_do_not_navigate() {
     let yaml = "short: DeletePlaylist\nunknown: App\\Missing\\DeletePlaylist\n";
     let (backend, dir) = create_psr4_workspace(COMPOSER, &[("config/classes.yaml", yaml)]);
@@ -215,7 +365,7 @@ async fn transparent_proxy_metadata_navigates_to_the_real_class() {
     );
     assert_eq!(class_location.range.start.line, 2);
 
-    let member_result = definition_at(&backend, yaml_uri, yaml, "send", 2)
+    let member_result = definition_at(&backend, yaml_uri.clone(), yaml, "send", 2)
         .await
         .expect("proxy member should navigate to the real member");
     let GotoDefinitionResponse::Scalar(member_location) = member_result else {
@@ -228,4 +378,24 @@ async fn transparent_proxy_metadata_navigates_to_the_real_class() {
             .ends_with("/src/Service/Mailer.php")
     );
     assert_eq!(member_location.range.start.line, 3);
+
+    let php_uri = Url::from_file_path(dir.path().join("src/Service/Mailer.php")).unwrap();
+    open_resource(&backend, php_uri.clone(), "php", php).await;
+    let references = backend
+        .references(ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: php_uri },
+                position: Position::new(2, 8),
+            },
+            context: ReferenceContext {
+                include_declaration: false,
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("reference request should succeed")
+        .expect("proxy metadata should bubble to the real class");
+    assert_eq!(references.len(), 1);
+    assert_eq!(references[0].uri, yaml_uri);
 }
