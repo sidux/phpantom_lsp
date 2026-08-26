@@ -354,6 +354,83 @@ makeWidget();
     }
 }
 
+#[tokio::test]
+async fn implementation_lenses_open_class_and_method_children() {
+    let content = r#"<?php
+namespace App;
+interface Processor {
+    public function process(): void;
+}
+class FirstProcessor implements Processor {
+    public function process(): void {}
+}
+class SecondProcessor implements Processor {
+    public function process(): void {}
+}
+"#;
+    let (backend, dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/" } } }"#,
+        &[("src/Processor.php", content)],
+    );
+    let uri = Url::from_file_path(dir.path().join("src/Processor.php")).unwrap();
+    open_doc(&backend, uri.clone(), content).await;
+    backend
+        .references(ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position::new(2, 12),
+            },
+            context: ReferenceContext {
+                include_declaration: true,
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .unwrap();
+
+    let lenses = backend
+        .code_lens(CodeLensParams {
+            text_document: TextDocumentIdentifier { uri },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .unwrap()
+        .expect("expected implementation lenses");
+
+    for (line, target_lines) in [(2, vec![5, 8]), (3, vec![6, 9])] {
+        let lens = lenses
+            .iter()
+            .find(|lens| {
+                lens.range.start.line == line
+                    && lens
+                        .command
+                        .as_ref()
+                        .is_some_and(|command| command.title == "2 implementations")
+            })
+            .unwrap_or_else(|| panic!("expected implementation lens on line {line}: {lenses:?}"));
+        let command = lens.command.as_ref().unwrap();
+        assert_eq!(command.command, "editor.action.showReferences");
+        let locations: Vec<Location> = serde_json::from_value(
+            command
+                .arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get(2))
+                .cloned()
+                .expect("expected implementation locations"),
+        )
+        .expect("implementation targets should be locations");
+        assert_eq!(
+            locations
+                .iter()
+                .map(|location| location.range.start.line)
+                .collect::<Vec<_>>(),
+            target_lines
+        );
+    }
+}
+
 // ─── Basic Override Detection ───────────────────────────────────────────────
 
 #[test]

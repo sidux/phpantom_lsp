@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Symfony event publishers and listeners navigate in both directions.** PHPantom reads the final listener wiring from the generated container without executing it, while project-defined publisher attributes and event-name rules stay in `.phpantom.toml`. Event links and lenses follow transparent proxies back to the real class. Contributed by @sidux.
 - **Configured Symfony ExpressionLanguage strings understand PHP members.** Declare the attribute or expression-object argument and map its variables to method parameters, the return type, or a fixed class. Ctrl+Click follows roots, properties, and method chains to PHP declarations, while missing members use the normal `unknown_member` warning. Package-specific names and contracts stay in `.phpantom.toml`. Contributed by @sidux.
 - **Reference CodeLens.** PHP declarations show clickable exact reference counts. Declarations with no indexed uses are answered immediately, while semantic member locations are cached in a bounded background index so opening a large file does not fan out into an expensive resolve request per lens. Clients that support CodeLens refresh receive only ready, fully resolved member lenses. Contributed by @sidux.
+- **Implementation CodeLens.** Interfaces, classes, and methods show clickable implementation counts once the workspace index is ready. Each lens opens every exact implementation location, including members inherited from a parent or supplied by a trait. Contributed by @sidux.
 
 ### Changed
 
