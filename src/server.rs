@@ -421,6 +421,7 @@ impl LanguageServer for Backend {
             // that normal project indexing may ignore. Read their declarations
             // into the metadata relation index; they do not enter the type
             // engine or the workspace class map.
+            progress.set_percentage(85, "Indexing proxy metadata");
             let proxy_backend = self.clone_for_blocking();
             let proxy_root = root.clone();
             let proxy_count = run_blocking_cancel_safe("index_php_proxies", move || {
@@ -435,6 +436,7 @@ impl LanguageServer for Backend {
             // Symfony's generated container records the final event-listener
             // wiring after compiler passes have run. Read it statically; the
             // container PHP is never loaded or executed.
+            progress.set_percentage(87, "Indexing Symfony metadata");
             let symfony_backend = self.clone_for_blocking();
             let symfony_root = root.clone();
             let event_count = run_blocking_cancel_safe("index_symfony_metadata", move || {
@@ -510,13 +512,14 @@ impl LanguageServer for Backend {
                 }
             }
 
-            let framework_count = self.index_framework_workspace();
+            let framework_count = self.index_framework_workspace(Some(&progress));
             if framework_count > 0 {
                 tracing::info!(
                     "PHPantom: indexed {} Symfony/Doctrine resource file(s)",
                     framework_count
                 );
             }
+            progress.set_percentage(99, "Finalizing startup indexes");
 
             if let Some(poller) = poller {
                 poller.finish().await;
