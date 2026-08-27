@@ -571,6 +571,10 @@ pub struct Backend {
     /// controller method strings, and path-like resource imports are indexed
     /// here and queried by definition, references, rename, and highlights.
     pub(crate) framework_references: framework::FrameworkReferenceIndex,
+    /// Doctrine entity-to-repository pairs derived alongside framework
+    /// resources, keyed by source URI so CodeLens lookups never rescan every
+    /// YAML/XML file and watched changes can update one entry at a time.
+    pub(crate) framework_doctrine_repositories: framework::DoctrineRepositoryIndex,
     /// Cross-file candidate index for find-references.
     ///
     /// Maintained from each file's [`symbol_maps`] entry during parsing.
@@ -1102,6 +1106,7 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
             framework_references: framework::new_framework_reference_index(),
+            framework_doctrine_repositories: framework::new_doctrine_repository_index(),
             reference_index: reference_index::new_reference_index(),
             proxy_index: Arc::new(RwLock::new(proxy_metadata::ProxyIndex::default())),
             symfony_events: Arc::new(RwLock::new(symfony::SymfonyEventIndex::default())),
@@ -1216,6 +1221,7 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
             framework_references: framework::new_framework_reference_index(),
+            framework_doctrine_repositories: framework::new_doctrine_repository_index(),
             reference_index: reference_index::new_reference_index(),
             proxy_index: Arc::new(RwLock::new(proxy_metadata::ProxyIndex::default())),
             symfony_events: Arc::new(RwLock::new(symfony::SymfonyEventIndex::default())),
@@ -1873,6 +1879,7 @@ impl Backend {
             open_files: Arc::clone(&self.open_files),
             symbol_maps: Arc::clone(&self.symbol_maps),
             framework_references: Arc::clone(&self.framework_references),
+            framework_doctrine_repositories: Arc::clone(&self.framework_doctrine_repositories),
             reference_index: Arc::clone(&self.reference_index),
             proxy_index: Arc::clone(&self.proxy_index),
             symfony_events: Arc::clone(&self.symfony_events),
