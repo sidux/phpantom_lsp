@@ -37,7 +37,8 @@ mod members;
 mod variables;
 
 pub(crate) use members::{
-    doctrine_repository_matches_entity_convention, looks_like_doctrine_repository,
+    MemberDeclarationReferenceQuery, doctrine_repository_matches_entity_convention,
+    looks_like_doctrine_repository,
 };
 
 use std::collections::HashSet;
