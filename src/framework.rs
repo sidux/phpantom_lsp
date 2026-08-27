@@ -138,12 +138,70 @@ pub(crate) type FrameworkReferenceIndex =
 pub(crate) type DoctrineRepositoryIndex =
     Arc<RwLock<HashMap<String, Arc<Vec<DoctrineRepositoryMapping>>>>>;
 
+#[derive(Debug, Clone)]
+struct IndexedFrameworkLocation {
+    uri: Arc<str>,
+    range: Range,
+}
+
+impl IndexedFrameworkLocation {
+    fn to_lsp(&self) -> Option<Location> {
+        Some(Location {
+            uri: Url::parse(&self.uri).ok()?,
+            range: self.range,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct IndexedFrameworkMemberLocation {
+    class_fqn: String,
+    location: IndexedFrameworkLocation,
+}
+
+#[derive(Debug, Clone)]
+struct IndexedMessengerMapping {
+    uri: Arc<str>,
+    message_fqn: String,
+    handler_fqn: String,
+}
+
+#[derive(Debug, Default)]
+struct FrameworkLookupUriKeys {
+    classes: HashSet<String>,
+    methods: HashSet<String>,
+    properties: HashSet<String>,
+    messenger_classes: HashSet<String>,
+}
+
+/// Inverted locations for framework references queried once per PHP
+/// declaration by CodeLens and exact member-reference searches.
+///
+/// The primary framework index stays keyed by URI for cursor-local features.
+/// This derived index makes cross-file lookups proportional to the matching
+/// references instead of to every YAML/XML reference in the workspace. The
+/// reverse URI map keeps watched-file updates proportional to one resource.
+#[derive(Debug, Default)]
+pub(crate) struct FrameworkReferenceLookupIndexInner {
+    classes: HashMap<String, Vec<IndexedFrameworkLocation>>,
+    methods: HashMap<String, Vec<IndexedFrameworkMemberLocation>>,
+    properties: HashMap<String, Vec<IndexedFrameworkMemberLocation>>,
+    messenger_by_class: HashMap<String, Vec<IndexedMessengerMapping>>,
+    uri_keys: HashMap<Arc<str>, FrameworkLookupUriKeys>,
+}
+
+pub(crate) type FrameworkReferenceLookupIndex = Arc<RwLock<FrameworkReferenceLookupIndexInner>>;
+
 pub(crate) fn new_framework_reference_index() -> FrameworkReferenceIndex {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
 pub(crate) fn new_doctrine_repository_index() -> DoctrineRepositoryIndex {
     Arc::new(RwLock::new(HashMap::new()))
+}
+
+pub(crate) fn new_framework_reference_lookup_index() -> FrameworkReferenceLookupIndex {
+    Arc::new(RwLock::new(FrameworkReferenceLookupIndexInner::default()))
 }
 
 pub(crate) fn is_framework_resource_uri(uri: &str) -> bool {
@@ -276,6 +334,141 @@ fn is_skipped_resource_path(path: &Path) -> bool {
 }
 
 impl Backend {
+    fn replace_framework_lookup_uri(
+        lookup: &mut FrameworkReferenceLookupIndexInner,
+        uri: &str,
+        content: &str,
+        references: &[FrameworkReference],
+    ) {
+        Self::remove_framework_lookup_uri(lookup, uri);
+
+        let uri: Arc<str> = Arc::from(uri);
+        let mut keys = FrameworkLookupUriKeys::default();
+        for reference in references {
+            let location = IndexedFrameworkLocation {
+                uri: Arc::clone(&uri),
+                range: Range::new(
+                    offset_to_position(content, reference.start as usize),
+                    offset_to_position(content, reference.end as usize),
+                ),
+            };
+            match &reference.kind {
+                FrameworkReferenceKind::Class { fqn } => {
+                    let key = framework_fqn_lookup_key(fqn);
+                    lookup
+                        .classes
+                        .entry(key.clone())
+                        .or_default()
+                        .push(location);
+                    keys.classes.insert(key);
+                }
+                FrameworkReferenceKind::Method {
+                    class_fqn,
+                    member_name,
+                } => {
+                    lookup.methods.entry(member_name.clone()).or_default().push(
+                        IndexedFrameworkMemberLocation {
+                            class_fqn: framework_fqn_lookup_key(class_fqn),
+                            location,
+                        },
+                    );
+                    keys.methods.insert(member_name.clone());
+                }
+                FrameworkReferenceKind::Property {
+                    class_fqn,
+                    member_name,
+                } => {
+                    lookup
+                        .properties
+                        .entry(member_name.clone())
+                        .or_default()
+                        .push(IndexedFrameworkMemberLocation {
+                            class_fqn: framework_fqn_lookup_key(class_fqn),
+                            location,
+                        });
+                    keys.properties.insert(member_name.clone());
+                }
+                FrameworkReferenceKind::MessengerHandler {
+                    message_fqn,
+                    handler_fqn,
+                    ..
+                } => {
+                    let mapping = IndexedMessengerMapping {
+                        uri: Arc::clone(&uri),
+                        message_fqn: normalize_framework_fqn(message_fqn),
+                        handler_fqn: normalize_framework_fqn(handler_fqn),
+                    };
+                    for key in [
+                        framework_fqn_lookup_key(message_fqn),
+                        framework_fqn_lookup_key(handler_fqn),
+                    ] {
+                        lookup
+                            .messenger_by_class
+                            .entry(key.clone())
+                            .or_default()
+                            .push(mapping.clone());
+                        keys.messenger_classes.insert(key);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !keys.classes.is_empty()
+            || !keys.methods.is_empty()
+            || !keys.properties.is_empty()
+            || !keys.messenger_classes.is_empty()
+        {
+            lookup.uri_keys.insert(uri, keys);
+        }
+    }
+
+    fn remove_framework_lookup_uri(lookup: &mut FrameworkReferenceLookupIndexInner, uri: &str) {
+        let Some(keys) = lookup.uri_keys.remove(uri) else {
+            return;
+        };
+
+        for key in keys.classes {
+            let remove_key = lookup.classes.get_mut(&key).is_some_and(|locations| {
+                locations.retain(|location| location.uri.as_ref() != uri);
+                locations.is_empty()
+            });
+            if remove_key {
+                lookup.classes.remove(&key);
+            }
+        }
+        for key in keys.methods {
+            let remove_key = lookup.methods.get_mut(&key).is_some_and(|locations| {
+                locations.retain(|entry| entry.location.uri.as_ref() != uri);
+                locations.is_empty()
+            });
+            if remove_key {
+                lookup.methods.remove(&key);
+            }
+        }
+        for key in keys.properties {
+            let remove_key = lookup.properties.get_mut(&key).is_some_and(|locations| {
+                locations.retain(|entry| entry.location.uri.as_ref() != uri);
+                locations.is_empty()
+            });
+            if remove_key {
+                lookup.properties.remove(&key);
+            }
+        }
+        for key in keys.messenger_classes {
+            let remove_key = lookup
+                .messenger_by_class
+                .get_mut(&key)
+                .is_some_and(|mappings| {
+                    mappings.retain(|mapping| mapping.uri.as_ref() != uri);
+                    mappings.is_empty()
+                });
+            if remove_key {
+                lookup.messenger_by_class.remove(&key);
+            }
+        }
+    }
+
     /// Scan framework configuration under the workspace root.
     pub(crate) fn index_framework_workspace(&self) -> usize {
         let Some(root) = self.workspace.workspace_root.read().clone() else {
@@ -284,6 +477,7 @@ impl Backend {
 
         let mut indexed = HashMap::new();
         let mut doctrine_repositories = HashMap::new();
+        let mut lookup = FrameworkReferenceLookupIndexInner::default();
         for entry in ignore::WalkBuilder::new(&root)
             .hidden(false)
             .build()
@@ -311,6 +505,7 @@ impl Backend {
             if let Some(refs) = self.scan_framework_uri_references(&uri, &content)
                 && !refs.is_empty()
             {
+                Self::replace_framework_lookup_uri(&mut lookup, &uri, &content, &refs);
                 indexed.insert(uri, Arc::new(refs));
             }
         }
@@ -318,6 +513,7 @@ impl Backend {
         let count = indexed.len();
         *self.framework_references.write() = indexed;
         *self.framework_doctrine_repositories.write() = doctrine_repositories;
+        *self.framework_reference_lookup.write() = lookup;
         count
     }
 
@@ -334,12 +530,15 @@ impl Backend {
         };
         let mut index = self.framework_references.write();
         let mut doctrine_repositories = self.framework_doctrine_repositories.write();
+        let mut lookup = self.framework_reference_lookup.write();
         match refs {
             Some(refs) if !refs.is_empty() => {
+                Self::replace_framework_lookup_uri(&mut lookup, uri, content, &refs);
                 index.insert(uri.to_string(), Arc::new(refs));
             }
             Some(_) | None => {
                 index.remove(uri);
+                Self::remove_framework_lookup_uri(&mut lookup, uri);
             }
         }
         if mappings.is_empty() {
@@ -372,6 +571,7 @@ impl Backend {
     pub(crate) fn remove_framework_uri(&self, uri: &str) {
         self.framework_references.write().remove(uri);
         self.framework_doctrine_repositories.write().remove(uri);
+        Self::remove_framework_lookup_uri(&mut self.framework_reference_lookup.write(), uri);
     }
 
     pub(crate) fn apply_framework_file_change(
@@ -442,27 +642,14 @@ impl Backend {
     }
 
     pub(crate) fn framework_class_reference_locations(&self, target_fqn: &str) -> Vec<Location> {
-        let target = normalize_framework_fqn(target_fqn);
-        let mut locations = Vec::new();
-
-        for (uri, refs) in self.framework_references.read().iter() {
-            let Ok(parsed_uri) = Url::parse(uri) else {
-                continue;
-            };
-            let Some(content) = self.get_file_content_arc(uri) else {
-                continue;
-            };
-            for reference in refs.iter() {
-                let FrameworkReferenceKind::Class { fqn } = &reference.kind else {
-                    continue;
-                };
-                if normalize_framework_fqn(fqn).eq_ignore_ascii_case(&target) {
-                    let start = offset_to_position(&content, reference.start as usize);
-                    let end = offset_to_position(&content, reference.end as usize);
-                    push_unique_location(&mut locations, &parsed_uri, start, end);
-                }
-            }
-        }
+        let lookup = self.framework_reference_lookup.read();
+        let mut locations = lookup
+            .classes
+            .get(&framework_fqn_lookup_key(target_fqn))
+            .into_iter()
+            .flatten()
+            .filter_map(IndexedFrameworkLocation::to_lsp)
+            .collect();
 
         sort_locations(&mut locations);
         locations
@@ -473,36 +660,20 @@ impl Backend {
         target_member: &str,
         hierarchy: Option<&HashSet<String>>,
     ) -> Vec<Location> {
-        let mut locations = Vec::new();
-        for (uri, refs) in self.framework_references.read().iter() {
-            let Ok(parsed_uri) = Url::parse(uri) else {
-                continue;
-            };
-            let Some(content) = self.get_file_content_arc(uri) else {
-                continue;
-            };
-            for reference in refs.iter() {
-                let FrameworkReferenceKind::Method {
-                    class_fqn,
-                    member_name,
-                } = &reference.kind
-                else {
-                    continue;
-                };
-                if member_name != target_member {
-                    continue;
-                }
-                if let Some(hierarchy) = hierarchy {
-                    let class_fqn = normalize_framework_fqn(class_fqn);
-                    if !hierarchy.iter().any(|h| h.eq_ignore_ascii_case(&class_fqn)) {
-                        continue;
-                    }
-                }
-                let start = offset_to_position(&content, reference.start as usize);
-                let end = offset_to_position(&content, reference.end as usize);
-                push_unique_location(&mut locations, &parsed_uri, start, end);
-            }
-        }
+        let hierarchy = hierarchy.map(normalized_framework_hierarchy);
+        let lookup = self.framework_reference_lookup.read();
+        let mut locations = lookup
+            .methods
+            .get(target_member)
+            .into_iter()
+            .flatten()
+            .filter(|entry| {
+                hierarchy
+                    .as_ref()
+                    .is_none_or(|hierarchy| hierarchy.contains(&entry.class_fqn))
+            })
+            .filter_map(|entry| entry.location.to_lsp())
+            .collect();
         sort_locations(&mut locations);
         locations
     }
@@ -512,44 +683,39 @@ impl Backend {
         target_property: &str,
         hierarchy: Option<&HashSet<String>>,
     ) -> Vec<Location> {
-        let mut locations = Vec::new();
-        for (uri, refs) in self.framework_references.read().iter() {
-            let Ok(parsed_uri) = Url::parse(uri) else {
-                continue;
-            };
-            let Some(content) = self.get_file_content_arc(uri) else {
-                continue;
-            };
-            for reference in refs.iter() {
-                let FrameworkReferenceKind::Property {
-                    class_fqn,
-                    member_name,
-                } = &reference.kind
-                else {
-                    continue;
-                };
-                if member_name != target_property {
-                    continue;
-                }
-                if let Some(hierarchy) = hierarchy {
-                    let class_fqn = normalize_framework_fqn(class_fqn);
-                    if !hierarchy
-                        .iter()
-                        .any(|candidate| candidate.eq_ignore_ascii_case(&class_fqn))
-                    {
-                        continue;
-                    }
-                }
-                push_unique_location(
-                    &mut locations,
-                    &parsed_uri,
-                    offset_to_position(&content, reference.start as usize),
-                    offset_to_position(&content, reference.end as usize),
-                );
-            }
-        }
+        let hierarchy = hierarchy.map(normalized_framework_hierarchy);
+        let lookup = self.framework_reference_lookup.read();
+        let mut locations = lookup
+            .properties
+            .get(target_property)
+            .into_iter()
+            .flatten()
+            .filter(|entry| {
+                hierarchy
+                    .as_ref()
+                    .is_none_or(|hierarchy| hierarchy.contains(&entry.class_fqn))
+            })
+            .filter_map(|entry| entry.location.to_lsp())
+            .collect();
         sort_locations(&mut locations);
         locations
+    }
+
+    pub(crate) fn framework_messenger_mappings_for_class(
+        &self,
+        target_fqn: &str,
+    ) -> Vec<(String, String)> {
+        let lookup = self.framework_reference_lookup.read();
+        let mut mappings: Vec<_> = lookup
+            .messenger_by_class
+            .get(&framework_fqn_lookup_key(target_fqn))
+            .into_iter()
+            .flatten()
+            .map(|mapping| (mapping.message_fqn.clone(), mapping.handler_fqn.clone()))
+            .collect();
+        mappings.sort_unstable();
+        mappings.dedup();
+        mappings
     }
 
     pub(crate) fn framework_symfony_symbol_names(
@@ -4558,6 +4724,19 @@ pub(crate) fn normalize_framework_fqn(name: &str) -> String {
     out.trim_end_matches('\\').to_string()
 }
 
+fn framework_fqn_lookup_key(name: &str) -> String {
+    let mut key = normalize_framework_fqn(name);
+    key.make_ascii_lowercase();
+    key
+}
+
+fn normalized_framework_hierarchy(hierarchy: &HashSet<String>) -> HashSet<String> {
+    hierarchy
+        .iter()
+        .map(|fqn| framework_fqn_lookup_key(fqn))
+        .collect()
+}
+
 fn valid_framework_name(name: &str) -> bool {
     let name = name.trim_matches('\\');
     if name.is_empty() {
@@ -4827,6 +5006,57 @@ mod tests {
         assert!(
             backend
                 .framework_doctrine_repository_fqns_for_entity("App\\Entity\\User")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn framework_reference_lookup_updates_and_removes_one_resource() {
+        let backend = Backend::new_test();
+        let uri = "file:///project/config/routes.yaml";
+        backend.index_framework_uri_content(
+            uri,
+            "home:\n  path: /\n  controller: App\\Controller\\HomeController::index\n",
+        );
+
+        assert_eq!(
+            backend
+                .framework_class_reference_locations("app\\controller\\homecontroller")
+                .len(),
+            1
+        );
+        assert_eq!(
+            backend
+                .framework_member_reference_locations("index", None)
+                .len(),
+            1
+        );
+
+        backend.index_framework_uri_content(
+            uri,
+            "admin:\n  path: /admin\n  controller: App\\Controller\\AdminController::dashboard\n",
+        );
+        assert!(
+            backend
+                .framework_member_reference_locations("index", None)
+                .is_empty()
+        );
+        assert_eq!(
+            backend
+                .framework_member_reference_locations("dashboard", None)
+                .len(),
+            1
+        );
+
+        backend.remove_framework_uri(uri);
+        assert!(
+            backend
+                .framework_class_reference_locations("App\\Controller\\AdminController")
+                .is_empty()
+        );
+        assert!(
+            backend
+                .framework_member_reference_locations("dashboard", None)
                 .is_empty()
         );
     }
