@@ -13,6 +13,9 @@ use crate::definition::MemberImplementationTarget;
 use crate::definition::member::MemberKind;
 use crate::framework::{FrameworkReferenceKind, SymfonySymbolKind};
 use crate::reference_index::ReferenceIndexKey;
+use crate::references::{
+    doctrine_repository_matches_entity_convention, looks_like_doctrine_repository,
+};
 use crate::symbol_map::SymbolKind;
 use crate::text_position::offset_to_position;
 use crate::types::{ClassInfo, ClassLikeKind, MAX_INHERITANCE_DEPTH, MethodInfo, Visibility};
@@ -1161,6 +1164,15 @@ impl Backend {
     ) -> Vec<String> {
         let mut out = self.framework_doctrine_entity_fqns_for_repository(repository_fqn);
         let repository = normalize_class_name(repository_fqn);
+        if !out.is_empty() {
+            return out;
+        }
+        let Some(repository_class) = class_loader(&repository) else {
+            return out;
+        };
+        if !looks_like_doctrine_repository(&repository_class) {
+            return out;
+        }
 
         let mut candidates: Vec<String> = Vec::new();
         {
@@ -1185,10 +1197,7 @@ impl Backend {
             if !looks_like_doctrine_entity_name(&entity_fqn) {
                 continue;
             }
-            let repos = self.doctrine_repository_fqns_for_entity(&entity_fqn, class_loader);
-            if repos
-                .iter()
-                .any(|repo| normalize_class_name(repo).eq_ignore_ascii_case(&repository))
+            if doctrine_repository_matches_entity_convention(&entity_fqn, &repository)
                 && !out
                     .iter()
                     .any(|known| known.eq_ignore_ascii_case(&entity_fqn))
