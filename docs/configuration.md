@@ -199,7 +199,7 @@ message = "^Call to deprecated function some_legacy_helper\\(\\)"
 
 | Key        | Type   | Default  | Description |
 | ---------- | ------ | -------- | ----------- |
-| `strategy` | string | `"full"` | Class discovery strategy: `"full"`, `"composer"`, `"self"`, or `"none"`. See [Indexing Strategy](#indexing-strategy) below. |
+| `strategy` | string | `"full"` | Class discovery strategy: `"full"`, `"semantic"`, `"composer"`, `"self"`, or `"none"`. See [Indexing Strategy](#indexing-strategy) below. |
 
 ### `[semantic_tokens]`
 
@@ -306,11 +306,22 @@ The `strategy` setting controls this behaviour:
 | Strategy | Behaviour |
 | --- | --- |
 | `"full"` (default) | Scan PHP files, then background-parse user files to populate symbol and reference indexes. |
+| `"semantic"` | Build the same complete index as `"full"`, then resolve semantic relationships. This uses more startup CPU and memory so interactive features such as reference CodeLens and repeated member searches respond faster on first use. |
 | `"composer"` | Use Composer's classmap when available, self-scan to fill gaps. Results stay closer to what `composer dump-autoload` knows about. |
 | `"self"` | Ignore Composer's classmap entirely and scan every PHP file in the workspace. Discovers all classes regardless of autoloading. |
 | `"none"` | Use only Composer's classmap with no fallback scanning. The most conservative option. |
 
-Most projects should leave this at the default. Change it to `"composer"` or `"none"` only if you want a lighter or more Composer-constrained index.
+Most projects should leave this at the default. Use `"semantic"` when lower first-use latency matters more than startup cost. Change it to `"composer"` or `"none"` only if you want a lighter or more Composer-constrained index.
+
+Editors can select the same session-scoped mode without modifying the project by passing LSP initialization options. The client value overrides the project and global TOML layers for that session:
+
+```json
+{
+  "indexing": {
+    "strategy": "semantic"
+  }
+}
+```
 
 ## Troubleshooting
 
