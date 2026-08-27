@@ -62,7 +62,7 @@
         },
         "workspace": {
           "type": "boolean",
-          "description": "Compute diagnostics for the whole workspace in the background after startup and the full index finish, so project-wide problems appear for files that are not open in the editor. Off by default: it costs a project-wide sweep every session. Requires the default \"full\" indexing strategy.",
+          "description": "Compute diagnostics for the whole workspace in the background after startup and the complete index finish, so project-wide problems appear for files that are not open in the editor. Off by default: it costs a project-wide sweep every session. Requires the \"full\" or \"semantic\" indexing strategy.",
           "default": false
         },
         "workspace-external": {

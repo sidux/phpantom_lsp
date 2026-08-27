@@ -172,10 +172,10 @@ use the declared variable contract; an empty prefix list matches any attribute.
 
 | Key                        | Type   | Default | Description |
 | -------------------------- | ------ | ------- | ----------- |
-| `unresolved-member-access` | bool   | `false` | Report `->`, `?->`, `::` on subjects whose type could not be resolved. Useful for type coverage, noisy on untyped codebases. |
+| `unresolved-member-access` | bool   | `false` | Report `->`, `?->`, `::` where the subject is `mixed` or its type could not be worked out. Useful for type coverage, noisy on untyped codebases. |
 | `extra-arguments`          | bool   | `false` | Report calls that pass more arguments than the function accepts. |
 | `report-magic-properties`  | bool   | `false` | Report unknown property access on classes with `__get` when virtual properties are defined. Matches PHPStan's `reportMagicProperties`. |
-| `workspace`                | bool   | `false` | Compute diagnostics for the whole workspace in the background after startup, so problems appear for files you have not opened. Costs a project-wide sweep every session. Requires the default `full` indexing strategy. |
+| `workspace`                | bool   | `false` | Compute diagnostics for the whole workspace in the background after startup, so problems appear for files you have not opened. Costs a project-wide sweep every session. Requires the `full` or `semantic` indexing strategy. |
 | `workspace-external`       | bool   | `true`  | Run configured external tools (PHPStan, PHPCS, Mago) once over the whole project after workspace diagnostics finish. Only takes effect when `workspace` is enabled. |
 
 #### `[[diagnostics.ignore]]`
