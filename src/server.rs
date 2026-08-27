@@ -1158,7 +1158,9 @@ impl LanguageServer for Backend {
                     )
                     .flatten()
                 });
-                return Ok(location.map(GotoDefinitionResponse::Scalar));
+                if let Some(location) = location {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(location)));
+                }
             }
 
             if let Some(locations) = backend.get_file_content(&uri_clone).and_then(|content| {
