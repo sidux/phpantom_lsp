@@ -882,6 +882,62 @@ pub fn parse_autoload_namespaces(
     classmap
 }
 
+/// Scan `<vendor>/composer/` for the classes Composer's own bootstrap
+/// defines, and return them as a classmap.
+///
+/// `Composer\Autoload\ClassLoader` and `Composer\InstalledVersions` are
+/// present in every Composer install, but no autoload map lists them:
+/// `vendor/composer/autoload_real.php` pulls them in with a hand-written
+/// `require` before any autoloader is registered, and the directory is not
+/// a package, so nothing else indexes it either.  Code that introspects
+/// its own autoloader (`ClassLoader::getPrefixesPsr4()`,
+/// `InstalledVersions::getRootPackage()`) names them directly, so they
+/// have to be indexed for that code to resolve.
+///
+/// The files are scanned rather than hardcoded to a name, so a Composer
+/// release that adds or renames a bootstrap class needs no change here.
+/// Files that only run code (`autoload_real.php`, `platform_check.php`)
+/// declare no class and contribute nothing.
+///
+/// Returns an empty `HashMap` when the directory does not exist.
+pub fn scan_composer_bootstrap_classes(
+    workspace_root: &Path,
+    vendor_dir: &str,
+) -> HashMap<String, PathBuf> {
+    let composer_dir = workspace_root.join(vendor_dir).join("composer");
+    let entries = match fs::read_dir(&composer_dir) {
+        Ok(e) => e,
+        Err(_) => return HashMap::new(),
+    };
+
+    let mut classmap = HashMap::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Only the directory's own files: `vendor/composer/` also holds
+        // the installed-package metadata and, for a path repository, the
+        // symlinks into it.
+        if !path.is_file() || path.extension().is_none_or(|ext| ext != "php") {
+            continue;
+        }
+        // The generated autoload maps are data, not declarations, and are
+        // parsed by their own dedicated readers.
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("autoload_"))
+        {
+            continue;
+        }
+        if let Ok(content) = fs::read(&path) {
+            for fqn in crate::classmap_scanner::find_classes(&content) {
+                classmap.entry(fqn).or_insert_with(|| path.clone());
+            }
+        }
+    }
+
+    classmap
+}
+
 /// Recursively scan a directory for PHP files and extract class names
 /// using the lightweight byte-level scanner.
 fn scan_directory_for_classes(dir: &Path, classmap: &mut HashMap<String, PathBuf>) {
@@ -1121,6 +1177,44 @@ pub(crate) fn has_require_dev(package: &ComposerPackage, dep: &str) -> bool {
     package.require_dev.contains_key(dep)
 }
 
+/// Check whether a package name appears in `composer.json`'s `require` or
+/// `require-dev`.
+///
+/// Matches the package name exactly (e.g. `"phpstan/phpstan"`).
+pub(crate) fn has_dependency(package: &ComposerPackage, dep: &str) -> bool {
+    package.require.contains_key(dep) || package.require_dev.contains_key(dep)
+}
+
+/// Package-name suffixes of the PHPStan extensions that teach it Laravel.
+///
+/// Suffixes rather than exact names, because either is commonly installed
+/// from a fork published under a different vendor prefix (`calebdw/larastan`
+/// forked `larastan/larastan` when the latter was slow to pick up
+/// compatibility fixes) and a fork supplies the same knowledge as what it
+/// forked.
+const LARAVEL_PHPSTAN_EXTENSIONS: [&str; 2] = ["/larastan", "/phpstan-laravel"];
+
+/// Check whether the project depends on a PHPStan extension that makes
+/// PHPStan understand Laravel.
+///
+/// The question is what the project has installed that can explain Eloquent
+/// magic, the facades, and the container to PHPStan — not which package
+/// does the explaining. Both `larastan/larastan` and
+/// `calebdw/phpstan-laravel` answer it, as does a fork of either; see
+/// [`LARAVEL_PHPSTAN_EXTENSIONS`].
+pub(crate) fn has_laravel_aware_phpstan(package: &ComposerPackage) -> bool {
+    package
+        .require
+        .keys()
+        .chain(package.require_dev.keys())
+        .any(|name| {
+            let name = name.to_ascii_lowercase();
+            LARAVEL_PHPSTAN_EXTENSIONS
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+        })
+}
+
 /// Detect whether the project depends on Laravel or a standalone
 /// Illuminate component.
 ///
@@ -1141,6 +1235,32 @@ pub(crate) fn is_laravel_project(package: &ComposerPackage) -> bool {
         .any(|name| {
             name.eq_ignore_ascii_case("laravel/framework")
                 || name.to_ascii_lowercase().starts_with("illuminate/")
+        })
+}
+
+/// Detect whether the project is a Laravel *application* rather than a
+/// library that uses an Illuminate component.
+///
+/// The distinction matters wherever the question is "does this project need
+/// a Laravel-aware analyser?": plain PHPStan misreads an application's
+/// Eloquent models, facades, and container bindings, but a library that
+/// requires `illuminate/support` for its collections has no framework for
+/// an extension to explain. [`is_laravel_project`] deliberately answers the
+/// wider question of whether Laravel-aware *resolution* is worth doing at
+/// all, which such a library does benefit from.
+pub(crate) fn is_laravel_application(package: &ComposerPackage) -> bool {
+    package
+        .require
+        .keys()
+        .chain(package.require_dev.keys())
+        .any(|name| {
+            [
+                "laravel/framework",
+                "laravel/laravel",
+                "illuminate/foundation",
+            ]
+            .iter()
+            .any(|app| name.eq_ignore_ascii_case(app))
         })
 }
 
@@ -1273,6 +1393,27 @@ mod tests {
     fn non_laravel_project_is_not_detected() {
         let p = pkg(r#"{"require": {"php": "^8.2", "symfony/console": "^7.0"}}"#);
         assert!(!is_laravel_project(&p));
+    }
+
+    // ── is_laravel_application ──────────────────────────────────────
+
+    /// An application is the framework, or the skeleton, or the component
+    /// that boots one.  A library reaching for a single Illuminate
+    /// component is not one, even though Laravel-aware resolution still
+    /// helps it.
+    #[test]
+    fn an_illuminate_component_alone_is_not_an_application() {
+        for json in [
+            r#"{"require": {"laravel/framework": "^11.0"}}"#,
+            r#"{"require": {"laravel/laravel": "^11.0"}}"#,
+            r#"{"require": {"illuminate/foundation": "^11.0"}}"#,
+        ] {
+            assert!(is_laravel_application(&pkg(json)), "for {json}");
+        }
+
+        let library = pkg(r#"{"require": {"illuminate/support": "^11.0"}}"#);
+        assert!(is_laravel_project(&library));
+        assert!(!is_laravel_application(&library));
     }
 
     // ── has_runtime_permission_package ──────────────────────────────

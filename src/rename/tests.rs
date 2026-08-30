@@ -1718,6 +1718,99 @@ async fn rename_class_same_file_no_use_statement() {
 }
 
 #[tokio::test]
+async fn rename_class_rewrites_differently_cased_references() {
+    // PHP resolves class names case-insensitively, so `new WIDGET()` is a
+    // reference to `Widget` and has to be rewritten with the rest.
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Widget {}\n",
+        "$a = new WIDGET();\n",
+        "$b = new Widget();\n",
+        "$c = new widget();\n",
+    );
+
+    open_file(&backend, &uri, text).await;
+
+    let edit = rename(&backend, &uri, 1, 7, "Gadget").await;
+    assert!(edit.is_some(), "Expected a workspace edit");
+
+    let file_edits = edits_for_uri(&edit.unwrap(), &uri);
+    let result = apply_edits(text, &file_edits);
+
+    assert_eq!(
+        result.matches("Gadget").count(),
+        4,
+        "Every spelling of Widget should become Gadget; got:\n{}",
+        result
+    );
+    assert!(
+        !result.to_ascii_lowercase().contains("widget"),
+        "No spelling of the old name should remain; got:\n{}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn rename_from_a_differently_cased_reference_uses_the_declared_name() {
+    // A same-namespace reference resolves to an FQN spelled the way the
+    // *reference* writes it, so starting the rename from `WIDGET` yields
+    // `Acme\Parts\WIDGET`.  Everything downstream reads the old short name
+    // back out of that FQN, and the file rename compares it to the file
+    // stem, so the name has to be canonicalized to the declaration first.
+    let backend = Backend::new_test();
+    backend
+        .supports_file_rename
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    let uri_decl = Url::parse("file:///src/Widget.php").unwrap();
+    let uri_usage = Url::parse("file:///src/Usage.php").unwrap();
+
+    let text_decl = concat!(
+        "<?php\n",
+        "namespace Acme\\Parts;\n",
+        "\n",
+        "class Widget {}\n",
+    );
+
+    let text_usage = concat!(
+        "<?php\n",
+        "namespace Acme\\Parts;\n",
+        "\n",
+        "class Usage {\n",
+        "    public function make(): void {\n",
+        "        $w = new WIDGET();\n",
+        "    }\n",
+        "}\n",
+    );
+
+    open_file(&backend, &uri_decl, text_decl).await;
+    open_file(&backend, &uri_usage, text_usage).await;
+
+    // Line 5, col 21 is inside `WIDGET`.
+    let edit = rename(&backend, &uri_usage, 5, 21, "Gadget").await;
+    assert!(
+        edit.is_some(),
+        "Expected a workspace edit from the mis-cased reference site"
+    );
+
+    let ws = edit.unwrap();
+
+    let rf = extract_rename_file(&ws)
+        .expect("the declaration file is named after the class, so it should be renamed with it");
+    assert_eq!(rf.old_uri.to_string(), "file:///src/Widget.php");
+    assert_eq!(rf.new_uri.to_string(), "file:///src/Gadget.php");
+
+    let result = apply_edits(text_usage, &doc_change_edits_for_uri(&ws, &uri_usage));
+    assert!(
+        result.contains("new Gadget()"),
+        "The mis-cased reference should be rewritten; got:\n{}",
+        result
+    );
+}
+
+#[tokio::test]
 async fn rename_class_updates_use_import_from_reference_site() {
     // Trigger rename from a reference site (not the declaration) and
     // verify the use statement is still updated.
@@ -4700,6 +4793,108 @@ echo Holder::BAR;
 }
 
 #[tokio::test]
+async fn rename_namespaced_constant_leaves_a_sibling_namespace_constant_alone() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test/const_namespace_collision.php").unwrap();
+    let text = "<?php
+namespace A;
+
+const VERSION = '1';
+
+echo VERSION;
+
+namespace B;
+
+const VERSION = '2';
+
+echo VERSION;
+";
+
+    open_file(&backend, &uri, text).await;
+
+    let (line, character) = line_char_of(text, "const VERSION = '1';");
+    let edit = rename(&backend, &uri, line, character + 6, "RELEASE")
+        .await
+        .expect("a namespaced constant declaration should rename");
+    let result = apply_edits(text, &edits_for_uri(&edit, &uri));
+
+    assert!(
+        result.contains("namespace A;\n\nconst RELEASE = '1';"),
+        "the declaration in A takes the new name, got: {result}"
+    );
+    assert!(
+        result.contains("namespace B;\n\nconst VERSION = '2';"),
+        "the unrelated declaration in B must not rename, got: {result}"
+    );
+    assert!(
+        result.contains("echo VERSION;\n"),
+        "B's own unqualified use of its own VERSION must not rename, got: {result}"
+    );
+}
+
+#[tokio::test]
+async fn rename_namespaced_function_leaves_a_sibling_namespace_function_alone() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test/function_namespace_collision.php").unwrap();
+    let text = "<?php
+namespace A;
+
+function version(): string { return '1'; }
+
+namespace B;
+
+function version(): string { return '2'; }
+";
+
+    open_file(&backend, &uri, text).await;
+
+    let (line, character) = line_char_of(text, "function version(): string { return '1'; }");
+    let edit = rename(&backend, &uri, line, character + 9, "release")
+        .await
+        .expect("a namespaced function declaration should rename");
+    let result = apply_edits(text, &edits_for_uri(&edit, &uri));
+
+    assert!(
+        result.contains("namespace A;\n\nfunction release(): string { return '1'; }"),
+        "the declaration in A takes the new name, got: {result}"
+    );
+    assert!(
+        result.contains("namespace B;\n\nfunction version(): string { return '2'; }"),
+        "the unrelated declaration in B must not rename, got: {result}"
+    );
+}
+
+#[tokio::test]
+async fn rename_global_constant_reaches_an_unqualified_use_inside_a_namespace() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test/const_global_fallback.php").unwrap();
+    let text = "<?php
+const VERSION = '1';
+
+namespace App;
+
+echo VERSION;
+";
+
+    open_file(&backend, &uri, text).await;
+
+    let (line, character) = line_char_of(text, "const VERSION = '1';");
+    let edit = rename(&backend, &uri, line, character + 6, "RELEASE")
+        .await
+        .expect("a global constant declaration should rename");
+    let result = apply_edits(text, &edits_for_uri(&edit, &uri));
+
+    assert!(
+        result.contains("const RELEASE = '1';"),
+        "the global declaration takes the new name, got: {result}"
+    );
+    assert!(
+        result.contains("echo RELEASE;"),
+        "the unqualified use inside App falls back to the global constant, got: {result}"
+    );
+}
+
+#[tokio::test]
 async fn rename_constant_leaves_an_explicit_alias_alone() {
     let backend = Backend::new_test();
     let uri = Url::parse("file:///test/const_alias.php").unwrap();
@@ -4771,5 +4966,204 @@ echo BAR;
     assert!(
         from_use.is_some_and(|r| r.contains("const QUX = 1;")),
         "either starting point must reach the declaration"
+    );
+}
+
+#[tokio::test]
+async fn rename_from_a_use_rewrites_the_define_that_declares_the_constant() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test/define_use.php").unwrap();
+    let text = "<?php
+define('FOO', 1);
+
+echo FOO;
+";
+
+    open_file(&backend, &uri, text).await;
+
+    let (line, character) = line_char_of(text, "echo FOO;");
+    let edit = rename(&backend, &uri, line, character + 5, "BAR")
+        .await
+        .expect("a use of a define()-declared constant should rename");
+    let result = apply_edits(text, &edits_for_uri(&edit, &uri));
+
+    assert!(
+        result.contains("define('BAR', 1);"),
+        "the define() call must take the new name or the constant is left undefined, got: {result}"
+    );
+    assert!(
+        result.contains("echo BAR;"),
+        "the use takes the new name, got: {result}"
+    );
+}
+
+#[tokio::test]
+async fn rename_from_a_define_call_rewrites_the_constants_uses() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test/define_decl.php").unwrap();
+    let text = "<?php
+define('FOO', 1);
+
+echo FOO;
+echo 'FOO';
+";
+
+    open_file(&backend, &uri, text).await;
+
+    let (line, character) = line_char_of(text, "define('FOO', 1);");
+    let edit = rename(&backend, &uri, line, character + 8, "BAR")
+        .await
+        .expect("the name in a define() call should rename");
+    let result = apply_edits(text, &edits_for_uri(&edit, &uri));
+
+    assert!(
+        result.contains("define('BAR', 1);"),
+        "the declaration takes the new name, got: {result}"
+    );
+    assert!(
+        result.contains("echo BAR;"),
+        "a use of the constant takes the new name, got: {result}"
+    );
+    assert!(
+        result.contains("echo 'FOO';"),
+        "an unrelated string of the same text must not rename, got: {result}"
+    );
+}
+
+#[tokio::test]
+async fn rename_of_a_define_leaves_a_same_named_class_constant_alone() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test/define_collision.php").unwrap();
+    let text = "<?php
+define('FOO', 1);
+
+class Holder
+{
+    public const FOO = 2;
+}
+
+echo FOO;
+echo Holder::FOO;
+";
+
+    open_file(&backend, &uri, text).await;
+
+    let (line, character) = line_char_of(text, "define('FOO', 1);");
+    let edit = rename(&backend, &uri, line, character + 8, "BAR")
+        .await
+        .expect("the name in a define() call should rename");
+    let result = apply_edits(text, &edits_for_uri(&edit, &uri));
+
+    assert!(
+        result.contains("define('BAR', 1);"),
+        "the declaration takes the new name, got: {result}"
+    );
+    assert!(
+        result.contains("echo BAR;"),
+        "the global constant's use takes the new name, got: {result}"
+    );
+    assert!(
+        result.contains("public const FOO = 2;"),
+        "an unrelated class constant of the same short name must not rename, got: {result}"
+    );
+}
+
+#[tokio::test]
+async fn rename_of_a_constant_rewrites_defined_and_constant_calls() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test/defined_constant_calls.php").unwrap();
+    let text = "<?php
+define('FOO', 1);
+
+if (defined('FOO')) {
+    echo constant('FOO');
+}
+";
+
+    open_file(&backend, &uri, text).await;
+
+    let (line, character) = line_char_of(text, "define('FOO', 1);");
+    let edit = rename(&backend, &uri, line, character + 8, "BAR")
+        .await
+        .expect("the name in a define() call should rename");
+    let result = apply_edits(text, &edits_for_uri(&edit, &uri));
+
+    assert!(
+        result.contains("define('BAR', 1);"),
+        "the declaration takes the new name, got: {result}"
+    );
+    assert!(
+        result.contains("defined('BAR')"),
+        "the defined() guard takes the new name, got: {result}"
+    );
+    assert!(
+        result.contains("constant('BAR')"),
+        "the constant() read takes the new name, got: {result}"
+    );
+}
+
+#[tokio::test]
+async fn rename_function_rewrites_a_call_spelled_in_another_case() {
+    let backend = Backend::new_test();
+    let uri_a = Url::parse("file:///helpers.php").unwrap();
+    let uri_b = Url::parse("file:///main.php").unwrap();
+    let text_a = concat!(
+        "<?php\n",                      // L0
+        "function helper(): void {}\n", // L1
+    );
+    let text_b = concat!(
+        "<?php\n",                   // L0
+        "namespace App;\n",          // L1
+        "function demo(): void {\n", // L2
+        "    HELPER();\n",           // L3
+        "    helper();\n",           // L4
+        "}\n",                       // L5
+    );
+
+    open_file(&backend, &uri_a, text_a).await;
+    open_file(&backend, &uri_b, text_b).await;
+
+    let edit = rename(&backend, &uri_a, 1, 10, "utility")
+        .await
+        .expect("expected a workspace edit for the function rename");
+
+    // Leaving HELPER() behind would leave the file calling a function
+    // that no longer exists.
+    let updated = apply_edits(text_b, &edits_for_uri(&edit, &uri_b));
+    assert!(
+        !updated.contains("HELPER()") && updated.matches("utility()").count() == 2,
+        "both spellings should be rewritten:\n{updated}"
+    );
+}
+
+#[tokio::test]
+async fn rename_function_can_start_from_a_fully_qualified_call() {
+    let backend = Backend::new_test();
+    let uri = Url::parse("file:///test.php").unwrap();
+    let text = concat!(
+        "<?php\n",                     // L0
+        "namespace Support;\n",        // L1
+        "function shout(): void {}\n", // L2
+        "namespace App;\n",            // L3
+        "function demo(): void {\n",   // L4
+        "    \\Support\\shout();\n",   // L5
+        "}\n",                         // L6
+    );
+
+    open_file(&backend, &uri, text).await;
+
+    let prepared = prepare_rename(&backend, &uri, 5, 15).await;
+    assert!(
+        prepared.is_some(),
+        "prepare-rename should accept a fully-qualified call site"
+    );
+
+    let edit = rename(&backend, &uri, 5, 15, "yell")
+        .await
+        .expect("expected a workspace edit from the fully-qualified call site");
+    let updated = apply_edits(text, &edits_for_uri(&edit, &uri));
+    assert!(
+        updated.contains("function yell(): void {}") && updated.contains("\\Support\\yell();"),
+        "the declaration and the qualified call should both move:\n{updated}"
     );
 }

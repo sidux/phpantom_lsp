@@ -411,7 +411,19 @@ impl LaravelStringKeyCache {
         {
             self.gate_abilities = None;
         }
-        if uri.contains("/routes/") {
+        // A Folio page registers a route without ever touching `routes/`, so
+        // its own edits have to invalidate the route cache too — gated on
+        // the page mentioning `Folio` at all (its `name()` import or a
+        // fully-qualified call), the same way the `Gate::` check above
+        // avoids paying for every unrelated Blade edit.  `bootstrap/app.php`
+        // is where a Folio mount is most commonly registered
+        // (`withRouting(pages: ...)`), and it is not a service provider, so
+        // it needs its own trigger rather than riding along with one.
+        if uri.contains("/routes/")
+            || uri.ends_with("/bootstrap/app.php")
+            || (uri.ends_with(".blade.php")
+                && memchr::memmem::find(content.as_bytes(), b"Folio").is_some())
+        {
             self.routes = None;
         }
         if uri.contains("/config/") {
@@ -452,6 +464,14 @@ pub(crate) struct ExternalToolWorker {
     /// Last-published diagnostics per file URI, merged into fast/slow
     /// diagnostic publishes so results stay visible between tool runs.
     pub(crate) last_diags: Arc<Mutex<HashMap<String, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
+    /// Per-URI write counter, bumped every time this worker stores a
+    /// single-file result in [`last_diags`].
+    ///
+    /// A project-wide run of the same tool snapshots this map before it
+    /// starts and compares each entry again just before writing, so its
+    /// scan-time results can never clobber a fresher single-file result
+    /// that landed while the project-wide run was still in flight.
+    generations: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl ExternalToolWorker {
@@ -460,7 +480,53 @@ impl ExternalToolWorker {
             notify: Arc::new(tokio::sync::Notify::new()),
             pending_uri: Arc::new(Mutex::new(None)),
             last_diags: Arc::new(Mutex::new(HashMap::new())),
+            generations: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Store a single-file run's result and mark the URI as freshly
+    /// written, superseding any project-wide run still in flight.
+    pub(crate) fn store_file_result(
+        &self,
+        uri: &str,
+        diags: Vec<tower_lsp::lsp_types::Diagnostic>,
+    ) {
+        let mut cache = self.last_diags.lock();
+        cache.insert(uri.to_string(), diags);
+        *self.generations.lock().entry(uri.to_string()).or_insert(0) += 1;
+    }
+
+    /// Snapshot the per-URI write counters, to be handed back to
+    /// [`store_scan_result`](Self::store_scan_result) once a
+    /// project-wide run of this tool finishes.
+    pub(crate) fn generation_snapshot(&self) -> HashMap<String, u64> {
+        self.generations.lock().clone()
+    }
+
+    /// Store a project-wide run's result for one URI, unless a
+    /// single-file run has written to that URI since `snapshot` was
+    /// taken.  Returns whether the write happened.
+    ///
+    /// Both locks are taken in the same order as `store_file_result`,
+    /// which makes the check-then-write atomic against it.
+    pub(crate) fn store_scan_result(
+        &self,
+        snapshot: &HashMap<String, u64>,
+        uri: &str,
+        diags: Vec<tower_lsp::lsp_types::Diagnostic>,
+    ) -> bool {
+        let mut cache = self.last_diags.lock();
+        if self.generations.lock().get(uri).copied() != snapshot.get(uri).copied() {
+            return false;
+        }
+        cache.insert(uri.to_string(), diags);
+        true
+    }
+
+    /// Drop a URI's cached result and write counter (on `did_close`).
+    pub(crate) fn forget(&self, uri: &str) {
+        self.last_diags.lock().remove(uri);
+        self.generations.lock().remove(uri);
     }
 }
 
@@ -470,6 +536,7 @@ impl Clone for ExternalToolWorker {
             notify: Arc::clone(&self.notify),
             pending_uri: Arc::clone(&self.pending_uri),
             last_diags: Arc::clone(&self.last_diags),
+            generations: Arc::clone(&self.generations),
         }
     }
 }
@@ -1113,6 +1180,11 @@ impl Backend {
     /// the cost of building three large `HashMap`s (14,597 entries total)
     /// that most tests never consult.  Tests that need specific stubs
     /// override the relevant fields after construction.
+    ///
+    /// The workspace environment is also isolated from the global
+    /// `.phpantom.toml`, so a test asserts against the project config it
+    /// writes itself rather than against the config directory of whoever
+    /// happens to be running the suite.
     fn test_defaults() -> Self {
         let (laravel_aliases, resolved_class_cache) = new_alias_slot_and_cache();
         Self {
@@ -1125,7 +1197,7 @@ impl Backend {
             reference_index: reference_index::new_reference_index(),
             skip_reference_index: false,
             symbols: SymbolIndex::new(),
-            workspace: WorkspaceEnv::new(),
+            workspace: WorkspaceEnv::new_isolated(),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             did_change_parse_locks: Arc::new(Mutex::new(HashMap::new())),
             whole_file_coalesce: Arc::new(WholeFileCoalesce::default()),
@@ -1251,7 +1323,10 @@ impl Backend {
     /// behaviour.
     pub fn new_test_with_full_stubs() -> Self {
         virtual_members::phpdoc::clear_mixin_cache();
-        let backend = Self::defaults();
+        let backend = Self {
+            workspace: WorkspaceEnv::new_isolated(),
+            ..Self::defaults()
+        };
         backend.set_php_version(backend.php_version());
         backend
     }
@@ -1302,7 +1377,7 @@ impl Backend {
             workspace: WorkspaceEnv {
                 workspace_root: Arc::new(RwLock::new(Some(workspace_root))),
                 psr4_mappings: Arc::new(RwLock::new(psr4_mappings)),
-                ..WorkspaceEnv::new()
+                ..WorkspaceEnv::new_isolated()
             },
             ..Self::test_defaults()
         }

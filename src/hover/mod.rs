@@ -570,11 +570,17 @@ impl Backend {
                 );
                 let detail = if let Some(loc) = locations.first() {
                     let path = loc.uri.path();
-                    let short_path = path
-                        .rsplit("/routes/")
-                        .next()
-                        .map(|p| format!("routes/{}", p))
-                        .unwrap_or_else(|| path.to_string());
+                    // A conventional route file lives under `routes/`, so
+                    // that segment onward is the useful part; a Folio page
+                    // lives anywhere under the view roots, so it falls back
+                    // to a workspace-relative path the same way View does.
+                    let short_path = path.rsplit_once("/routes/").map_or_else(
+                        || {
+                            self.workspace_relative_path(loc.uri.as_str())
+                                .unwrap_or_else(|| path.to_string())
+                        },
+                        |(_, rest)| format!("routes/{}", rest),
+                    );
                     format!("Defined in `{}`", short_path)
                 } else {
                     "Route name".to_string()
@@ -603,18 +609,12 @@ impl Backend {
                     self, kind, key, uri,
                 );
                 let detail = if let Some(loc) = locations.first() {
-                    let path = loc.uri.path();
                     // Show the path relative to the workspace root so
                     // custom view directories (from `config/view.php`)
                     // display cleanly rather than as absolute paths.
                     let short_path = self
-                        .workspace
-                        .workspace_root
-                        .read()
-                        .as_deref()
-                        .and_then(|root| path.strip_prefix(&format!("{}/", root.to_string_lossy())))
-                        .map(|rel| rel.to_string())
-                        .unwrap_or_else(|| path.to_string());
+                        .workspace_relative_path(loc.uri.as_str())
+                        .unwrap_or_else(|| loc.uri.path().to_string());
                     format!("`{}`", short_path)
                 } else {
                     "View template".to_string()
@@ -632,7 +632,15 @@ impl Backend {
                         .next()
                         .map(|p| format!("lang/{}", p))
                         .unwrap_or_else(|| path.to_string());
-                    format!("Defined in `{}`", short_path)
+                    // The line as written: a `:placeholder` is left in
+                    // place, since what it stands for is decided by the
+                    // call site rather than by the translation.
+                    match crate::virtual_members::laravel::trans_line(self, key, &loc.uri) {
+                        Some(line) => {
+                            format!("{}\n\nDefined in `{}`", inline_code(&line), short_path)
+                        }
+                        None => format!("Defined in `{}`", short_path),
+                    }
                 } else {
                     "Translation key".to_string()
                 };
@@ -700,6 +708,26 @@ impl Backend {
                     None => "Container binding".to_string(),
                 };
                 ("Container", detail)
+            }
+            LaravelStringKind::Env => {
+                // The value is shown like every sibling hover shows what its
+                // key resolves to, except for names that read as naming a
+                // credential: those are the ones worth not putting on screen
+                // during a screen share.
+                let detail = match crate::virtual_members::laravel::env_declaration(self, key) {
+                    Some(decl) => {
+                        let value = if crate::virtual_members::laravel::env_name_is_sensitive(key) {
+                            "Value hidden".to_string()
+                        } else if decl.value.is_empty() {
+                            "Set to an empty value".to_string()
+                        } else {
+                            inline_code(&decl.value)
+                        };
+                        format!("{}\n\nDeclared in `{}`", value, decl.file)
+                    }
+                    None => "Not declared in `.env`".to_string(),
+                };
+                ("Env", detail)
             }
         };
 

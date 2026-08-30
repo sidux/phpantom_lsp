@@ -1,5 +1,4 @@
 use mago_span::HasSpan;
-use mago_syntax::cst::*;
 
 use super::*;
 
@@ -319,6 +318,21 @@ pub(super) fn extract_from_attribute_lists<'a>(
                 ) {
                     try_emit_laravel_string_span_partial(
                         kind,
+                        arg_list,
+                        ctx.content,
+                        &mut ctx.spans,
+                    );
+                }
+
+                // `#[RedirectToRoute('login')]` on a form request names the
+                // route a failed validation bounces back to.
+                if is_laravel_redirect_route_attr(
+                    class_name,
+                    &mut ctx.has_laravel_http_attrs,
+                    ctx.content,
+                ) {
+                    try_emit_laravel_string_span_partial(
+                        crate::symbol_map::LaravelStringKind::Route,
                         arg_list,
                         ctx.content,
                         &mut ctx.spans,
