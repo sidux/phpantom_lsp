@@ -33,7 +33,7 @@ mod classes;
 mod covers;
 mod dispatch;
 mod functions;
-mod members;
+pub(crate) mod members;
 mod variables;
 
 pub(crate) use members::MemberDeclarationReferenceQuery;

@@ -335,7 +335,7 @@ impl Backend {
     ) -> Option<PrepareRenameResponse> {
         let reference = self.framework_reference_at_position(uri, content, position)?;
         let (start, end, placeholder) = match reference.kind {
-            FrameworkReferenceKind::Class { fqn } => {
+            FrameworkReferenceKind::Class { fqn, .. } => {
                 let source = content.get(reference.start as usize..reference.end as usize)?;
                 let (start, end) = short_segment_range(source, reference.start);
                 (start, end, crate::util::short_name(&fqn).to_string())
@@ -371,6 +371,7 @@ impl Backend {
             FrameworkReferenceKind::Translation { .. } => return None,
             FrameworkReferenceKind::MessengerHandler { .. } => return None,
             FrameworkReferenceKind::ConfigKey { .. } => return None,
+            FrameworkReferenceKind::SymfonyExpression { .. } => return None,
             FrameworkReferenceKind::Path { .. } => return None,
         };
 
@@ -396,7 +397,7 @@ impl Backend {
         }
 
         match reference.kind {
-            FrameworkReferenceKind::Class { fqn } => {
+            FrameworkReferenceKind::Class { fqn, .. } => {
                 let locations =
                     self.find_framework_references_for_rename(uri, content, position, true)?;
                 self.build_class_rename_edit(&fqn, new_name, &locations)
@@ -435,6 +436,7 @@ impl Backend {
             FrameworkReferenceKind::Translation { .. } => None,
             FrameworkReferenceKind::MessengerHandler { .. } => None,
             FrameworkReferenceKind::ConfigKey { .. } => None,
+            FrameworkReferenceKind::SymfonyExpression { .. } => None,
             FrameworkReferenceKind::Path { .. } => None,
         }
     }

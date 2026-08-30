@@ -5,10 +5,65 @@ use std::collections::HashSet;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Range};
 
 use crate::Backend;
-use crate::framework::{FrameworkReferenceKind, SymfonySymbolKind};
+use crate::diagnostics::helpers::make_diagnostic;
+use crate::diagnostics::unknown_members::UNKNOWN_MEMBER_CODE;
+use crate::framework::{FrameworkReferenceKind, SymfonyExpressionAccessKind, SymfonySymbolKind};
 use crate::text_position::offset_to_position;
 
 impl Backend {
+    /// Report missing PHP members used by configured ExpressionLanguage strings.
+    pub(crate) fn collect_unknown_symfony_expression_diagnostics(
+        &self,
+        uri: &str,
+        content: &str,
+        out: &mut Vec<Diagnostic>,
+    ) {
+        let Some(references) = self.framework_references.read().get(uri).cloned() else {
+            return;
+        };
+        for reference in references.iter() {
+            let FrameworkReferenceKind::SymfonyExpression {
+                variable,
+                path,
+                expression_start,
+                context,
+            } = &reference.kind
+            else {
+                continue;
+            };
+            let Some(target) = path.last() else {
+                continue;
+            };
+            let Some(classes) = self.symfony_expression_missing_classes(
+                uri,
+                variable,
+                path,
+                *expression_start,
+                context,
+            ) else {
+                continue;
+            };
+            let kind = match target.kind {
+                SymfonyExpressionAccessKind::Property => "Property",
+                SymfonyExpressionAccessKind::Method => "Method",
+            };
+            let class_display = if classes.len() == 1 {
+                format!("class '{}'", classes[0])
+            } else {
+                format!("any possible type ({})", classes.join(", "))
+            };
+            out.push(make_diagnostic(
+                Range {
+                    start: offset_to_position(content, reference.start as usize),
+                    end: offset_to_position(content, reference.end as usize),
+                },
+                DiagnosticSeverity::WARNING,
+                UNKNOWN_MEMBER_CODE,
+                format!("{kind} '{}' not found on {class_display}", target.name),
+            ));
+        }
+    }
+
     pub(crate) fn collect_unknown_symfony_resource_diagnostics(
         &self,
         uri: &str,

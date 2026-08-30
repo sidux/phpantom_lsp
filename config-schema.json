@@ -13,6 +13,26 @@
           "type": "string",
           "description": "Override the detected PHP version (e.g. \"8.3\"). When unset, PHPantom infers from composer.json's platform or require.php.",
           "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
+        },
+        "proxies": {
+          "type": "array",
+          "description": "Generated transparent-proxy discovery rules. Matching subclasses keep their PHP type, while project metadata is attributed to their real parent class.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "paths": {
+                "type": "array",
+                "description": "Workspace-relative PHP files, directories, or glob patterns to scan for generated proxy subclasses.",
+                "items": { "type": "string" }
+              },
+              "marker-interface": {
+                "type": "string",
+                "description": "Fully-qualified interface that a generated subclass must directly implement."
+              }
+            },
+            "required": ["paths", "marker-interface"]
+          },
+          "default": []
         }
       }
     },
@@ -37,7 +57,7 @@
         },
         "workspace": {
           "type": "boolean",
-          "description": "Compute diagnostics for the whole workspace in the background after startup and the full index finish, so project-wide problems appear for files that are not open in the editor. Off by default: it costs a project-wide sweep every session. Requires the default \"full\" indexing strategy.",
+          "description": "Compute diagnostics for the whole workspace after the complete index finishes. Off by default because it costs a project-wide sweep every session. Requires the \"full\" or \"semantic\" indexing strategy.",
           "default": false
         },
         "workspace-external": {
@@ -75,11 +95,12 @@
       "properties": {
         "strategy": {
           "type": "string",
-          "description": "The indexing strategy for class discovery. \"full\" (default): scan PHP files, then background-parse user files to populate symbol and reference indexes. \"composer\": use Composer's classmap, fall back to self-scan. \"self\": scan all PHP files, ignore classmap. \"none\": no proactive scanning, classmap only.",
+          "description": "The indexing strategy for class discovery. \"full\" (default): build the complete workspace index. \"semantic\": build the full index and pre-resolve semantic relationships for lower first-use latency. \"composer\": use Composer's classmap, fall back to self-scan. \"self\": scan all PHP files, ignore classmap. \"none\": no proactive scanning, classmap only.",
           "enum": [
             "composer",
             "self",
             "full",
+            "semantic",
             "none"
           ],
           "default": "full"
@@ -141,6 +162,114 @@
               "description": "Migration files or directories to scan, relative to the workspace root unless absolute. Direct PHP files in directories are scanned; subdirectories are not scanned.",
               "items": {
                 "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "symfony": {
+      "type": "object",
+      "description": "Symfony runtime metadata recovered statically from compiled containers and configured PHP attributes.",
+      "properties": {
+        "container": {
+          "type": "object",
+          "description": "Controls static compiled-container discovery. Container PHP is read as text and is never executed.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "environment": { "type": "string", "default": "dev" },
+            "paths": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Optional workspace-relative files, directories, or glob patterns."
+            }
+          }
+        },
+        "events": {
+          "type": "object",
+          "description": "Configures event-name matching and PHP attribute adapters. Exact listener wiring comes from the compiled container.",
+          "properties": {
+            "ignored-prefixes": { "type": "array", "items": { "type": "string" } },
+            "ignored-suffixes": { "type": "array", "items": { "type": "string" } },
+            "publishers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "attribute": { "type": "string" },
+                  "name-argument": { "type": "string" },
+                  "name-position": { "type": "integer", "minimum": 0 },
+                  "dispatch-argument": { "type": "string" },
+                  "dispatch-position": { "type": "integer", "minimum": 0 },
+                  "default-dispatch": { "type": "array", "items": { "type": "string" } },
+                  "dispatch-cases": { "type": "object", "additionalProperties": { "type": "string" } },
+                  "name-template": { "type": "string" },
+                  "explicit-name-template": { "type": "string", "default": "{name}" },
+                  "default-methods": { "type": "array", "items": { "type": "string" } },
+                  "skip": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "dispatch": { "type": "string" },
+                        "argument": { "type": "string" },
+                        "position": { "type": "integer", "minimum": 0 }
+                      },
+                      "required": ["dispatch", "argument"]
+                    }
+                  }
+                },
+                "required": ["attribute", "name-template"]
+              }
+            },
+            "subscribers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "attribute": { "type": "string" },
+                  "name-argument": { "type": "string" },
+                  "name-position": { "type": "integer", "minimum": 0 },
+                  "transport-argument": { "type": "string" },
+                  "transport-position": { "type": "integer", "minimum": 0 },
+                  "transport-cases": { "type": "object", "additionalProperties": { "type": "string" } }
+                },
+                "required": ["attribute"]
+              }
+            }
+          }
+        },
+        "expression-language": {
+          "type": "object",
+          "description": "Maps configured PHP attribute and constructor arguments to ExpressionLanguage strings and PHP type sources.",
+          "properties": {
+            "attributes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "attribute": { "type": "string" },
+                  "argument": { "type": "string" },
+                  "position": { "type": "integer", "minimum": 0 },
+                  "method-parameters": { "type": "boolean", "default": false },
+                  "bindings": { "type": "object", "additionalProperties": { "type": "string" } }
+                },
+                "required": ["attribute"]
+              }
+            },
+            "constructors": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "class": { "type": "string" },
+                  "argument": { "type": "string" },
+                  "position": { "type": "integer", "minimum": 0 },
+                  "inside-attribute-prefixes": { "type": "array", "items": { "type": "string" } },
+                  "method-parameters": { "type": "boolean", "default": false },
+                  "bindings": { "type": "object", "additionalProperties": { "type": "string" } }
+                },
+                "required": ["class"]
               }
             }
           }

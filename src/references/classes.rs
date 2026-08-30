@@ -21,7 +21,7 @@ impl Backend {
     ///
     /// Matches `ClassReference` spans whose resolved FQN equals `target_fqn`,
     /// and optionally `ClassDeclaration` spans at the declaration site.
-    pub(super) fn find_class_references(
+    pub(crate) fn find_class_references(
         &self,
         target_fqn: &str,
         include_declaration: bool,

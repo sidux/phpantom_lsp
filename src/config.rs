@@ -40,6 +40,196 @@ pub struct Config {
     pub mago: MagoConfig,
     /// Laravel-specific analysis settings.
     pub laravel: LaravelConfig,
+    /// Symfony runtime metadata settings.
+    pub symfony: SymfonyConfig,
+}
+
+/// Configuration supplied by an editor through LSP `initializationOptions`.
+///
+/// Only settings that affect startup belong here. Project and global TOML
+/// files remain the source of truth for the rest of the configuration.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct InitializationOptions {
+    pub(crate) indexing: IndexingConfig,
+}
+
+impl InitializationOptions {
+    pub(crate) fn apply_to(&self, config: &mut Config) {
+        if let Some(strategy) = self.indexing.strategy {
+            config.indexing.strategy = Some(strategy);
+        }
+    }
+}
+
+/// `[symfony]` section — statically recovered Symfony runtime metadata.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct SymfonyConfig {
+    /// Compiled dependency-injection container discovery.
+    pub container: SymfonyContainerConfig,
+    /// Event publisher and subscriber rules.
+    pub events: SymfonyEventsConfig,
+    /// ExpressionLanguage arguments and their PHP type contracts.
+    #[serde(rename = "expression-language")]
+    pub expression_language: SymfonyExpressionLanguageConfig,
+}
+
+/// `[symfony.container]` section.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct SymfonyContainerConfig {
+    /// Read compiled-container metadata. Defaults to enabled.
+    pub enabled: Option<bool>,
+    /// Cache environment used by automatic discovery. Defaults to `dev`.
+    pub environment: Option<String>,
+    /// Optional workspace-relative compiled-container paths or glob patterns.
+    pub paths: Vec<String>,
+}
+
+impl SymfonyContainerConfig {
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    pub fn environment(&self) -> &str {
+        self.environment.as_deref().unwrap_or("dev")
+    }
+}
+
+/// `[symfony.events]` section.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct SymfonyEventsConfig {
+    /// Attribute-driven publisher rules.
+    pub publishers: Vec<SymfonyEventPublisherConfig>,
+    /// Attribute-driven subscriber rules.
+    pub subscribers: Vec<SymfonyEventSubscriberConfig>,
+    /// Prefixes ignored when comparing event names.
+    #[serde(rename = "ignored-prefixes")]
+    pub ignored_prefixes: Vec<String>,
+    /// Suffixes ignored when comparing event names.
+    #[serde(rename = "ignored-suffixes")]
+    pub ignored_suffixes: Vec<String>,
+}
+
+/// One `[[symfony.events.publishers]]` attribute rule.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SymfonyEventPublisherConfig {
+    /// Fully-qualified PHP attribute class.
+    pub attribute: String,
+    /// Named argument containing an explicit event name.
+    #[serde(rename = "name-argument")]
+    pub name_argument: Option<String>,
+    /// Zero-based positional fallback for the event-name argument.
+    #[serde(rename = "name-position")]
+    pub name_position: Option<usize>,
+    /// Named argument containing dispatch enum cases.
+    #[serde(rename = "dispatch-argument")]
+    pub dispatch_argument: Option<String>,
+    /// Zero-based positional fallback for the dispatch argument.
+    #[serde(rename = "dispatch-position")]
+    pub dispatch_position: Option<usize>,
+    /// Dispatch names used when the attribute omits the dispatch argument.
+    #[serde(rename = "default-dispatch")]
+    pub default_dispatch: Vec<String>,
+    /// Enum case to event-name segment mapping.
+    #[serde(rename = "dispatch-cases")]
+    pub dispatch_cases: std::collections::HashMap<String, String>,
+    /// Template used for derived names.
+    #[serde(rename = "name-template")]
+    pub name_template: String,
+    /// Template used when an explicit name is present. Defaults to `{name}`.
+    #[serde(rename = "explicit-name-template")]
+    pub explicit_name_template: Option<String>,
+    /// Method names that do not add a method suffix.
+    #[serde(rename = "default-methods")]
+    pub default_methods: Vec<String>,
+    /// Conditional dispatch omissions.
+    pub skip: Vec<SymfonyEventSkipConfig>,
+}
+
+/// One conditional omission inside a publisher rule.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SymfonyEventSkipConfig {
+    /// Dispatch name to omit.
+    pub dispatch: String,
+    /// Named argument whose non-null value activates the omission.
+    pub argument: String,
+    /// Zero-based positional fallback for the argument.
+    pub position: Option<usize>,
+}
+
+/// One `[[symfony.events.subscribers]]` attribute rule.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SymfonyEventSubscriberConfig {
+    /// Fully-qualified PHP attribute class.
+    pub attribute: String,
+    /// Named argument containing the event name.
+    #[serde(rename = "name-argument")]
+    pub name_argument: Option<String>,
+    /// Zero-based positional fallback for the event-name argument.
+    #[serde(rename = "name-position")]
+    pub name_position: Option<usize>,
+    /// Optional named transport argument.
+    #[serde(rename = "transport-argument")]
+    pub transport_argument: Option<String>,
+    /// Zero-based positional fallback for the transport argument.
+    #[serde(rename = "transport-position")]
+    pub transport_position: Option<usize>,
+    /// Enum case to event-name suffix mapping.
+    #[serde(rename = "transport-cases")]
+    pub transport_cases: std::collections::HashMap<String, String>,
+}
+
+/// `[symfony.expression-language]` section.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct SymfonyExpressionLanguageConfig {
+    /// Attribute arguments that contain ExpressionLanguage strings.
+    pub attributes: Vec<SymfonyExpressionAttributeConfig>,
+    /// Expression object constructors nested inside PHP attributes.
+    pub constructors: Vec<SymfonyExpressionConstructorConfig>,
+}
+
+/// One `[[symfony.expression-language.attributes]]` argument rule.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SymfonyExpressionAttributeConfig {
+    /// Fully-qualified PHP attribute class.
+    pub attribute: String,
+    /// Named argument containing the expression string or string array.
+    pub argument: Option<String>,
+    /// Zero-based positional fallback for the argument.
+    pub position: Option<usize>,
+    /// Bind expression roots to method parameters with the same name.
+    #[serde(rename = "method-parameters")]
+    pub method_parameters: bool,
+    /// Expression root to PHP type-source mapping.
+    pub bindings: std::collections::HashMap<String, String>,
+}
+
+/// One `[[symfony.expression-language.constructors]]` object rule.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SymfonyExpressionConstructorConfig {
+    /// Fully-qualified PHP class instantiated for the expression object.
+    pub class: String,
+    /// Named constructor argument containing the expression string.
+    pub argument: Option<String>,
+    /// Zero-based positional fallback for the constructor argument.
+    pub position: Option<usize>,
+    /// Only match constructors nested in these attribute FQN prefixes.
+    #[serde(rename = "inside-attribute-prefixes")]
+    pub inside_attribute_prefixes: Vec<String>,
+    /// Bind expression roots to method parameters with the same name.
+    #[serde(rename = "method-parameters")]
+    pub method_parameters: bool,
+    /// Expression root to PHP type-source mapping.
+    pub bindings: std::collections::HashMap<String, String>,
 }
 
 /// `[semantic_tokens]` section — controls LSP semantic highlighting.
@@ -146,6 +336,19 @@ pub struct PhpConfig {
     /// Override the detected PHP version (e.g. `"8.3"`).
     /// When `None`, PHPantom infers from `composer.json`.
     pub version: Option<String>,
+    /// Generated transparent-proxy discovery rules.
+    pub proxies: Vec<PhpProxyConfig>,
+}
+
+/// One `[[php.proxies]]` transparent-proxy discovery rule.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PhpProxyConfig {
+    /// Workspace-relative PHP files, directories, or glob patterns to scan.
+    pub paths: Vec<String>,
+    /// Interface proving that a generated subclass is a transparent proxy.
+    #[serde(rename = "marker-interface")]
+    pub marker_interface: String,
 }
 
 /// `[diagnostics]` section — toggle individual diagnostic providers.
@@ -499,6 +702,9 @@ pub struct IndexingConfig {
     /// - `"full"` (default) — same discovery as `"self"`, then
     ///   background-parse every user PHP file to populate symbol and
     ///   reference indexes.
+    /// - `"semantic"` — same complete workspace index as `"full"`, then
+    ///   pre-resolve member receivers so reference CodeLens and repeated
+    ///   member searches avoid their first-use semantic scan.
     /// - `"composer"` — use Composer's classmap when available,
     ///   fall back to self-scan when it is missing or incomplete.
     /// - `"self"` — scan every PHP file under the workspace root,
@@ -522,6 +728,9 @@ pub enum IndexingStrategy {
     /// Background-parse every PHP file for rich intelligence.
     #[default]
     Full,
+    /// Build the full workspace index and eagerly prepare the semantic member
+    /// receiver layer used by references and CodeLens.
+    Semantic,
     /// Merged classmap + self-scan.  Load Composer's classmap (if it
     /// exists) as a skip set, then self-scan all PSR-4 and vendor
     /// directories for anything the classmap missed.  Whatever the
@@ -548,12 +757,23 @@ impl<'de> Deserialize<'de> for IndexingStrategy {
             "composer" => Ok(IndexingStrategy::Composer),
             "self" => Ok(IndexingStrategy::SelfScan),
             "full" => Ok(IndexingStrategy::Full),
+            "semantic" => Ok(IndexingStrategy::Semantic),
             "none" => Ok(IndexingStrategy::None),
             other => Err(serde::de::Error::unknown_variant(
                 other,
-                &["composer", "self", "full", "none"],
+                &["composer", "self", "full", "semantic", "none"],
             )),
         }
+    }
+}
+
+impl IndexingStrategy {
+    pub(crate) fn builds_workspace_index(self) -> bool {
+        matches!(self, Self::Full | Self::Semantic)
+    }
+
+    pub(crate) fn prewarms_semantic_relations(self) -> bool {
+        matches!(self, Self::Semantic)
     }
 }
 
@@ -563,6 +783,7 @@ impl std::fmt::Display for IndexingStrategy {
             IndexingStrategy::Composer => write!(f, "composer"),
             IndexingStrategy::SelfScan => write!(f, "self"),
             IndexingStrategy::Full => write!(f, "full"),
+            IndexingStrategy::Semantic => write!(f, "semantic"),
             IndexingStrategy::None => write!(f, "none"),
         }
     }
@@ -892,6 +1113,44 @@ mod tests {
         std::fs::write(&path, "[php]\nversion = \"8.3\"\n").unwrap();
         let config = load_config(dir.path()).unwrap();
         assert_eq!(config.php.version.as_deref(), Some("8.3"));
+    }
+
+    #[test]
+    fn parses_symfony_expression_language_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"
+[[symfony.expression-language.attributes]]
+attribute = 'Acme\Attribute\Cache'
+argument = "tags"
+position = 3
+method-parameters = true
+
+[[symfony.expression-language.constructors]]
+class = 'Symfony\Component\ExpressionLanguage\Expression'
+position = 0
+inside-attribute-prefixes = ['Acme\Attribute\']
+bindings = { request = "parameter:0", response = "return", subject = 'class:App\Model\Subject' }
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(dir.path()).unwrap();
+        let expression = config.symfony.expression_language;
+        assert_eq!(expression.attributes.len(), 1);
+        assert!(expression.attributes[0].method_parameters);
+        assert_eq!(expression.attributes[0].argument.as_deref(), Some("tags"));
+        assert_eq!(expression.constructors.len(), 1);
+        assert_eq!(
+            expression.constructors[0].bindings["request"],
+            "parameter:0"
+        );
+        assert_eq!(
+            expression.constructors[0].bindings["subject"],
+            "class:App\\Model\\Subject"
+        );
     }
 
     #[test]
@@ -1279,6 +1538,15 @@ paths = ["database/schema", "extra/schema.sql"]
     }
 
     #[test]
+    fn parses_indexing_strategy_semantic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE_NAME);
+        std::fs::write(&path, "[indexing]\nstrategy = \"semantic\"\n").unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(config.indexing.strategy, Some(IndexingStrategy::Semantic));
+    }
+
+    #[test]
     fn parses_indexing_strategy_none() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(CONFIG_FILE_NAME);
@@ -1310,7 +1578,25 @@ paths = ["database/schema", "extra/schema.sql"]
         assert_eq!(IndexingStrategy::Composer.to_string(), "composer");
         assert_eq!(IndexingStrategy::SelfScan.to_string(), "self");
         assert_eq!(IndexingStrategy::Full.to_string(), "full");
+        assert_eq!(IndexingStrategy::Semantic.to_string(), "semantic");
         assert_eq!(IndexingStrategy::None.to_string(), "none");
+    }
+
+    #[test]
+    fn initialization_options_override_only_the_indexing_strategy() {
+        let options: InitializationOptions = serde_json::from_value(serde_json::json!({
+            "indexing": { "strategy": "semantic" },
+            "editorSpecific": true
+        }))
+        .unwrap();
+        let mut config = Config::default();
+        config.indexing.strategy = Some(IndexingStrategy::Composer);
+        config.php.version = Some("8.4".to_string());
+
+        options.apply_to(&mut config);
+
+        assert_eq!(config.indexing.strategy, Some(IndexingStrategy::Semantic));
+        assert_eq!(config.php.version.as_deref(), Some("8.4"));
     }
 
     #[test]

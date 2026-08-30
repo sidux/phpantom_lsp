@@ -481,6 +481,32 @@ pub fn create_psr4_workspace(
     (backend, dir)
 }
 
+/// Create a PSR-4 workspace whose test backend loads a project configuration.
+pub fn create_psr4_workspace_with_config(
+    composer_json: &str,
+    config: &str,
+    files: &[(&str, &str)],
+) -> (Backend, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    fs::write(dir.path().join("composer.json"), composer_json)
+        .expect("failed to write composer.json");
+    fs::write(dir.path().join(".phpantom.toml"), config).expect("failed to write .phpantom.toml");
+    for (rel_path, content) in files {
+        let full = dir.path().join(rel_path);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).expect("failed to create fixture directory");
+        }
+        fs::write(full, content).expect("failed to write fixture file");
+    }
+
+    let (mappings, _vendor_dir) = phpantom_lsp::composer::parse_composer_json(dir.path());
+    let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), mappings);
+    let config = phpantom_lsp::config::load_config_from(dir.path(), None)
+        .expect("failed to load .phpantom.toml");
+    backend.set_config(config);
+    (backend, dir)
+}
+
 /// Like [`create_psr4_workspace`] but the returned backend also has
 /// minimal `Exception` and `RuntimeException` stubs injected.  This
 /// makes cross-file catch-variable tests self-contained.

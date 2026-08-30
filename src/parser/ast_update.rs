@@ -70,6 +70,7 @@ pub(crate) enum AstIndexParseResult {
 pub(crate) struct AstIndexUpdate {
     uri: String,
     parse_errors: Vec<ParseErrorEntry>,
+    framework_references: Option<Vec<crate::framework::FrameworkReference>>,
     classes: Vec<ClassInfo>,
     use_map: HashMap<String, String>,
     resolved_names: Arc<OwnedResolvedNames>,
@@ -219,7 +220,7 @@ impl Backend {
         // strings that the normal PHP symbol map deliberately treats as
         // plain strings. Keep their lightweight framework index in step with
         // every parse, including incomplete edits where the main parse fails.
-        if crate::framework::should_index_framework_php_content(uri, content)
+        if self.should_index_configured_framework_php_content(uri, content)
             || self.framework_references.read().contains_key(uri)
         {
             self.index_framework_uri_content(uri, content);
@@ -286,6 +287,13 @@ impl Backend {
         let result = crate::util::catch_panic_unwind_safe("parse", uri, None, || {
             self.update_ast_inner(&uri_owned, &content_owned)
         });
+
+        // Event rules are configuration while listener wiring comes from the
+        // compiled container. Refresh source facts only after class/import
+        // indexes have been published by the successful parse above.
+        if result.is_some() {
+            self.refresh_symfony_event_sites(uri, content);
+        }
 
         // Keep the Laravel macro index coherent with edits to files that
         // register macros.  Cheap no-op for files without a `macro(` call.
@@ -371,11 +379,21 @@ impl Backend {
         content: &str,
     ) -> AstIndexParseResult {
         let uri_owned = uri.to_string();
+        let refresh_framework_references = self
+            .should_index_configured_framework_php_content(uri, content)
+            || self.framework_references.read().contains_key(uri);
+        let framework_references = refresh_framework_references.then(|| {
+            self.scan_framework_uri_references(uri, content)
+                .unwrap_or_default()
+        });
 
         match crate::util::catch_panic_unwind_safe("parse", uri, None, || {
             self.build_ast_index_update(uri, content)
         }) {
-            Some(update) => AstIndexParseResult::Update(update),
+            Some(mut update) => {
+                update.framework_references = framework_references;
+                AstIndexParseResult::Update(update)
+            }
             None => AstIndexParseResult::ParseFailed {
                 uri: uri_owned,
                 errors: vec![("Parse failed (internal error)".to_string(), 0, 0)],
@@ -426,6 +444,26 @@ impl Backend {
             let mut parse_errors = self.parse_errors.write();
             for (uri, errors) in failures {
                 parse_errors.insert(uri, errors);
+            }
+        }
+
+        let framework_updates: Vec<_> = updates
+            .iter_mut()
+            .filter_map(|update| {
+                update
+                    .framework_references
+                    .take()
+                    .map(|references| (update.uri.clone(), references))
+            })
+            .collect();
+        if !framework_updates.is_empty() {
+            let mut index = self.framework_references.write();
+            for (uri, references) in framework_updates {
+                if references.is_empty() {
+                    index.remove(&uri);
+                } else {
+                    index.insert(uri, Arc::new(references));
+                }
             }
         }
 
@@ -847,6 +885,7 @@ impl Backend {
             AstIndexUpdate {
                 uri: uri.to_string(),
                 parse_errors,
+                framework_references: None,
                 classes,
                 use_map,
                 resolved_names: Arc::new(owned_resolved),

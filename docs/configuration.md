@@ -52,6 +52,101 @@ The full schema is at [`config-schema.json`](https://github.com/PHPantom-dev/php
 | --------- | ------ | --------------------------- | ----------- |
 | `version` | string | Inferred from composer.json | Override the detected PHP version (e.g. `"8.3"`). |
 
+#### `[[php.proxies]]`
+
+Declare generated transparent-proxy subclasses so metadata found on the
+generated class is attributed to its real parent class. PHPantom scans only
+the listed workspace-relative files, directories, or globs. A class must
+directly implement `marker-interface`; an ordinary subclass in the same path
+is left alone.
+
+```toml
+[[php.proxies]]
+paths = ["var/cache/*/generated-proxies/*.php"]
+marker-interface = 'ProxyManager\Proxy\AccessInterceptorValueHolderInterface'
+```
+
+The proxy remains a normal PHP subclass for type resolution. The mapping is a
+shared metadata relation used by navigation, events, and other configured
+features that should report the real class.
+
+### `[symfony]`
+
+PHPantom can read Symfony's generated dependency-injection container as text to
+recover final event-listener wiring. It never includes or executes container
+PHP. By default it checks `var/cache/dev` and uses the newest useful container.
+
+#### `[symfony.container]`
+
+| Key           | Type     | Default | Description |
+| ------------- | -------- | ------- | ----------- |
+| `enabled`     | bool     | `true`  | Read compiled-container metadata. |
+| `environment` | string   | `"dev"` | Cache environment used by automatic discovery. |
+| `paths`       | string[] | unset   | Optional workspace-relative files, directories, or globs. |
+
+#### `[symfony.events]`
+
+The compiled container supplies exact listener registrations. Publisher and
+subscriber attributes are package choices, so their names and event naming
+rules stay in configuration:
+
+```toml
+[symfony.events]
+ignored-prefixes = ["use_case."]
+ignored-suffixes = [".async"]
+
+[[symfony.events.publishers]]
+attribute = 'Acme\Event\Publish'
+name-argument = "name"
+name-position = 2
+dispatch-argument = "dispatch"
+dispatch-position = 4
+default-dispatch = ["post"]
+dispatch-cases = { PRE = "pre", POST = "post", EXCEPTION = "exception" }
+name-template = "{dispatch}.{class_snake}{method_suffix_snake}"
+explicit-name-template = "{name}"
+default-methods = ["execute", "__invoke"]
+
+[[symfony.events.subscribers]]
+attribute = 'Acme\Event\Listen'
+name-argument = "name"
+name-position = 0
+transport-argument = "transport"
+transport-position = 2
+transport-cases = { ASYNC = ".async" }
+```
+
+Argument positions are zero-based fallbacks; named arguments win. Publisher
+templates support `{dispatch}`, `{class}`, `{class_snake}`, `{method}`,
+`{method_snake}`, `{method_suffix}`, `{method_suffix_snake}`, and `{name}`.
+The resulting event nodes participate in the standard Call Hierarchy, with
+publisher methods as incoming calls and subscriber methods as outgoing calls.
+Proxy metadata is canonicalized first, so generated proxy publishers behave as
+publishers on the real class.
+
+#### `[symfony.expression-language]`
+
+Declare attribute or constructor arguments that contain ExpressionLanguage
+strings. PHPantom uses the normal PHP type engine for navigation and
+`unknown_member` diagnostics.
+
+```toml
+[[symfony.expression-language.attributes]]
+attribute = 'Acme\Attribute\Cache'
+argument = "tags"
+position = 3
+method-parameters = true
+
+[[symfony.expression-language.constructors]]
+class = 'Symfony\Component\ExpressionLanguage\Expression'
+position = 0
+inside-attribute-prefixes = ['Acme\Attribute\']
+bindings = { request = "parameter:0", response = "return" }
+```
+
+Bindings accept `parameter:0`, `parameter:name`, `return`, or `class:FQN`.
+An empty constructor-prefix list matches any enclosing attribute.
+
 ### `[diagnostics]`
 
 | Key                        | Type   | Default | Description |
@@ -59,7 +154,7 @@ The full schema is at [`config-schema.json`](https://github.com/PHPantom-dev/php
 | `unresolved-member-access` | bool   | `false` | Report `->`, `?->`, `::` where the subject is `mixed` or its type could not be worked out. Useful for type coverage, noisy on untyped codebases. |
 | `extra-arguments`          | bool   | `false` | Report calls that pass more arguments than the function accepts. |
 | `report-magic-properties`  | bool   | `false` | Report unknown property access on classes with `__get` when virtual properties are defined. Matches PHPStan's `reportMagicProperties`. |
-| `workspace`                | bool   | `false` | Compute diagnostics for the whole workspace in the background after startup, so problems appear for files you have not opened. Costs a project-wide sweep every session. Requires the default `full` indexing strategy. |
+| `workspace`                | bool   | `false` | Compute diagnostics for the whole workspace in the background after startup, so problems appear for files you have not opened. Costs a project-wide sweep every session. Requires `full` or `semantic` indexing. |
 | `workspace-external`       | bool   | `true`  | Run configured external tools (PHPStan, PHPCS, Mago) once over the whole project after workspace diagnostics finish. Only takes effect when `workspace` is enabled. |
 
 #### `[[diagnostics.ignore]]`
@@ -83,7 +178,7 @@ message = "^Call to deprecated function some_legacy_helper\\(\\)"
 
 | Key        | Type   | Default  | Description |
 | ---------- | ------ | -------- | ----------- |
-| `strategy` | string | `"full"` | Class discovery strategy: `"full"`, `"composer"`, `"self"`, or `"none"`. See [Indexing Strategy](#indexing-strategy) below. |
+| `strategy` | string | `"full"` | Class discovery strategy: `"full"`, `"semantic"`, `"composer"`, `"self"`, or `"none"`. See [Indexing Strategy](#indexing-strategy) below. |
 
 ### `[semantic_tokens]`
 
@@ -190,11 +285,25 @@ The `strategy` setting controls this behaviour:
 | Strategy | Behaviour |
 | --- | --- |
 | `"full"` (default) | Scan PHP files, then background-parse user files to populate symbol and reference indexes. |
+| `"semantic"` | Build the same complete index as `"full"`, then pre-resolve member receivers. This spends more startup CPU and memory to lower first-use latency for reference CodeLens and repeated member searches. |
 | `"composer"` | Use Composer's classmap when available, self-scan to fill gaps. Results stay closer to what `composer dump-autoload` knows about. |
 | `"self"` | Ignore Composer's classmap entirely and scan every PHP file in the workspace. Discovers all classes regardless of autoloading. |
 | `"none"` | Use only Composer's classmap with no fallback scanning. The most conservative option. |
 
-Most projects should leave this at the default. Change it to `"composer"` or `"none"` only if you want a lighter or more Composer-constrained index.
+Most projects should leave this at the default. Use `"semantic"` when lower
+first-use latency matters more than startup cost. Editors can select the same
+session mode without modifying the project:
+
+```json
+{
+  "indexing": {
+    "strategy": "semantic"
+  }
+}
+```
+
+The LSP initialization option overrides the project and global TOML layers for
+that session.
 
 ## Troubleshooting
 

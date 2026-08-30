@@ -41,7 +41,6 @@ use tower_lsp::lsp_types::*;
 
 use crate::Backend;
 use crate::composer;
-use crate::config::IndexingStrategy;
 use crate::formatting;
 
 /// Run `f` on a blocking thread in a way that survives `$/cancelRequest`.
@@ -110,6 +109,19 @@ impl LanguageServer for Backend {
 
         if let Some(root) = workspace_root {
             *self.workspace.workspace_root.write() = Some(root);
+        }
+
+        if let Some(options) = params.initialization_options.clone() {
+            match serde_json::from_value::<crate::config::InitializationOptions>(options) {
+                Ok(options) => *self.workspace.initialization_options.lock() = options,
+                Err(error) => {
+                    self.log(
+                        MessageType::WARNING,
+                        format!("Invalid PHPantom initializationOptions: {error}"),
+                    )
+                    .await;
+                }
+            }
         }
 
         // Store the client name for quirks-mode adjustments.
@@ -194,8 +206,8 @@ impl LanguageServer for Backend {
             .capabilities
             .workspace
             .as_ref()
-            .and_then(|ws| ws.inlay_hint.as_ref())
-            .and_then(|ih| ih.refresh_support)
+            .and_then(|workspace| workspace.inlay_hint.as_ref())
+            .and_then(|inlay_hint| inlay_hint.refresh_support)
             .unwrap_or(false);
         self.supports_inlay_hint_refresh
             .store(client_supports_inlay_hint_refresh, Ordering::Release);
@@ -259,6 +271,7 @@ impl LanguageServer for Backend {
                 type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
                 implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
                 references_provider: Some(OneOf::Left(true)),
+                call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Options(
                     CodeActionOptions {
@@ -351,7 +364,11 @@ impl LanguageServer for Backend {
                 &root,
                 self.workspace.global_config_path.as_deref(),
             ) {
-                Ok(cfg) => {
+                Ok(mut cfg) => {
+                    self.workspace
+                        .initialization_options
+                        .lock()
+                        .apply_to(&mut cfg);
                     *self.workspace.config.lock() = cfg;
                 }
                 Err(e) => {
@@ -479,6 +496,30 @@ impl LanguageServer for Backend {
                 if warmed > 0 {
                     tracing::info!("PHPantom: warmed {} Laravel completion classes", warmed);
                 }
+            }
+
+            let proxy_backend = self.clone_for_blocking();
+            let proxy_root = root.clone();
+            let proxy_count = run_blocking_cancel_safe("index_php_proxies", move || {
+                proxy_backend.rebuild_configured_proxy_index(&proxy_root)
+            })
+            .await
+            .unwrap_or(0);
+            if proxy_count > 0 {
+                tracing::info!("PHPantom: indexed {} transparent proxies", proxy_count);
+            }
+
+            // Read generated container PHP as text. It is never loaded or
+            // executed by the language server.
+            let event_backend = self.clone_for_blocking();
+            let event_root = root.clone();
+            let event_count = run_blocking_cancel_safe("index_symfony_metadata", move || {
+                event_backend.rebuild_symfony_metadata(&event_root)
+            })
+            .await
+            .unwrap_or(0);
+            if event_count > 0 {
+                tracing::info!("PHPantom: indexed {} Symfony event links", event_count);
             }
 
             let framework_count = self.index_framework_workspace();
@@ -1067,6 +1108,16 @@ impl LanguageServer for Backend {
         let backend = self.clone_for_blocking();
         let uri_clone = uri.clone();
         run_blocking_cancel_safe("goto_definition", move || {
+            if let Some(locations) = backend.get_file_content(&uri_clone).and_then(|content| {
+                backend.symfony_event_definitions_at(&uri_clone, &content, position)
+            }) {
+                return Ok(match locations.as_slice() {
+                    [] => None,
+                    [location] => Some(GotoDefinitionResponse::Scalar(location.clone())),
+                    _ => Some(GotoDefinitionResponse::Array(locations)),
+                });
+            }
+
             // A component tag is HTML, so it has no position in the virtual
             // PHP `handle_with_position` would swap in below; it is resolved
             // from the template's own source instead.
@@ -1311,6 +1362,16 @@ impl LanguageServer for Backend {
         });
         let uri_clone = uri.clone();
         let result = run_blocking_cancel_safe("references", move || {
+            if let Some(locations) = backend.get_file_content(&uri_clone).and_then(|content| {
+                backend.symfony_event_references_at(
+                    &uri_clone,
+                    &content,
+                    position,
+                    include_declaration,
+                )
+            }) {
+                return Ok(Some(locations));
+            }
             backend.handle_with_position("references", &uri_clone, position, |content, pos| {
                 backend
                     .find_references(&uri_clone, content, pos, include_declaration)
@@ -1643,6 +1704,56 @@ impl LanguageServer for Backend {
         self.inlay_hint_request(params).await
     }
 
+    async fn prepare_call_hierarchy(
+        &self,
+        params: CallHierarchyPrepareParams,
+    ) -> Result<Option<Vec<CallHierarchyItem>>> {
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .to_string();
+        let position = params.text_document_position_params.position;
+        let backend = self.clone_for_blocking();
+        let request_uri = uri.clone();
+        run_blocking_cancel_safe("prepare_call_hierarchy", move || {
+            backend.handle_with_position(
+                "prepare_call_hierarchy",
+                &request_uri,
+                position,
+                |content, translated_position| {
+                    backend.prepare_call_hierarchy_impl(&request_uri, content, translated_position)
+                },
+            )
+        })
+        .await
+        .unwrap_or(Ok(None))
+    }
+
+    async fn incoming_calls(
+        &self,
+        params: CallHierarchyIncomingCallsParams,
+    ) -> Result<Option<Vec<CallHierarchyIncomingCall>>> {
+        let backend = self.clone_for_blocking();
+        Ok(run_blocking_cancel_safe("incoming_calls", move || {
+            backend.incoming_calls_impl(&params.item)
+        })
+        .await
+        .flatten())
+    }
+
+    async fn outgoing_calls(
+        &self,
+        params: CallHierarchyOutgoingCallsParams,
+    ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
+        let backend = self.clone_for_blocking();
+        Ok(run_blocking_cancel_safe("outgoing_calls", move || {
+            backend.outgoing_calls_impl(&params.item)
+        })
+        .await
+        .flatten())
+    }
+
     async fn prepare_type_hierarchy(
         &self,
         params: TypeHierarchyPrepareParams,
@@ -1928,7 +2039,8 @@ impl Backend {
         if self.client.is_none() {
             return;
         }
-        if self.config().indexing.strategy() != IndexingStrategy::Full {
+        let strategy = self.config().indexing.strategy();
+        if !strategy.builds_workspace_index() {
             return;
         }
         if self.workspace.workspace_root.read().is_none() {
@@ -1942,7 +2054,11 @@ impl Backend {
         if let Some(ref tok) = progress_token {
             self.progress_begin(
                 tok,
-                "PHPantom: Full index",
+                if strategy.prewarms_semantic_relations() {
+                    "PHPantom: Semantic index"
+                } else {
+                    "PHPantom: Full index"
+                },
                 Some("Parsing workspace files".to_string()),
             )
             .await;
@@ -1957,14 +2073,27 @@ impl Backend {
         let progress_backend = self.clone_for_blocking();
         tokio::spawn(async move {
             let worker_state = Arc::clone(&progress_state);
-            let indexed_files = run_blocking_cancel_safe("full_background_index", move || {
-                let report_progress =
-                    |percentage, message: String| worker_state.set_percentage(percentage, message);
-                parse_backend.ensure_workspace_indexed_with_progress(Some(&report_progress));
-                parse_backend.symbol_maps.read().len()
-            })
-            .await
-            .unwrap_or(0);
+            let (indexed_files, warmed_files) =
+                run_blocking_cancel_safe("full_background_index", move || {
+                    let report_progress = |percentage: u32, message: String| {
+                        let percentage = if strategy.prewarms_semantic_relations() {
+                            percentage.saturating_mul(80) / 100
+                        } else {
+                            percentage
+                        };
+                        worker_state.set_percentage(percentage, message);
+                    };
+                    parse_backend.ensure_workspace_indexed_with_progress(Some(&report_progress));
+                    let indexed_files = parse_backend.symbol_maps.read().len();
+                    let warmed_files = if strategy.prewarms_semantic_relations() {
+                        parse_backend.prewarm_member_reference_targets(Some(&worker_state))
+                    } else {
+                        0
+                    };
+                    (indexed_files, warmed_files)
+                })
+                .await
+                .unwrap_or((0, 0));
 
             if let Some(poller) = poller {
                 poller.finish().await;
@@ -1975,9 +2104,14 @@ impl Backend {
                 .store(false, Ordering::Release);
 
             if let Some(tok) = progress_token {
-                progress_backend
-                    .progress_end(&tok, Some(format!("Parsed {} files", indexed_files)))
-                    .await;
+                let message = if strategy.prewarms_semantic_relations() {
+                    format!(
+                        "Parsed {indexed_files} files and prepared {warmed_files} reference files"
+                    )
+                } else {
+                    format!("Parsed {indexed_files} files")
+                };
+                progress_backend.progress_end(&tok, Some(message)).await;
             }
 
             progress_backend.request_diagnostic_refresh().await;

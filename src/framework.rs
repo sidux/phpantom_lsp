@@ -6,6 +6,9 @@
 //! participate in go-to-definition, find-references, rename, code lenses, and
 //! namespace/folder refactors.
 
+mod expression;
+mod openapi;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -63,7 +66,10 @@ impl SymfonySymbolKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FrameworkReferenceKind {
     /// A fully-qualified class/interface/trait/enum reference.
-    Class { fqn: String },
+    Class {
+        fqn: String,
+        source: FrameworkClassReferenceSource,
+    },
     /// A member reference encoded in a framework string, e.g.
     /// `App\Controller\HomeController::index`.
     Method {
@@ -105,6 +111,51 @@ pub(crate) enum FrameworkReferenceKind {
     },
     /// A dot-qualified key from a local Symfony `TreeBuilder` schema.
     ConfigKey { path: String, declaration: bool },
+    /// A variable or member inside a configured ExpressionLanguage string.
+    SymfonyExpression {
+        variable: String,
+        path: Vec<SymfonyExpressionSegment>,
+        expression_start: u32,
+        context: SymfonyExpressionContext,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FrameworkClassReferenceSource {
+    SymfonyConfig,
+    SymfonyService,
+    Doctrine,
+    OpenApi {
+        method: Option<String>,
+        path: Option<String>,
+        operation_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FrameworkClassReferenceLocation {
+    pub(crate) location: Location,
+    pub(crate) source: FrameworkClassReferenceSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SymfonyExpressionContext {
+    /// Bind unconfigured roots to method parameters with the same name.
+    pub(crate) method_parameters: bool,
+    /// Root name to `parameter:<name-or-index>`, `return`, or `class:<FQN>`.
+    pub(crate) bindings: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SymfonyExpressionAccessKind {
+    Property,
+    Method,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SymfonyExpressionSegment {
+    pub(crate) name: String,
+    pub(crate) kind: SymfonyExpressionAccessKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,7 +303,9 @@ pub(crate) fn should_index_framework_php_content(uri: &str, content: &str) -> bo
             || content.contains("Messenger\\")
             || content.contains("TreeBuilder")
             || content.contains("FormBuilderInterface")
-            || content.contains("AbstractType"))
+            || content.contains("AbstractType")
+            || content.contains("getSubscribedEvents")
+            || content.contains("ExpressionLanguage\\Expression"))
 }
 
 fn is_skipped_resource_path(path: &Path) -> bool {
@@ -269,6 +322,20 @@ fn is_skipped_resource_path(path: &Path) -> bool {
 }
 
 impl Backend {
+    pub(crate) fn should_index_configured_framework_php_content(
+        &self,
+        uri: &str,
+        content: &str,
+    ) -> bool {
+        if should_index_framework_php_content(uri, content) {
+            return true;
+        }
+        let config = self.config();
+        is_php_uri(uri)
+            && (!config.symfony.expression_language.attributes.is_empty()
+                || !config.symfony.expression_language.constructors.is_empty())
+    }
+
     /// Scan framework configuration under the workspace root.
     pub(crate) fn index_framework_workspace(&self) -> usize {
         let Some(root) = self.workspace.workspace_root.read().clone() else {
@@ -419,6 +486,23 @@ impl Backend {
     }
 
     pub(crate) fn framework_class_reference_locations(&self, target_fqn: &str) -> Vec<Location> {
+        let mut locations = Vec::new();
+        for reference in self.framework_class_reference_locations_by_source(target_fqn) {
+            push_unique_location(
+                &mut locations,
+                &reference.location.uri,
+                reference.location.range.start,
+                reference.location.range.end,
+            );
+        }
+        sort_locations(&mut locations);
+        locations
+    }
+
+    pub(crate) fn framework_class_reference_locations_by_source(
+        &self,
+        target_fqn: &str,
+    ) -> Vec<FrameworkClassReferenceLocation> {
         let target = normalize_framework_fqn(target_fqn);
         let mut locations = Vec::new();
 
@@ -430,18 +514,46 @@ impl Backend {
                 continue;
             };
             for reference in refs.iter() {
-                let FrameworkReferenceKind::Class { fqn } = &reference.kind else {
+                let FrameworkReferenceKind::Class { fqn, source } = &reference.kind else {
                     continue;
                 };
                 if normalize_framework_fqn(fqn).eq_ignore_ascii_case(&target) {
                     let start = offset_to_position(&content, reference.start as usize);
                     let end = offset_to_position(&content, reference.end as usize);
-                    push_unique_location(&mut locations, &parsed_uri, start, end);
+                    let candidate = FrameworkClassReferenceLocation {
+                        location: Location {
+                            uri: parsed_uri.clone(),
+                            range: Range { start, end },
+                        },
+                        source: source.clone(),
+                    };
+                    if !locations.contains(&candidate) {
+                        locations.push(candidate);
+                    }
                 }
             }
         }
 
-        sort_locations(&mut locations);
+        locations.sort_by(|a, b| {
+            a.location
+                .uri
+                .as_str()
+                .cmp(b.location.uri.as_str())
+                .then(
+                    a.location
+                        .range
+                        .start
+                        .line
+                        .cmp(&b.location.range.start.line),
+                )
+                .then(
+                    a.location
+                        .range
+                        .start
+                        .character
+                        .cmp(&b.location.range.start.character),
+                )
+        });
         locations
     }
 
@@ -917,8 +1029,8 @@ impl Backend {
             let matched =
                 match (&reference.kind, &candidate.kind) {
                     (
-                        FrameworkReferenceKind::Class { fqn: lhs },
-                        FrameworkReferenceKind::Class { fqn: rhs },
+                        FrameworkReferenceKind::Class { fqn: lhs, .. },
+                        FrameworkReferenceKind::Class { fqn: rhs, .. },
                     ) => normalize_framework_fqn(lhs)
                         .eq_ignore_ascii_case(&normalize_framework_fqn(rhs)),
                     (
@@ -1160,7 +1272,7 @@ impl Backend {
         }
     }
 
-    fn scan_framework_uri_references(
+    pub(crate) fn scan_framework_uri_references(
         &self,
         uri: &str,
         content: &str,
@@ -1177,7 +1289,7 @@ impl Backend {
         if is_symfony_translation_php_uri(uri) {
             return Some(scan_symfony_php_translation_catalog(uri, content));
         }
-        if should_index_framework_php_content(uri, content) {
+        if self.should_index_configured_framework_php_content(uri, content) {
             return Some(self.scan_symfony_php_references(uri, content));
         }
         None
@@ -1189,6 +1301,7 @@ impl Backend {
         let mut refs = Vec::new();
         let include_config_resources =
             is_framework_php_config_uri(uri) && is_symfony_php_config_content(content);
+        let class_source = framework_class_reference_source(uri, content);
         let literals = scan_php_string_literals_and_class_constants(
             uri,
             content,
@@ -1200,7 +1313,7 @@ impl Backend {
 
         for (idx, literal) in literals.iter().enumerate() {
             if include_config_resources {
-                scan_php_config_literal(uri, literal, &mut refs);
+                scan_php_config_literal(uri, literal, &class_source, &mut refs);
             }
             scan_php_symfony_literal(
                 uri,
@@ -1248,12 +1361,21 @@ impl Backend {
         scan_php_messenger_handlers(uri, content, &use_map, &namespace, &mut refs);
         scan_php_form_fields(uri, content, &literals, &use_map, &namespace, &mut refs);
         scan_php_config_schema(uri, content, &literals, &mut refs);
+        expression::scan_php_expression_references(
+            uri,
+            content,
+            &literals,
+            &use_map,
+            &namespace,
+            &self.config().symfony.expression_language,
+            &mut refs,
+        );
 
         if include_config_resources {
             let class_service_declarations: Vec<(u32, u32, String)> = refs
                 .iter()
                 .filter_map(|reference| {
-                    let FrameworkReferenceKind::Class { fqn } = &reference.kind else {
+                    let FrameworkReferenceKind::Class { fqn, .. } = &reference.kind else {
                         return None;
                     };
                     let call = php_call_context(content, reference.start as usize)?;
@@ -1303,7 +1425,7 @@ impl Backend {
 
 fn framework_reference_class_or_namespace(kind: &FrameworkReferenceKind) -> Option<&str> {
     match kind {
-        FrameworkReferenceKind::Class { fqn } => Some(fqn),
+        FrameworkReferenceKind::Class { fqn, .. } => Some(fqn),
         FrameworkReferenceKind::Namespace { prefix } => Some(prefix),
         FrameworkReferenceKind::Method { .. }
         | FrameworkReferenceKind::Property { .. }
@@ -1312,7 +1434,8 @@ fn framework_reference_class_or_namespace(kind: &FrameworkReferenceKind) -> Opti
         | FrameworkReferenceKind::RouteParameter { .. }
         | FrameworkReferenceKind::Translation { .. }
         | FrameworkReferenceKind::MessengerHandler { .. }
-        | FrameworkReferenceKind::ConfigKey { .. } => None,
+        | FrameworkReferenceKind::ConfigKey { .. }
+        | FrameworkReferenceKind::SymfonyExpression { .. } => None,
     }
 }
 
@@ -1360,6 +1483,7 @@ fn scan_php_string_literals_and_class_constants<'a>(
     let bytes = content.as_bytes();
     let mut literals = Vec::new();
     let mut i = 0usize;
+    let class_source = framework_class_reference_source(uri, content);
 
     while i < bytes.len() {
         if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
@@ -1450,7 +1574,10 @@ fn scan_php_string_literals_and_class_constants<'a>(
                     uri: uri.to_string(),
                     start: start as u32,
                     end: end as u32,
-                    kind: FrameworkReferenceKind::Class { fqn },
+                    kind: FrameworkReferenceKind::Class {
+                        fqn,
+                        source: class_source.clone(),
+                    },
                 });
             }
             continue;
@@ -2392,6 +2519,7 @@ fn php_literal_is_array_key(content: &str, literal: &PhpStringLiteral<'_>) -> bo
 fn scan_php_config_literal(
     uri: &str,
     literal: &PhpStringLiteral<'_>,
+    class_source: &FrameworkClassReferenceSource,
     refs: &mut Vec<FrameworkReference>,
 ) {
     let leading_whitespace = literal.value.len() - literal.value.trim_start().len();
@@ -2411,16 +2539,17 @@ fn scan_php_config_literal(
     let start = literal.start + leading_whitespace + service_prefix;
 
     if let Some(separator) = source.find("::") {
-        let class_source = &source[..separator];
+        let class_name_source = &source[..separator];
         let method_name = &source[separator + 2..];
-        let class_fqn = normalize_framework_fqn(class_source);
+        let class_fqn = normalize_framework_fqn(class_name_source);
         if valid_framework_name(&class_fqn) && valid_framework_segment(method_name) {
             refs.push(FrameworkReference {
                 uri: uri.to_string(),
                 start: start as u32,
-                end: (start + class_source.len()) as u32,
+                end: (start + class_name_source.len()) as u32,
                 kind: FrameworkReferenceKind::Class {
                     fqn: class_fqn.clone(),
+                    source: class_source.clone(),
                 },
             });
             refs.push(FrameworkReference {
@@ -2444,7 +2573,10 @@ fn scan_php_config_literal(
     let kind = if source.ends_with('\\') {
         FrameworkReferenceKind::Namespace { prefix: normalized }
     } else {
-        FrameworkReferenceKind::Class { fqn: normalized }
+        FrameworkReferenceKind::Class {
+            fqn: normalized,
+            source: class_source.clone(),
+        }
     };
     refs.push(FrameworkReference {
         uri: uri.to_string(),
@@ -2603,6 +2735,7 @@ fn scan_framework_references(uri: &str, content: &str) -> Vec<FrameworkReference
     }
 
     scan_class_like_tokens(uri, content, &mut refs);
+    openapi::annotate_operation_class_references(content, &mut refs);
     scan_path_scalars(uri, content, &mut refs);
     if let Some(domain) = translation_catalog_domain(uri) {
         if uri
@@ -3423,7 +3556,10 @@ fn scan_symfony_validation_yaml(uri: &str, content: &str, refs: &mut Vec<Framewo
                 uri: uri.to_string(),
                 start: start as u32,
                 end: end as u32,
-                kind: FrameworkReferenceKind::Class { fqn },
+                kind: FrameworkReferenceKind::Class {
+                    fqn,
+                    source: FrameworkClassReferenceSource::SymfonyConfig,
+                },
             });
         }
     }
@@ -3508,7 +3644,10 @@ fn scan_symfony_validation_xml(uri: &str, content: &str, refs: &mut Vec<Framewor
                     uri: uri.to_string(),
                     start: start as u32,
                     end: end as u32,
-                    kind: FrameworkReferenceKind::Class { fqn },
+                    kind: FrameworkReferenceKind::Class {
+                        fqn,
+                        source: FrameworkClassReferenceSource::SymfonyConfig,
+                    },
                 });
             }
             child_search = tag_end;
@@ -4339,6 +4478,26 @@ fn strip_yaml_quotes(raw: &str) -> (&str, (usize, usize)) {
     }
 }
 
+fn framework_class_reference_source(uri: &str, content: &str) -> FrameworkClassReferenceSource {
+    let path = uri.split('?').next().unwrap_or(uri).to_ascii_lowercase();
+    if path.contains("/doctrine/")
+        || path.contains(".orm.")
+        || content.contains("<doctrine-mapping")
+    {
+        return FrameworkClassReferenceSource::Doctrine;
+    }
+
+    let filename_is_services = path
+        .rsplit('/')
+        .next()
+        .is_some_and(|filename| filename.starts_with("services."));
+    if filename_is_services || path.contains("/services/") || content.contains("<services") {
+        FrameworkClassReferenceSource::SymfonyService
+    } else {
+        FrameworkClassReferenceSource::SymfonyConfig
+    }
+}
+
 fn leading_spaces(line: &str) -> usize {
     line.bytes().take_while(|b| *b == b' ').count()
 }
@@ -4352,6 +4511,7 @@ fn push_unique_string(out: &mut Vec<String>, value: String) {
 fn scan_class_like_tokens(uri: &str, content: &str, refs: &mut Vec<FrameworkReference>) {
     let bytes = content.as_bytes();
     let mut i = 0usize;
+    let class_source = framework_class_reference_source(uri, content);
     while i < bytes.len() {
         if !is_token_start(bytes[i]) || (i > 0 && is_token_char(bytes[i - 1])) {
             i += 1;
@@ -4385,6 +4545,7 @@ fn scan_class_like_tokens(uri: &str, content: &str, refs: &mut Vec<FrameworkRefe
                     end: end as u32,
                     kind: FrameworkReferenceKind::Class {
                         fqn: normalized.clone(),
+                        source: class_source.clone(),
                     },
                 });
 

@@ -203,6 +203,7 @@ mod server_lifecycle;
 mod signature_from_call_site;
 mod signature_help;
 mod smoke;
+mod symfony_expressions;
 mod type_definition;
 mod type_hierarchy;
 mod watched_files;

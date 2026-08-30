@@ -26,7 +26,7 @@ use crate::class_lookup::find_class_at_offset;
 use crate::composer;
 use crate::framework::{FrameworkReferenceKind, MessengerHandlerRole};
 use crate::symbol_map::{SelfStaticParentKind, SymbolKind};
-use crate::text_position::position_to_offset;
+use crate::text_position::{offset_to_position, position_to_offset};
 use crate::types::{AccessKind, ClassInfo, MAX_INHERITANCE_DEPTH};
 use crate::util::short_name;
 use crate::virtual_members::laravel;
@@ -99,7 +99,7 @@ impl Backend {
             return Vec::new();
         };
         match reference.kind {
-            FrameworkReferenceKind::Class { fqn } => self
+            FrameworkReferenceKind::Class { fqn, .. } => self
                 .resolve_class_reference(uri, content, &fqn, true, reference.start)
                 .into_iter()
                 .collect(),
@@ -149,6 +149,19 @@ impl Backend {
                 path,
                 declaration: false,
             } => self.framework_config_key_locations(&path, true, false),
+            FrameworkReferenceKind::SymfonyExpression {
+                variable,
+                path,
+                expression_start,
+                context,
+            } => self.resolve_symfony_expression_definition(
+                uri,
+                content,
+                &variable,
+                &path,
+                expression_start,
+                &context,
+            ),
             FrameworkReferenceKind::Namespace { .. }
             | FrameworkReferenceKind::Path { .. }
             | FrameworkReferenceKind::SymfonySymbol {
@@ -181,9 +194,10 @@ impl Backend {
             &class_loader,
             Some(&self.resolved_class_cache),
         );
+        let declaration = Self::find_declaring_class(&resolved, member_name, &class_loader);
+        let has_declaration = declaration.is_some();
         let (declaring_class, declaring_fqn) =
-            Self::find_declaring_class(&resolved, member_name, &class_loader)
-                .unwrap_or_else(|| (resolved.as_ref().clone(), class_fqn.to_string()));
+            declaration.unwrap_or_else(|| (resolved.as_ref().clone(), class_fqn.to_string()));
         let (class_uri, class_content) =
             self.find_class_file_content(&declaring_fqn, uri, content)?;
         let position = Self::find_member_position(
@@ -191,7 +205,12 @@ impl Backend {
             member_name,
             MemberKind::Method,
             declaring_class.member_name_offset(member_name, "method"),
-        )?;
+        )
+        .or_else(|| {
+            (has_declaration && declaring_class.keyword_offset > 0).then(|| {
+                offset_to_position(&class_content, declaring_class.keyword_offset as usize)
+            })
+        })?;
         Some(point_location(Url::parse(&class_uri).ok()?, position))
     }
 
@@ -210,9 +229,10 @@ impl Backend {
             &class_loader,
             Some(&self.resolved_class_cache),
         );
+        let declaration = Self::find_declaring_class(&resolved, property_name, &class_loader);
+        let has_declaration = declaration.is_some();
         let (declaring_class, declaring_fqn) =
-            Self::find_declaring_class(&resolved, property_name, &class_loader)
-                .unwrap_or_else(|| (resolved.as_ref().clone(), class_fqn.to_string()));
+            declaration.unwrap_or_else(|| (resolved.as_ref().clone(), class_fqn.to_string()));
         let (class_uri, class_content) =
             self.find_class_file_content(&declaring_fqn, uri, content)?;
         let position = Self::find_member_position(
@@ -220,7 +240,12 @@ impl Backend {
             property_name,
             MemberKind::Property,
             declaring_class.member_name_offset(property_name, "property"),
-        )?;
+        )
+        .or_else(|| {
+            (has_declaration && declaring_class.keyword_offset > 0).then(|| {
+                offset_to_position(&class_content, declaring_class.keyword_offset as usize)
+            })
+        })?;
         Some(point_location(Url::parse(&class_uri).ok()?, position))
     }
 

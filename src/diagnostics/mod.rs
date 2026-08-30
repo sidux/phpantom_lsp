@@ -591,6 +591,7 @@ impl Backend {
                 self.collect_blade_section_diagnostics(uri_str, out)
             );
         }
+        self.collect_unknown_symfony_expression_diagnostics(uri_str, content, out);
         self.collect_unknown_symfony_resource_diagnostics(uri_str, content, out);
     }
 

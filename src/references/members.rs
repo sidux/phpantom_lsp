@@ -29,6 +29,163 @@ pub(crate) struct MemberDeclarationReferenceQuery {
 }
 
 impl Backend {
+    /// Resolve and cache every member receiver in one immutable PHP file.
+    pub(crate) fn ensure_resolved_member_file(
+        &self,
+        file_uri: &str,
+        symbol_map: &Arc<crate::symbol_map::SymbolMap>,
+    ) -> Option<Arc<crate::reference_index::ResolvedMemberFile>> {
+        if let Some(file) = self.resolved_member_file(file_uri, symbol_map) {
+            return Some(file);
+        }
+
+        let content = self.reference_file_content_arc(file_uri)?;
+        let _parse_cache_guard = crate::parser::with_parse_cache(&content);
+        let file_ctx = self.file_context(file_uri);
+        let all_access_indices: Vec<_> = symbol_map
+            .spans
+            .iter()
+            .enumerate()
+            .filter_map(|(index, span)| {
+                matches!(span.kind, SymbolKind::MemberAccess { .. }).then_some(index)
+            })
+            .collect();
+
+        let _scope_guard =
+            crate::type_engine::variable::forward_walk::with_diagnostic_scope_cache();
+        let needs_variable_scopes = all_access_indices.iter().any(|&span_index| {
+            let SymbolKind::MemberAccess { subject_text, .. } = &symbol_map.spans[span_index].kind
+            else {
+                return false;
+            };
+            let subject = subject_text.as_str(&content).trim_start();
+            subject.starts_with('$') && !subject.starts_with("$this")
+        });
+        if needs_variable_scopes {
+            let class_loader = self.class_loader(&file_ctx);
+            let function_loader = self.function_loader(&file_ctx);
+            let constant_loader = self.constant_loader(&file_ctx);
+            let config_resolver = |key: &str| self.resolve_config_type(key);
+            let trans_resolver = |key: &str| self.resolve_trans_type(key);
+            let loaders = crate::type_engine::resolver::Loaders {
+                function_loader: Some(&function_loader),
+                constant_loader: Some(&constant_loader),
+                config_resolver: Some(&config_resolver),
+                trans_resolver: Some(&trans_resolver),
+            };
+            crate::type_engine::variable::forward_walk::build_diagnostic_scopes(
+                &content,
+                &file_ctx.classes,
+                &class_loader,
+                Some(self),
+                loaders,
+                Some(&self.resolved_class_cache),
+            );
+        }
+
+        let _chain_guard = crate::type_engine::resolver::with_chain_resolution_cache();
+        let _resolver_guard = crate::type_engine::call_resolution::activate_type_engine_caches();
+        let resolved = all_access_indices
+            .into_iter()
+            .filter_map(|span_index| {
+                let span = &symbol_map.spans[span_index];
+                let SymbolKind::MemberAccess {
+                    subject_text,
+                    is_static,
+                    ..
+                } = &span.kind
+                else {
+                    return None;
+                };
+                let targets = self
+                    .resolve_subject_to_fqns(
+                        subject_text.as_str(&content),
+                        *is_static,
+                        &file_ctx,
+                        span.start,
+                        &content,
+                    )
+                    .into_iter()
+                    .map(|target| crate::atom::atom(&target))
+                    .collect();
+                Some((span_index, targets))
+            })
+            .collect();
+        Some(self.cache_resolved_member_file(file_uri, Arc::clone(symbol_map), resolved))
+    }
+
+    /// Eagerly build the semantic member-receiver layer for user files that
+    /// contain member accesses. Large files start first to avoid a long tail.
+    pub(crate) fn prewarm_member_reference_targets(
+        &self,
+        progress: Option<&crate::progress::ScanProgress>,
+    ) -> usize {
+        let mut snapshot: Vec<_> = self
+            .user_file_symbol_maps_nonblocking()
+            .into_iter()
+            .filter_map(|(file_uri, symbol_map)| {
+                let member_accesses = symbol_map
+                    .spans
+                    .iter()
+                    .filter(|span| matches!(span.kind, SymbolKind::MemberAccess { .. }))
+                    .count();
+                (member_accesses > 0).then_some((file_uri, symbol_map, member_accesses))
+            })
+            .collect();
+        snapshot.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.2));
+
+        if let Some(progress) = progress {
+            progress.set_scope(80, 100, "Preparing member reference targets");
+            progress.add_total(snapshot.len() as u64);
+        }
+        if snapshot.is_empty() {
+            if let Some(progress) = progress {
+                progress.set_percentage(100, "Member reference targets ready");
+            }
+            return 0;
+        }
+
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let warmed = std::sync::atomic::AtomicUsize::new(0);
+        let thread_count = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(4)
+            .min(snapshot.len());
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(thread_count);
+            for _ in 0..thread_count {
+                handles.push(
+                    std::thread::Builder::new()
+                        .stack_size(crate::PARSE_WORKER_STACK_SIZE)
+                        .spawn_scoped(scope, || {
+                            loop {
+                                let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                let Some((file_uri, symbol_map, _)) = snapshot.get(index) else {
+                                    break;
+                                };
+                                if self
+                                    .ensure_resolved_member_file(file_uri, symbol_map)
+                                    .is_some()
+                                {
+                                    warmed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                if let Some(progress) = progress {
+                                    progress.add_done(1);
+                                }
+                            }
+                        })
+                        .expect("spawn member reference prewarm worker"),
+                );
+            }
+            for handle in handles {
+                if handle.join().is_err() {
+                    tracing::error!("member reference prewarm worker panicked");
+                }
+            }
+        });
+        warmed.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub(super) fn find_laravel_macro_references(
         &self,
         uri: &str,
@@ -1553,6 +1710,19 @@ fn doctrine_repository_short_name(entity_short: &str) -> String {
     format!("{stem}Repository")
 }
 
+pub(crate) fn doctrine_repository_matches_entity_convention(
+    entity_fqn: &str,
+    repository_fqn: &str,
+) -> bool {
+    let entity = normalize_fqn(entity_fqn);
+    let repository = normalize_fqn(repository_fqn);
+    let repository_short = doctrine_repository_short_name(crate::util::short_name(&entity));
+    crate::util::short_name(&repository).eq_ignore_ascii_case(&repository_short)
+        || doctrine_repository_convention_candidates(&entity, &repository_short)
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(&repository))
+}
+
 fn doctrine_repository_convention_candidates(
     entity_fqn: &str,
     repository_short: &str,
@@ -1581,7 +1751,7 @@ fn doctrine_repository_convention_candidates(
     candidates
 }
 
-fn looks_like_doctrine_repository(class_info: &ClassInfo) -> bool {
+pub(crate) fn looks_like_doctrine_repository(class_info: &ClassInfo) -> bool {
     if class_info.name.to_string().ends_with("Repository") {
         return true;
     }

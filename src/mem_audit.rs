@@ -1343,9 +1343,9 @@ pub(crate) fn report(backend: &Backend, runner_content_bytes: usize) {
     );
 
     // ── 6. Reference index ──────────────────────────────────────────
-    // Per key, only the distinct contributing URIs are stored (as a
-    // shared per-file `Arc<str>`) mapped to a non-declaration span
-    // count, so there is no per-span duplication left to account for.
+    // Per key, only the distinct contributing URIs are stored as shared
+    // per-file `Arc<str>` values, so there is no per-span duplication left
+    // to account for.
     let mut refs = Sz::default();
     let mut n_key_uri_pairs = 0usize;
     let n_resolved_member_files;
@@ -1356,14 +1356,14 @@ pub(crate) fn report(backend: &Backend, runner_content_bytes: usize) {
         let idx = backend.reference_index.read();
         let (by_key, uri_keys, resolved_members) = idx.audit_maps();
         n_keys = by_key.len();
-        refs += map_buckets::<crate::reference_index::ReferenceIndexKey, HashMap<Arc<str>, u32>>(
+        refs += map_buckets::<crate::reference_index::ReferenceIndexKey, HashSet<Arc<str>>>(
             by_key.capacity(),
         );
         for (k, inner) in by_key {
             refs.add(k.audit_heap());
             n_key_uri_pairs += inner.len();
-            refs += map_buckets::<Arc<str>, u32>(inner.capacity());
-            for uri in inner.keys() {
+            refs += map_buckets::<Arc<str>, ()>(inner.capacity());
+            for uri in inner {
                 distinct_uris.insert(Arc::as_ptr(uri).cast::<u8>());
             }
         }

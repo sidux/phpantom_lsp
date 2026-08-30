@@ -2847,6 +2847,65 @@ mod auth_guard_tests {
     use std::sync::Arc;
 
     #[test]
+    fn union_return_candidates_stay_unique_across_union_receivers() {
+        let mut a = make_class("A");
+        a.methods.push(Arc::new(make_method("next", Some("A|B"))));
+        a.rebuild_method_index();
+        let a = Arc::new(a);
+
+        let mut b = make_class("B");
+        b.methods.push(Arc::new(make_method("next", Some("A|B"))));
+        b.rebuild_method_index();
+        let b = Arc::new(b);
+
+        let all_classes = vec![Arc::clone(&a), Arc::clone(&b)];
+        let loader = |name: &str| {
+            let name = name.trim_start_matches('\\');
+            all_classes
+                .iter()
+                .find(|class| class.fqn().as_str() == name)
+                .cloned()
+        };
+        let ctx = ResolutionCtx {
+            current_class: None,
+            all_classes: &all_classes,
+            content: "",
+            cursor_offset: 0,
+            class_loader: &loader,
+            backend: None,
+            laravel_macro_this_resolver: None,
+            resolved_class_cache: None,
+            function_loader: None,
+            scope_var_resolver: None,
+            is_in_static_method: false,
+            preserve_static: false,
+        };
+
+        let expr = SubjectExpr::parse("$node->next()");
+        let SubjectExpr::CallExpr { callee, args_text } = &expr else {
+            panic!("expected a call expression");
+        };
+        let receiver = vec![
+            ResolvedType::from_arc(Arc::clone(&a)),
+            ResolvedType::from_arc(Arc::clone(&b)),
+        ];
+        let resolved = Backend::resolve_call_return_types_on_receiver(
+            callee,
+            args_text,
+            Some(receiver),
+            &ctx,
+            None,
+        );
+        let mut names: Vec<_> = resolved
+            .iter()
+            .map(|class| class.fqn().to_string())
+            .collect();
+        names.sort();
+
+        assert_eq!(names, ["A", "B"]);
+    }
+
+    #[test]
     fn first_arg_reads_string_literals() {
         assert_eq!(
             first_string_literal_arg("'admin'").as_deref(),

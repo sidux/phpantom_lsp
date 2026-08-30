@@ -426,7 +426,7 @@ impl Backend {
         false
     }
 
-    fn traits_have_property(
+    pub(crate) fn traits_have_property(
         &self,
         trait_names: &[crate::atom::Atom],
         prop_name: &str,
@@ -471,7 +471,7 @@ impl Backend {
         false
     }
 
-    fn traits_have_constant(
+    pub(crate) fn traits_have_constant(
         &self,
         trait_names: &[crate::atom::Atom],
         constant_name: &str,

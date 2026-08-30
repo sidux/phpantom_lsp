@@ -222,6 +222,7 @@ mod backend;
 pub mod benevolent_builtins;
 pub mod blade;
 pub(crate) mod call_args;
+mod call_hierarchy;
 pub mod ci_map;
 pub(crate) mod class_loader_memo;
 pub(crate) mod class_lookup;
@@ -262,6 +263,7 @@ mod phpstan;
 pub(crate) mod phpstan_ignore;
 pub(crate) mod process;
 pub mod progress;
+mod proxy_metadata;
 mod reference_counts;
 mod reference_index;
 mod references;
@@ -279,6 +281,7 @@ pub mod stub_patches;
 pub mod stubs;
 mod symbol_index;
 pub(crate) mod symbol_map;
+mod symfony;
 pub(crate) mod text_position;
 pub(crate) mod text_scan;
 pub(crate) mod toposort;
@@ -575,11 +578,16 @@ pub struct Backend {
     /// candidate files, then run their existing semantic checks for aliases,
     /// inheritance, Laravel declarations, and `self/static/parent`.
     pub(crate) reference_index: reference_index::ReferenceIndex,
+    /// Transparent proxy-to-real-class relations for metadata consumers.
+    pub(crate) proxy_index: Arc<RwLock<proxy_metadata::ProxyIndex>>,
+    /// Symfony event wiring recovered from compiled containers and configured
+    /// PHP attributes.
+    pub(crate) symfony_events: Arc<RwLock<symfony::SymfonyEventIndex>>,
     /// Skip building [`reference_index`] from `update_ast`.
     ///
     /// Set by [`Backend::new_headless`] for the `analyze`/`fix` CLI
     /// subcommands, which parse every file but never issue a
-    /// find-references, rename, or inlay-hints request, so populating
+    /// find-references, rename, or reference-code-lens request, so populating
     /// the index would be pure wasted CPU and short-lived allocation.
     pub(crate) skip_reference_index: bool,
     /// Per-file parse errors from the Mago parser.
@@ -895,11 +903,8 @@ pub struct Backend {
     pub(crate) supports_code_lens_refresh: Arc<std::sync::atomic::AtomicBool>,
     /// Whether the client supports `workspace/inlayHint/refresh`.
     ///
-    /// Set during `initialize` from the client's
-    /// `workspace.inlayHint.refreshSupport` capability.  The reference
-    /// counts shown on declarations are computed in the background, so
-    /// without a refresh the editor keeps the hints it pulled before they
-    /// were ready.
+    /// Reference counts used by inlay hints are computed off the request path,
+    /// so capable clients are asked to re-pull hints after those counts land.
     pub(crate) supports_inlay_hint_refresh: Arc<std::sync::atomic::AtomicBool>,
     /// Exact member references shared by declaration inlay hints and lenses.
     pub(crate) member_ref_counts: Arc<reference_counts::MemberRefCounts>,
@@ -1091,6 +1096,8 @@ impl Backend {
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
             framework_references: framework::new_framework_reference_index(),
             reference_index: reference_index::new_reference_index(),
+            proxy_index: Arc::new(RwLock::new(proxy_metadata::ProxyIndex::default())),
+            symfony_events: Arc::new(RwLock::new(symfony::SymfonyEventIndex::default())),
             skip_reference_index: false,
             symbols: SymbolIndex::new(),
             workspace: WorkspaceEnv::new(),
@@ -1203,6 +1210,8 @@ impl Backend {
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
             framework_references: framework::new_framework_reference_index(),
             reference_index: reference_index::new_reference_index(),
+            proxy_index: Arc::new(RwLock::new(proxy_metadata::ProxyIndex::default())),
+            symfony_events: Arc::new(RwLock::new(symfony::SymfonyEventIndex::default())),
             skip_reference_index: false,
             symbols: SymbolIndex::new(),
             workspace: WorkspaceEnv::new_isolated(),
@@ -1858,6 +1867,8 @@ impl Backend {
             symbol_maps: Arc::clone(&self.symbol_maps),
             framework_references: Arc::clone(&self.framework_references),
             reference_index: Arc::clone(&self.reference_index),
+            proxy_index: Arc::clone(&self.proxy_index),
+            symfony_events: Arc::clone(&self.symfony_events),
             skip_reference_index: self.skip_reference_index,
             symbols: self.symbols.clone(),
             parse_errors: Arc::clone(&self.parse_errors),

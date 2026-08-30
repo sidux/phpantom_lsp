@@ -185,7 +185,7 @@ impl Backend {
     ) -> Option<Vec<Location>> {
         let reference = self.framework_reference_at_position(uri, content, position)?;
         let locations = match reference.kind {
-            FrameworkReferenceKind::Class { fqn } => {
+            FrameworkReferenceKind::Class { fqn, .. } => {
                 self.find_class_references(&fqn, include_declaration)
             }
             FrameworkReferenceKind::Method {
@@ -243,9 +243,9 @@ impl Backend {
             FrameworkReferenceKind::ConfigKey { path, .. } => {
                 self.framework_config_key_locations(&path, include_declaration, true)
             }
-            FrameworkReferenceKind::Namespace { .. } | FrameworkReferenceKind::Path { .. } => {
-                Vec::new()
-            }
+            FrameworkReferenceKind::Namespace { .. }
+            | FrameworkReferenceKind::Path { .. }
+            | FrameworkReferenceKind::SymfonyExpression { .. } => Vec::new(),
         };
         Some(locations)
     }

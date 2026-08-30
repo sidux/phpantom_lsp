@@ -49,6 +49,8 @@ impl Backend {
     ) -> bool {
         let mut composer_changed = false;
         let mut config_changed = false;
+        let mut proxy_index_rebuild = false;
+        let mut symfony_metadata_rebuild = false;
         let mut schema_full_rebuild = false;
         let mut migration_changes: Vec<(PathBuf, FileChangeType)> = Vec::new();
         let mut php_changes: Vec<(String, PathBuf, FileChangeType)> = Vec::new();
@@ -56,11 +58,16 @@ impl Backend {
             crate::virtual_members::laravel::database_schema::MigrationDiscovery::default();
         let is_laravel = self.resolved_class_cache.read().is_laravel();
         let mut framework_changes: Vec<(String, PathBuf, FileChangeType)> = Vec::new();
+        let current_config = self.config();
+        let proxy_rules = current_config.php.proxies;
+        let symfony_container = current_config.symfony.container;
+        let has_symfony_event_rules = !current_config.symfony.events.publishers.is_empty()
+            || !current_config.symfony.events.subscribers.is_empty();
         let config_path = root.join(crate::config::CONFIG_FILE_NAME);
         {
             let open = self.open_files.read();
             let parsed = self.parsed_uris.read();
-            let laravel_config = self.config().laravel;
+            let laravel_config = current_config.laravel;
             for change in &params.changes {
                 let path_str = change.uri.path();
                 if path_str.ends_with("/composer.json") || path_str.ends_with("/composer.lock") {
@@ -127,6 +134,19 @@ impl Backend {
                     continue;
                 };
 
+                if crate::proxy_metadata::is_configured_proxy_path(root, &file_path, &proxy_rules) {
+                    proxy_index_rebuild = true;
+                    continue;
+                }
+                if crate::symfony::container::path_may_be_compiled_container(
+                    root,
+                    &file_path,
+                    &symfony_container,
+                ) {
+                    symfony_metadata_rebuild |= has_symfony_event_rules;
+                    continue;
+                }
+
                 if crate::framework::is_framework_php_config_path(&file_path) {
                     framework_changes.push((uri_str.clone(), file_path.clone(), change.typ));
                 }
@@ -158,6 +178,8 @@ impl Backend {
         if php_changes.is_empty()
             && !composer_changed
             && !config_changed
+            && !proxy_index_rebuild
+            && !symfony_metadata_rebuild
             && !schema_full_rebuild
             && migration_changes.is_empty()
             && framework_changes.is_empty()
@@ -168,6 +190,8 @@ impl Backend {
         if config_changed {
             tracing::info!("PHPantom: .phpantom.toml changed, reloading configuration");
             self.reload_config(root);
+            proxy_index_rebuild = true;
+            symfony_metadata_rebuild = true;
             // Schema/migration settings live in the same file, and the
             // cheapest correct response to "something in here changed" is
             // the same full rebuild a config/database.php or schema file
@@ -183,6 +207,15 @@ impl Backend {
                 php_changes.len()
             );
             self.reindex_files_batch(&php_changes);
+            if has_symfony_event_rules {
+                for (uri, path, change_type) in &php_changes {
+                    if *change_type == FileChangeType::DELETED {
+                        self.remove_symfony_event_sites(uri);
+                    } else if let Ok(content) = std::fs::read_to_string(path) {
+                        self.refresh_symfony_event_sites(uri, &content);
+                    }
+                }
+            }
             // A class that was previously "not found" may now exist, and
             // resolved class info / member completions may be stale for a
             // class whose file changed.
@@ -220,6 +253,15 @@ impl Backend {
             }
         }
 
+        if proxy_index_rebuild {
+            let count = self.rebuild_configured_proxy_index(root);
+            tracing::info!("PHPantom: indexed {} transparent proxies", count);
+        }
+        if symfony_metadata_rebuild {
+            let count = self.rebuild_symfony_metadata(root);
+            tracing::info!("PHPantom: indexed {} Symfony event links", count);
+        }
+
         true
     }
 
@@ -239,7 +281,13 @@ impl Backend {
     /// answers LSP requests.
     pub(crate) fn reload_config(&self, root: &std::path::Path) {
         match crate::config::load_config_from(root, self.workspace.global_config_path.as_deref()) {
-            Ok(cfg) => *self.workspace.config.lock() = cfg,
+            Ok(mut cfg) => {
+                self.workspace
+                    .initialization_options
+                    .lock()
+                    .apply_to(&mut cfg);
+                *self.workspace.config.lock() = cfg;
+            }
             Err(e) => {
                 tracing::warn!("Failed to reload .phpantom.toml: {}", e);
                 return;
@@ -294,6 +342,8 @@ impl Backend {
             last_modified = modified;
             tracing::info!("PHPantom: global config changed, reloading configuration");
             self.reload_config(&root);
+            self.rebuild_configured_proxy_index(&root);
+            self.rebuild_symfony_metadata(&root);
         }
     }
 }

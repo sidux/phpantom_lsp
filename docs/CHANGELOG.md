@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`analyze` takes more than one path.** `phpantom_lsp analyze app/ lib/Helper.php tests/` scans the union of everything named, mixing directories and single files freely, so a pre-commit hook or a CI step can hand it exactly the paths that changed instead of running the whole project or invoking the binary once per path. Overlapping arguments are reported once, and a path that does not exist still stops the run with exit code 2. Naming no path scans the entire project, as before.
+- **PHP symbols in YAML and XML are navigable.** Fully-qualified class names and `Class::member` strings participate in go-to-definition, references, rename, and declaration CodeLens without a framework-specific schema. Contributed by @sidux.
+- **Transparent proxy metadata.** Generated subclasses can be mapped to their real parent through opt-in path and marker-interface rules, allowing framework metadata to flow to the class users recognize. Contributed by @sidux.
+- **Call Hierarchy.** PHP callables use the standard LSP hierarchy, and configured Symfony events appear as synthetic nodes connecting publisher and subscriber methods. Proxy publishers are canonicalized to their real class. Contributed by @sidux.
+- **Semantic indexing.** The `semantic` strategy builds the complete workspace index and proactively resolves member receivers, smoothing startup progress and lowering first-use latency for reference CodeLens and repeated member searches. Contributed by @sidux.
+- **Configured ExpressionLanguage navigation.** Attribute and constructor rules map expression roots to method parameters, return values, or fixed classes so member navigation and `unknown_member` diagnostics remain package-independent. Contributed by @sidux.
 
 ### Changed
 

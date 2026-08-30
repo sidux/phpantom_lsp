@@ -85,6 +85,59 @@ async fn symfony_yaml_service_class_goes_to_php_definition() {
 }
 
 #[tokio::test]
+async fn php_classes_navigate_from_arbitrary_yaml_and_xml_shapes() {
+    let target_php = "<?php\nnamespace App\\Domain;\nclass Target {}\n";
+    let yaml = "custom:\n  App\\Domain\\Target: App\\Domain\\Target\n";
+    let xml = r#"<custom type="App\Domain\Target">App\Domain\Target</custom>"#;
+    let (backend, dir) = create_psr4_workspace(
+        COMPOSER,
+        &[
+            ("src/Domain/Target.php", target_php),
+            ("metadata/arbitrary.yaml", yaml),
+            ("metadata/arbitrary.xml", xml),
+        ],
+    );
+
+    let target_uri = uri_for(&dir, "src/Domain/Target.php");
+    open_doc(&backend, target_uri.clone(), "php", target_php).await;
+    for (path, language, content, positions) in [
+        (
+            "metadata/arbitrary.yaml",
+            "yaml",
+            yaml,
+            vec![Position::new(1, 8), Position::new(1, 28)],
+        ),
+        (
+            "metadata/arbitrary.xml",
+            "xml",
+            xml,
+            vec![Position::new(0, 21), Position::new(0, 41)],
+        ),
+    ] {
+        let uri = uri_for(&dir, path);
+        open_doc(&backend, uri.clone(), language, content).await;
+        for position in positions {
+            let response = backend
+                .goto_definition(GotoDefinitionParams {
+                    text_document_position_params: TextDocumentPositionParams {
+                        text_document: TextDocumentIdentifier { uri: uri.clone() },
+                        position,
+                    },
+                    work_done_progress_params: WorkDoneProgressParams::default(),
+                    partial_result_params: PartialResultParams::default(),
+                })
+                .await
+                .unwrap()
+                .expect("arbitrary YAML/XML class should resolve");
+            let GotoDefinitionResponse::Scalar(location) = response else {
+                panic!("expected one PHP class definition");
+            };
+            assert_eq!(location.uri, target_uri);
+        }
+    }
+}
+
+#[tokio::test]
 async fn class_references_include_symfony_and_doctrine_yaml_xml() {
     let user_php = "<?php\nnamespace App\\Entity;\nclass User {}\n";
     let repo_php = "<?php\nnamespace App\\Repository;\nclass UserRepository {}\n";
@@ -169,6 +222,143 @@ async fn class_references_include_symfony_and_doctrine_yaml_xml() {
             .iter()
             .any(|p| p.ends_with("/config/doctrine/User.orm.xml")),
         "expected Doctrine XML reference, got {paths:?}"
+    );
+}
+
+#[tokio::test]
+async fn class_code_lenses_separate_framework_sources_and_describe_openapi_operations() {
+    let use_case_php = "<?php\nnamespace App\\UseCase;\nclass DeletePlaylist {}\n";
+    let services_yaml =
+        "services:\n  app.delete_playlist:\n    class: App\\UseCase\\DeletePlaylist\n";
+    let doctrine_yaml = "App\\UseCase\\DeletePlaylist:\n  type: entity\n";
+    let openapi_yaml = r#"# Path: /playlists/{playlistId}
+delete:
+  operationId: oc_api_playlist_delete
+  x-usecase: App\UseCase\DeletePlaylist
+"#;
+    let (backend, dir) = create_psr4_workspace(
+        COMPOSER,
+        &[
+            ("src/UseCase/DeletePlaylist.php", use_case_php),
+            ("config/services.yaml", services_yaml),
+            ("config/doctrine/DeletePlaylist.orm.yaml", doctrine_yaml),
+            ("schema/paths/playlists.yml", openapi_yaml),
+        ],
+    );
+    let use_case_uri = uri_for(&dir, "src/UseCase/DeletePlaylist.php");
+    open_doc(&backend, use_case_uri.clone(), "php", use_case_php).await;
+    open_doc(
+        &backend,
+        uri_for(&dir, "config/services.yaml"),
+        "yaml",
+        services_yaml,
+    )
+    .await;
+    open_doc(
+        &backend,
+        uri_for(&dir, "config/doctrine/DeletePlaylist.orm.yaml"),
+        "yaml",
+        doctrine_yaml,
+    )
+    .await;
+    open_doc(
+        &backend,
+        uri_for(&dir, "schema/paths/playlists.yml"),
+        "yaml",
+        openapi_yaml,
+    )
+    .await;
+
+    let lenses = backend
+        .handle_code_lens(use_case_uri.as_str(), use_case_php)
+        .unwrap_or_default();
+    let titles = lenses
+        .iter()
+        .filter_map(|lens| lens.command.as_ref().map(|command| command.title.as_str()))
+        .collect::<Vec<_>>();
+    assert!(titles.contains(&"Symfony service: 1 ref"), "{titles:?}");
+    assert!(titles.contains(&"Doctrine mapping: 1 ref"), "{titles:?}");
+    assert!(
+        titles.contains(&"OpenAPI DELETE /playlists/{playlistId} · oc_api_playlist_delete"),
+        "{titles:?}"
+    );
+    assert!(
+        !titles
+            .iter()
+            .any(|title| title.contains("Symfony/Doctrine")),
+        "{titles:?}"
+    );
+}
+
+#[tokio::test]
+async fn class_reference_lens_matches_find_references_with_framework_links() {
+    let use_case_php = "<?php\nnamespace App\\UseCase;\nclass DeletePlaylist {}\n";
+    let consumer_php = "<?php\nuse App\\UseCase\\DeletePlaylist;\nDeletePlaylist::class;\n";
+    let openapi_yaml = r#"# Path: /playlists/{playlistId}
+delete:
+  operationId: oc_api_playlist_delete
+  x-usecase: App\UseCase\DeletePlaylist
+"#;
+    let (backend, dir) = create_psr4_workspace(
+        COMPOSER,
+        &[
+            ("src/UseCase/DeletePlaylist.php", use_case_php),
+            ("src/Consumer.php", consumer_php),
+            ("schema/paths/playlists.yml", openapi_yaml),
+        ],
+    );
+    let use_case_uri = uri_for(&dir, "src/UseCase/DeletePlaylist.php");
+    open_doc(&backend, use_case_uri.clone(), "php", use_case_php).await;
+    open_doc(
+        &backend,
+        uri_for(&dir, "src/Consumer.php"),
+        "php",
+        consumer_php,
+    )
+    .await;
+    open_doc(
+        &backend,
+        uri_for(&dir, "schema/paths/playlists.yml"),
+        "yaml",
+        openapi_yaml,
+    )
+    .await;
+
+    let references = backend
+        .references(ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: use_case_uri.clone(),
+                },
+                position: Position::new(2, 8),
+            },
+            context: ReferenceContext {
+                include_declaration: false,
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .unwrap()
+        .expect("class references should be found");
+    let lens = backend
+        .handle_code_lens(use_case_uri.as_str(), use_case_php)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|lens| {
+            lens.range.start.line == 2
+                && lens.data.as_ref().is_some_and(|data| {
+                    data.get("kind").and_then(serde_json::Value::as_str) == Some("classReferences")
+                })
+        })
+        .expect("class reference lens should be present");
+    let lens = backend
+        .code_lens_resolve(lens)
+        .await
+        .expect("class reference lens should resolve");
+    assert_eq!(
+        lens.command.map(|command| command.title),
+        Some(format!("{} references", references.len()))
     );
 }
 
@@ -348,7 +538,7 @@ return App::config([
         .filter_map(|lens| lens.command.as_ref().map(|command| command.title.as_str()))
         .collect();
     assert!(
-        titles.contains(&"Symfony/Doctrine config: 2 refs"),
+        titles.contains(&"Symfony service: 2 refs"),
         "expected PHP service references in the class code lens, got {titles:?}"
     );
 
